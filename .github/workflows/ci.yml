@@ -91,3 +91,19 @@ jobs:
 
     - name: Run govulncheck
       run: make vuln
+
+  consumer-boundary:
+    name: Consumer Dependency Boundary
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v7
+
+    - name: Set up Go
+      uses: actions/setup-go@v7
+      with:
+        go-version: '1.26.x'
+
+    - name: Verify core package has no adapter dependencies
+      run: make check-consumer-boundary

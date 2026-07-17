@@ -70,7 +70,13 @@ not claim compile-time architectural enforcement that it does not provide.
 - [x] Provide RabbitMQ integration in a separate package.
 - [x] Provide Watermill integration in a separate package.
 - [x] Provide OpenTelemetry integration in a separate package.
-- [ ] Ensure consumers compile without unused integration dependencies.
+- [x] Ensure consumers compile without unused integration dependencies.
+  - `examples/external-consumer` is a standalone module (its own `go.mod`,
+    replacing `github.com/mediusfy/modulex` with the local checkout) that
+    imports only the core package. `make check-consumer-boundary` builds it
+    and fails if any adapter dependency (chi, nats, rabbitmq, watermill,
+    otel) appears in its compiled dependency graph. Wired into CI as the
+    `consumer-boundary` job.
 - [ ] Scope integration resources to the owning module and clean them up in lifecycle order.
 - [x] Inject the tracer provider rather than capturing mutable global state.
 - [x] Record errors and set appropriate span status in the OpenTelemetry integration.
@@ -166,7 +172,9 @@ not claim compile-time architectural enforcement that it does not provide.
 - [x] `make test`
 - [x] `go test ./... -count=1 -race`
 - [x] Confirm the example application imports Modulex as an external consumer would.
-  - Examples live inside the same module; a separate consumer module test would be stronger.
+  - `examples/external-consumer` is a genuinely separate module (own
+    `go.mod` with a `replace` directive) that imports only the core
+    package, verified by `make check-consumer-boundary` in CI.
 - [x] Review the delivered work against every requirement and record deferred items explicitly.
 
 ## Deferred items summary
