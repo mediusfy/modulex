@@ -23,8 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `main` pushes, with the build-and-test job running on Ubuntu and macOS
   runners.
 - Dependabot configuration for weekly Go module and GitHub Actions updates.
-- GitHub Actions release workflow (`release.yml`) that builds, tests, and
-  creates auto-generated releases for version tags.
+- GitHub Actions release workflow (`release.yml`) that gates releases on
+  formatting, `go mod tidy`, vet, lint, vulnerability scanning, build, and
+  tests before creating auto-generated releases for version tags.
 - `make vuln` target and GitHub Actions vulnerability scanning job using
   `govulncheck`.
 - Explicit `.golangci.yml` configuration and CI pin to `golangci-lint` v2.12.2.
