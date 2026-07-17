@@ -31,6 +31,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Explicit `.golangci.yml` configuration and CI pin to `golangci-lint` v2.12.2.
 - Public subpackages for framework adapters: `modulex/nats`, `modulex/rabbitmq`,
   and `modulex/watermill`.
+- GitHub issue templates (bug report and feature request) and pull request
+  template.
+- README CI status badge.
+- `COMPATIBILITY.md` documenting the project’s compatibility policy.
+- Package-level `doc.go` for root package documentation.
+- Table-driven tests for the Watermill `EventBus` adapter.
+- Library readiness checklist under `docs/planning/library-readiness-checklist.md`.
+- `SUPPORT.md` documenting how to get help, report bugs, and ask questions.
 
 ### Changed
 
@@ -45,6 +53,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the root package to `modulex/nats`, `modulex/rabbitmq`, and `modulex/watermill`.
   Adapter type names are now `EventBus` and constructors are `NewEventBus` in
   each subpackage.
+
+### Fixed
+
+- Race in `StopModules` where errors from supervised tasks that finish early
+  were not collected during shutdown.
 
 ## [0.0.0] - 2026-07-17
 
