@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   returns a handle, and awaits tasks during shutdown.
 - `CONTRIBUTING.md`, `SECURITY.md`, and this changelog.
 - `make test-arch` target for race-detector tests.
+- GitHub Actions CI workflow (`ci.yml`) running build, vet, race tests, format
+  checks, `go mod tidy` verification, and `golangci-lint` on pull requests and
+  `main` pushes.
+- Dependabot configuration for weekly Go module and GitHub Actions updates.
+- GitHub Actions release workflow (`release.yml`) that builds, tests, and
+  creates auto-generated releases for version tags.
 - Public subpackages for framework adapters: `modulex/nats`, `modulex/rabbitmq`,
   and `modulex/watermill`.
 
