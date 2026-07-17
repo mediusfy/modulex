@@ -68,8 +68,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for Chi routers so the core package does not depend on Chi.
 - Monolith and remote-adapter deployment examples under `examples/deployment`
   showing how the same domain interfaces can be wired locally or remotely.
+- `golang.org/x/sync/errgroup` dependency for structured concurrent awaiting of
+  supervised background tasks during shutdown.
 - `notification.RemoteModule` example demonstrating a remote client adapter
   registered under the same typed service key as the local implementation.
+- Optional `modulex.Startable` and `modulex.Stoppable` lifecycle capability
+  interfaces so modules can opt into startup and shutdown hooks.
+- Smaller registry capability interfaces (`ServiceRegistry`, `ServiceRegistrar`,
+  `ServiceResolver`, `EventBusProvider`, `ConfigProvider`, `LoggerProvider`,
+  `TaskSpawner`) so modules can depend on only the operations they need.
+- Tests verifying that modules without `Startable`/`Stoppable` are skipped
+  during startup, shutdown, and rollback.
 
 ### Changed
 
@@ -90,6 +99,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the root package to `modulex/nats`, `modulex/rabbitmq`, and `modulex/watermill`.
   Adapter type names are now `EventBus` and constructors are `NewEventBus` in
   each subpackage.
+- **BREAKING:** The `Module` interface no longer requires `Start` and `Stop`.
+  Modules that need startup/shutdown behavior now implement `modulex.Startable`
+  and/or `modulex.Stoppable`.
 
 ### Fixed
 

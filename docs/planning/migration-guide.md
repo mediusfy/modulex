@@ -166,6 +166,58 @@ mgr := modulex.NewManager(eb, logger, configLoader,
 - The OpenTelemetry adapter lives in `modulex/otel` and accepts a
   `TracerProvider`, avoiding reliance on the global tracer provider.
 
+## Migrating to optional `Start` and `Stop` lifecycle capabilities
+
+The `Module` interface no longer requires `Start` and `Stop`. These are now
+optional capabilities defined by `modulex.Startable` and `modulex.Stoppable`.
+
+### Before
+
+```go
+func (m *MyModule) Name() string        { return "my-module" }
+func (m *MyModule) DependsOn() []string { return nil }
+func (m *MyModule) Init(ctx context.Context, reg modulex.Registry) error {
+    return nil
+}
+func (m *MyModule) Start(ctx context.Context) error { return nil }
+func (m *MyModule) Stop(ctx context.Context) error  { return nil }
+```
+
+### After
+
+```go
+func (m *MyModule) Name() string        { return "my-module" }
+func (m *MyModule) DependsOn() []string { return nil }
+func (m *MyModule) Init(ctx context.Context, reg modulex.Registry) error {
+    return nil
+}
+```
+
+If the module needs to start background work, add `Start`:
+
+```go
+func (m *MyModule) Start(ctx context.Context) error {
+    // start listeners, background tasks, etc.
+    return nil
+}
+```
+
+If the module needs to release resources, add `Stop`:
+
+```go
+func (m *MyModule) Stop(ctx context.Context) error {
+    // close connections, flush state, etc.
+    return nil
+}
+```
+
+### What changed and why
+
+- Simple modules no longer need no-op `Start` and `Stop` methods.
+- Lifecycle capabilities are explicit: `modulex.Startable` for startup work and
+  `modulex.Stoppable` for shutdown cleanup.
+- The manager skips modules that do not implement these interfaces.
+
 ## General upgrade checklist
 
 1. Update imports for any moved adapters.
@@ -175,4 +227,7 @@ mgr := modulex.NewManager(eb, logger, configLoader,
 4. Replace `Registry.Tracer()` usage with a tracer injected via
    `modulex.WithTracer`.
 5. Review task functions to return meaningful errors instead of ignoring them.
-6. Run `make test-arch` to verify race and lifecycle behavior.
+6. Remove no-op `Start` and `Stop` methods from modules that do not need them;
+   add `Start` only for modules that implement `modulex.Startable` and `Stop`
+   only for modules that implement `modulex.Stoppable`.
+7. Run `make test-arch` to verify race and lifecycle behavior.
