@@ -1,0 +1,132 @@
+package rabbitmq_test
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"testing"
+	"time"
+
+	amqp "github.com/rabbitmq/amqp091-go"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/mediusfy/modulex"
+	rabbitadapter "github.com/mediusfy/modulex/rabbitmq"
+)
+
+// rabbitMQURL returns the broker URL to use for tests. It defaults to a local
+// RabbitMQ instance and can be overridden with the RABBITMQ_URL environment
+// variable.
+func rabbitMQURL() string {
+	if u := os.Getenv("RABBITMQ_URL"); u != "" {
+		return u
+	}
+	return "amqp://guest:guest@localhost:5672/"
+}
+
+// connectRabbitMQ attempts to connect to RabbitMQ. Tests that require a live
+// broker call this and skip when it returns an error.
+func connectRabbitMQ(t *testing.T) (*amqp.Connection, *amqp.Channel) {
+	t.Helper()
+
+	conn, err := amqp.Dial(rabbitMQURL())
+	if err != nil {
+		t.Skipf("RabbitMQ not available at %s: %v", rabbitMQURL(), err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	ch, err := conn.Channel()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ch.Close() })
+
+	return conn, ch
+}
+
+func TestEventBus_PublishSubscribe(t *testing.T) {
+	_, ch := connectRabbitMQ(t)
+
+	tests := []struct {
+		name       string
+		payloads   [][]byte
+		handlerErr error
+	}{
+		{
+			name:     "single message round-trip",
+			payloads: [][]byte{[]byte("hello rabbitmq")},
+		},
+		{
+			name:     "multiple messages round-trip",
+			payloads: [][]byte{[]byte("first"), []byte("second")},
+		},
+		{
+			name:       "handler error is tolerated",
+			payloads:   [][]byte{[]byte("payload")},
+			handlerErr: errors.New("handler failed"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			eb := rabbitadapter.NewEventBus(ch)
+			t.Cleanup(func() { _ = eb.Close(context.Background()) })
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			queue := fmt.Sprintf("test.queue.%d", time.Now().UnixNano())
+			_, err := ch.QueueDeclare(
+				queue, // name
+				false, // durable
+				true,  // autoDelete
+				false, // exclusive
+				false, // noWait
+				nil,   // args
+			)
+			require.NoError(t, err)
+
+			received := make(chan []byte, len(tt.payloads))
+			require.NoError(t, eb.Subscribe(ctx, queue, func(_ context.Context, data []byte) error {
+				received <- data
+				return tt.handlerErr
+			}))
+
+			for _, p := range tt.payloads {
+				require.NoError(t, eb.Publish(ctx, queue, p))
+			}
+
+			for _, want := range tt.payloads {
+				select {
+				case got := <-received:
+					assert.Equal(t, want, got)
+				case <-ctx.Done():
+					t.Fatal("timed out waiting for message")
+				}
+			}
+		})
+	}
+}
+
+func TestEventBus_Close(t *testing.T) {
+	_, ch := connectRabbitMQ(t)
+
+	eb := rabbitadapter.NewEventBus(ch)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	queue := fmt.Sprintf("test.queue.%d", time.Now().UnixNano())
+	_, err := ch.QueueDeclare(queue, false, true, false, false, nil)
+	require.NoError(t, err)
+
+	require.NoError(t, eb.Subscribe(ctx, queue, func(context.Context, []byte) error {
+		return nil
+	}))
+
+	require.NoError(t, eb.Close(ctx))
+}
+
+func TestEventBus_ImplementsInterface(t *testing.T) {
+	var _ modulex.EventBus = (*rabbitadapter.EventBus)(nil)
+}
