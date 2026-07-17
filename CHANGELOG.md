@@ -74,6 +74,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   registered under the same typed service key as the local implementation.
 - Optional `modulex.Startable` and `modulex.Stoppable` lifecycle capability
   interfaces so modules can opt into startup and shutdown hooks.
+- Smaller registry capability interfaces (`ServiceRegistry`, `ServiceRegistrar`,
+  `ServiceResolver`, `EventBusProvider`, `ConfigProvider`, `LoggerProvider`,
+  `TaskSpawner`) so modules can depend on only the operations they need.
 - Tests verifying that modules without `Startable`/`Stoppable` are skipped
   during startup, shutdown, and rollback.
 

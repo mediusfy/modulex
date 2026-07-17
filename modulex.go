@@ -271,28 +271,52 @@ type Stoppable interface {
 	Stop(ctx context.Context) error
 }
 
-// Registry manages the collection of features and cross-cutting platform components.
-// It acts as a service locator and event bus hub, preventing features from importing each other directly
-// or coupling to specific messaging architectures.
-type Registry interface {
+// ServiceRegistrar is the capability to register a service instance under a
+// unique name. Registrations are only permitted before the registry has finished
+// initialization.
+type ServiceRegistrar interface {
 	// RegisterService registers a service implementation under a unique key (e.g. "incidents.Service").
 	// Returns ErrRegistryLocked if the registry has already finished initialization.
 	RegisterService(name string, svc interface{}) error
+}
 
+// ServiceResolver is the capability to resolve a previously registered service
+// by name.
+type ServiceResolver interface {
 	// ResolveService resolves a registered service implementation by name.
 	// If the service is not found, it returns ErrServiceNotFound.
 	ResolveService(name string) (interface{}, error)
+}
 
+// ServiceRegistry combines service registration and resolution.
+type ServiceRegistry interface {
+	ServiceRegistrar
+	ServiceResolver
+}
+
+// EventBusProvider is the capability to access the pluggable event bus.
+type EventBusProvider interface {
 	// EventBus returns the pluggable, configured event bus abstraction.
 	EventBus() EventBus
+}
 
+// ConfigProvider is the capability to unmarshal configuration values into a
+// target structure.
+type ConfigProvider interface {
 	// GetConfig unmarshals configuration values into the target structure.
 	// This abstract config retrieval prevents features from directly reading global configurations.
 	GetConfig(target interface{}) error
+}
 
+// LoggerProvider is the capability to access the system logger.
+type LoggerProvider interface {
 	// Logger returns the system logger.
 	Logger() *slog.Logger
+}
 
+// TaskSpawner is the capability to start a supervised background task. Tasks
+// receive a lifecycle-owned context and are cancelled during shutdown.
+type TaskSpawner interface {
 	// Go spawns a supervised goroutine to execute background work. It creates a
 	// child span when a Tracer is configured, recovers from panics according to
 	// the manager's panic policy, and returns a handle that can be used to wait
@@ -300,6 +324,22 @@ type Registry interface {
 	// shutdown. Returns ErrRegistryLocked if the manager is stopping or stopped,
 	// or ErrDuplicateTask if a task with the same name already exists.
 	Go(ctx context.Context, taskName string, fn func(ctx context.Context) error) (*TaskHandle, error)
+}
+
+// Registry manages the collection of features and cross-cutting platform components.
+// It acts as a service locator and event bus hub, preventing features from importing each other directly
+// or coupling to specific messaging architectures.
+//
+// Registry is a composite of smaller capability interfaces. Modules that only
+// need a subset of these capabilities can depend on the narrower interfaces
+// (ServiceRegistry, EventBusProvider, ConfigProvider, LoggerProvider, or
+// TaskSpawner) instead of the full Registry.
+type Registry interface {
+	ServiceRegistry
+	EventBusProvider
+	ConfigProvider
+	LoggerProvider
+	TaskSpawner
 }
 
 // Manager implements the Registry interface and orchestrates the module lifecycles.

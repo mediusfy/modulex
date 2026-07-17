@@ -48,7 +48,10 @@ not claim compile-time architectural enforcement that it does not provide.
 - [x] Keep the core package focused on graph validation and lifecycle orchestration.
 - [x] Avoid mandatory Chi, NATS, Prometheus, and OpenTelemetry dependencies in the core package.
   - NATS, RabbitMQ, Watermill, Chi, and OpenTelemetry adapters are extracted into sub-packages.
-- [ ] Prefer small capability interfaces over one broad `Registry` interface.
+- [x] Prefer small capability interfaces over one broad `Registry` interface.
+  - `Registry` is now composed of `ServiceRegistry`, `EventBusProvider`,
+    `ConfigProvider`, `LoggerProvider`, and `TaskSpawner`. The smaller
+    interfaces are available for modules that do not need the full registry.
 - [x] Make `Start` and `Stop` optional lifecycle capabilities so simple modules do not require no-op methods.
 - [ ] Validate constructor dependencies and return `(*Manager, error)` where construction can fail.
 - [x] Avoid global state; inject logging, tracing, metrics, and integrations.
