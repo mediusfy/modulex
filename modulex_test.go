@@ -707,3 +707,295 @@ func TestConcurrentRegistration(t *testing.T) {
 	err := manager.InitModules(context.Background())
 	require.NoError(t, err)
 }
+
+// failModule is a test module that can be configured to fail at Init, Start, or Stop.
+type failModule struct {
+	name       string
+	deps       []string
+	initErr    error
+	startErr   error
+	stopErr    error
+	initCalls  *[]string
+	startCalls *[]string
+	stopCalls  *[]string
+}
+
+func (m *failModule) Name() string        { return m.name }
+func (m *failModule) DependsOn() []string { return m.deps }
+func (m *failModule) Init(ctx context.Context, reg modulex.Registry) error {
+	if m.initCalls != nil {
+		*m.initCalls = append(*m.initCalls, m.name)
+	}
+	return m.initErr
+}
+func (m *failModule) Start(ctx context.Context) error {
+	if m.startCalls != nil {
+		*m.startCalls = append(*m.startCalls, m.name)
+	}
+	return m.startErr
+}
+func (m *failModule) Stop(ctx context.Context) error {
+	if m.stopCalls != nil {
+		*m.stopCalls = append(*m.stopCalls, m.name)
+	}
+	return m.stopErr
+}
+
+func TestLifecycleStateTransitions(t *testing.T) {
+	router := gochi.NewRouter()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	t.Run("configuring -> initialized", func(t *testing.T) {
+		manager := modulex.NewManager(router, nil, logger, nil)
+		mod := NewDummyModule("module-a", nil, nil, nil, nil)
+		require.NoError(t, manager.RegisterModule(mod))
+
+		require.NoError(t, manager.InitModules(context.Background()))
+		assert.Equal(t, modulex.StateInitialized, manager.State())
+	})
+
+	t.Run("initialized -> running", func(t *testing.T) {
+		manager := modulex.NewManager(router, nil, logger, nil)
+		mod := NewDummyModule("module-a", nil, nil, nil, nil)
+		require.NoError(t, manager.RegisterModule(mod))
+		require.NoError(t, manager.InitModules(context.Background()))
+
+		require.NoError(t, manager.StartModules(context.Background()))
+		assert.Equal(t, modulex.StateRunning, manager.State())
+	})
+
+	t.Run("running -> stopped", func(t *testing.T) {
+		manager := modulex.NewManager(router, nil, logger, nil)
+		mod := NewDummyModule("module-a", nil, nil, nil, nil)
+		require.NoError(t, manager.RegisterModule(mod))
+		require.NoError(t, manager.InitModules(context.Background()))
+		require.NoError(t, manager.StartModules(context.Background()))
+
+		require.NoError(t, manager.StopModules(context.Background()))
+		assert.Equal(t, modulex.StateStopped, manager.State())
+	})
+
+	t.Run("stop is idempotent", func(t *testing.T) {
+		manager := modulex.NewManager(router, nil, logger, nil)
+		mod := NewDummyModule("module-a", nil, nil, nil, nil)
+		require.NoError(t, manager.RegisterModule(mod))
+		require.NoError(t, manager.InitModules(context.Background()))
+		require.NoError(t, manager.StartModules(context.Background()))
+
+		require.NoError(t, manager.StopModules(context.Background()))
+		require.NoError(t, manager.StopModules(context.Background()))
+		assert.Equal(t, modulex.StateStopped, manager.State())
+	})
+
+	t.Run("stop from configured state", func(t *testing.T) {
+		manager := modulex.NewManager(router, nil, logger, nil)
+		require.NoError(t, manager.StopModules(context.Background()))
+		assert.Equal(t, modulex.StateStopped, manager.State())
+	})
+
+	t.Run("stop from initialized state", func(t *testing.T) {
+		manager := modulex.NewManager(router, nil, logger, nil)
+		mod := NewDummyModule("module-a", nil, nil, nil, nil)
+		require.NoError(t, manager.RegisterModule(mod))
+		require.NoError(t, manager.InitModules(context.Background()))
+
+		require.NoError(t, manager.StopModules(context.Background()))
+		assert.Equal(t, modulex.StateStopped, manager.State())
+	})
+
+	t.Run("init cannot be called twice", func(t *testing.T) {
+		manager := modulex.NewManager(router, nil, logger, nil)
+		mod := NewDummyModule("module-a", nil, nil, nil, nil)
+		require.NoError(t, manager.RegisterModule(mod))
+		require.NoError(t, manager.InitModules(context.Background()))
+
+		err := manager.InitModules(context.Background())
+		assert.ErrorIs(t, err, modulex.ErrInvalidLifecycleState)
+	})
+
+	t.Run("start before init fails", func(t *testing.T) {
+		manager := modulex.NewManager(router, nil, logger, nil)
+		mod := NewDummyModule("module-a", nil, nil, nil, nil)
+		require.NoError(t, manager.RegisterModule(mod))
+
+		err := manager.StartModules(context.Background())
+		assert.ErrorIs(t, err, modulex.ErrInvalidLifecycleState)
+	})
+}
+
+func TestInitFailureRollback(t *testing.T) {
+	router := gochi.NewRouter()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	manager := modulex.NewManager(router, nil, logger, nil)
+
+	var initCalls, stopCalls []string
+	modA := &failModule{name: "module-a", initCalls: &initCalls, stopCalls: &stopCalls}
+	modB := &failModule{name: "module-b", deps: []string{"module-a"}, initCalls: &initCalls, stopCalls: &stopCalls, initErr: errors.New("module-b init failed")}
+	modC := &failModule{name: "module-c", deps: []string{"module-b"}, initCalls: &initCalls, stopCalls: &stopCalls}
+
+	require.NoError(t, manager.RegisterModule(modA))
+	require.NoError(t, manager.RegisterModule(modB))
+	require.NoError(t, manager.RegisterModule(modC))
+
+	err := manager.InitModules(context.Background())
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "module-b init failed")
+
+	// module-a initialized successfully and should be stopped during rollback.
+	assert.Equal(t, []string{"module-a", "module-b"}, initCalls)
+	assert.Equal(t, []string{"module-a"}, stopCalls)
+
+	// Manager should be in stopped state.
+	assert.Equal(t, modulex.StateStopped, manager.State())
+}
+
+func TestStartFailureReverseStop(t *testing.T) {
+	router := gochi.NewRouter()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	manager := modulex.NewManager(router, nil, logger, nil)
+
+	var startCalls, stopCalls []string
+	modA := &failModule{name: "module-a", startCalls: &startCalls, stopCalls: &stopCalls}
+	modB := &failModule{name: "module-b", deps: []string{"module-a"}, startCalls: &startCalls, stopCalls: &stopCalls, startErr: errors.New("module-b start failed")}
+	modC := &failModule{name: "module-c", deps: []string{"module-b"}, startCalls: &startCalls, stopCalls: &stopCalls}
+
+	require.NoError(t, manager.RegisterModule(modA))
+	require.NoError(t, manager.RegisterModule(modB))
+	require.NoError(t, manager.RegisterModule(modC))
+	require.NoError(t, manager.InitModules(context.Background()))
+
+	err := manager.StartModules(context.Background())
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "module-b start failed")
+
+	// module-a started successfully and should be stopped during rollback.
+	assert.Equal(t, []string{"module-a", "module-b"}, startCalls)
+	assert.Equal(t, []string{"module-a"}, stopCalls)
+
+	// Manager should be in stopped state.
+	assert.Equal(t, modulex.StateStopped, manager.State())
+}
+
+func TestStopModulesAggregatesErrors(t *testing.T) {
+	router := gochi.NewRouter()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	manager := modulex.NewManager(router, nil, logger, nil)
+
+	modA := &failModule{name: "module-a", stopErr: errors.New("module-a stop failed")}
+	modB := &failModule{name: "module-b", deps: []string{"module-a"}, stopErr: errors.New("module-b stop failed")}
+
+	require.NoError(t, manager.RegisterModule(modA))
+	require.NoError(t, manager.RegisterModule(modB))
+	require.NoError(t, manager.InitModules(context.Background()))
+	require.NoError(t, manager.StartModules(context.Background()))
+
+	err := manager.StopModules(context.Background())
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "module-a stop failed")
+	assert.ErrorContains(t, err, "module-b stop failed")
+	assert.Equal(t, modulex.StateStopped, manager.State())
+}
+
+func TestInitContextCancellation(t *testing.T) {
+	router := gochi.NewRouter()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	manager := modulex.NewManager(router, nil, logger, nil)
+
+	modA := NewDummyModule("module-a", nil, nil, nil, nil)
+	modB := NewDummyModule("module-b", []string{"module-a"}, nil, nil, nil)
+	require.NoError(t, manager.RegisterModule(modA))
+	require.NoError(t, manager.RegisterModule(modB))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := manager.InitModules(ctx)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, modulex.StateStopped, manager.State())
+}
+
+func TestStartContextCancellation(t *testing.T) {
+	router := gochi.NewRouter()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	manager := modulex.NewManager(router, nil, logger, nil)
+
+	modA := NewDummyModule("module-a", nil, nil, nil, nil)
+	modB := NewDummyModule("module-b", []string{"module-a"}, nil, nil, nil)
+	require.NoError(t, manager.RegisterModule(modA))
+	require.NoError(t, manager.RegisterModule(modB))
+	require.NoError(t, manager.InitModules(context.Background()))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := manager.StartModules(ctx)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, modulex.StateStopped, manager.State())
+}
+
+func TestRollbackStopErrorsAreJoined(t *testing.T) {
+	router := gochi.NewRouter()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	manager := modulex.NewManager(router, nil, logger, nil)
+
+	modA := &failModule{name: "module-a", stopErr: errors.New("rollback stop failed")}
+	modB := &failModule{name: "module-b", deps: []string{"module-a"}, initErr: errors.New("module-b init failed")}
+
+	require.NoError(t, manager.RegisterModule(modA))
+	require.NoError(t, manager.RegisterModule(modB))
+
+	err := manager.InitModules(context.Background())
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "module-b init failed")
+	assert.ErrorContains(t, err, "rollback stop failed")
+}
+
+func TestStopModulesContextCancellation(t *testing.T) {
+	router := gochi.NewRouter()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	manager := modulex.NewManager(router, nil, logger, nil)
+
+	modA := NewDummyModule("module-a", nil, nil, nil, nil)
+	require.NoError(t, manager.RegisterModule(modA))
+	require.NoError(t, manager.InitModules(context.Background()))
+	require.NoError(t, manager.StartModules(context.Background()))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := manager.StopModules(ctx)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, modulex.StateStopped, manager.State())
+}
+
+func TestStartModulesAfterInitFailure(t *testing.T) {
+	router := gochi.NewRouter()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	manager := modulex.NewManager(router, nil, logger, nil)
+
+	modA := &failModule{name: "module-a", initErr: errors.New("init failed")}
+	require.NoError(t, manager.RegisterModule(modA))
+
+	require.Error(t, manager.InitModules(context.Background()))
+
+	err := manager.StartModules(context.Background())
+	assert.ErrorIs(t, err, modulex.ErrInvalidLifecycleState)
+}
+
+func TestStopModulesAfterInitFailure(t *testing.T) {
+	router := gochi.NewRouter()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	manager := modulex.NewManager(router, nil, logger, nil)
+
+	modA := &failModule{name: "module-a", initErr: errors.New("init failed")}
+	require.NoError(t, manager.RegisterModule(modA))
+
+	require.Error(t, manager.InitModules(context.Background()))
+
+	// StopModules should be idempotent even after a failed init.
+	require.NoError(t, manager.StopModules(context.Background()))
+	assert.Equal(t, modulex.StateStopped, manager.State())
+}
