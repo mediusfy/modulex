@@ -402,6 +402,20 @@ go run ./examples/quickstart
 Modulex is a good fit when you need a small, predictable orchestrator that
 encourages clean boundaries without taking over your entire application.
 
+See [`docs/planning/comparison-with-alternatives.md`](./docs/planning/comparison-with-alternatives.md)
+for a detailed comparison with plain constructor injection, Wire, Fx, and Dig.
+
+---
+
+## Documentation
+
+- [Compatibility Policy](./COMPATIBILITY.md)
+- [Comparison with Alternatives](./docs/planning/comparison-with-alternatives.md)
+- [Migration Guide](./docs/planning/migration-guide.md)
+- [Support](./SUPPORT.md)
+- [Security](./SECURITY.md)
+- [Contributing](./CONTRIBUTING.md)
+
 ---
 
 ## License
