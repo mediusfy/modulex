@@ -1,6 +1,7 @@
 # Modulex
 
 [![CI](https://github.com/mediusfy/modulex/actions/workflows/ci.yml/badge.svg)](https://github.com/mediusfy/modulex/actions/workflows/ci.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/mediusfy/modulex/badge)](https://scorecard.dev/viewer/?uri=github.com/mediusfy/modulex)
 [![Go Reference](https://pkg.go.dev/badge/github.com/mediusfy/modulex.svg)](https://pkg.go.dev/github.com/mediusfy/modulex)
 [![Go Report Card](https://goreportcard.com/badge/github.com/mediusfy/modulex)](https://goreportcard.com/report/github.com/mediusfy/modulex)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
