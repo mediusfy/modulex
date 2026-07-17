@@ -1,0 +1,40 @@
+name: Bug Report
+description: Report a bug in Modulex
+labels: ["bug"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened and what did you expect?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: |
+        Provide a minimal code example or clear steps that demonstrate the bug.
+        If possible, link to a small repository or a Go playground snippet.
+    validations:
+      required: true
+
+  - type: input
+    id: modulex-version
+    attributes:
+      label: Modulex version
+      description: e.g. v0.0.0 or commit SHA
+
+  - type: input
+    id: go-version
+    attributes:
+      label: Go version
+      description: Output of `go version`
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or error output
+      description: Paste relevant logs or error messages.
+      render: text

@@ -5,10 +5,19 @@ on:
     tags:
       - 'v*'
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
 jobs:
   release:
     name: Create Release
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
@@ -22,6 +31,29 @@ jobs:
 
       - name: Get Dependencies
         run: go mod download
+
+      - name: Verify go.mod is tidy
+        run: go mod tidy -diff
+
+      - name: Verify Formatting
+        run: |
+          if [ -n "$(gofmt -s -l .)" ]; then
+            echo "Go code is not formatted. Run gofmt -s -w ."
+            gofmt -s -l .
+            exit 1
+          fi
+
+      - name: Run Vet
+        run: go vet ./...
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+
+      - name: Vulnerability Scan
+        run: make vuln
+        timeout-minutes: 10
 
       - name: Build
         run: go build -v ./...

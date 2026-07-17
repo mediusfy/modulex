@@ -1,4 +1,4 @@
-.PHONY: deps test test-arch fmt lint build help
+.PHONY: deps test test-arch fmt lint build vuln help
 
 help:
 	@echo "Available targets:"
@@ -6,8 +6,9 @@ help:
 	@echo "  test      - Run go test"
 	@echo "  test-arch - Run go test -race ./..."
 	@echo "  fmt       - Format Go code using gofmt"
-	@echo "  lint      - Run golangci-lint if installed"
+	@echo "  lint      - Verify linter config and run golangci-lint"
 	@echo "  build     - Compile packages and examples"
+	@echo "  vuln      - Run govulncheck vulnerability scan"
 
 deps:
 	go mod download
@@ -23,10 +24,13 @@ fmt:
 
 lint:
 	@if command -v golangci-lint >/dev/null 2>&1; then \
-		golangci-lint run ./...; \
+		golangci-lint config verify && golangci-lint run ./...; \
 	else \
 		echo "golangci-lint not installed. Skipping."; \
 	fi
 
 build:
 	go build ./...
+
+vuln:
+	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
