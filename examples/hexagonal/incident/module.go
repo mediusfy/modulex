@@ -42,7 +42,7 @@ func (m *Module) Init(ctx context.Context, reg modulex.Registry) error {
 	m.svc = service.New(repo)
 
 	// Register core service for dynamic injection / locator resolution by other features
-	if err := reg.RegisterService("incident.Service", m.svc); err != nil {
+	if err := modulex.Provide(reg, ports.ServiceKey, m.svc); err != nil {
 		return err
 	}
 

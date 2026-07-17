@@ -54,6 +54,9 @@ var (
 	// ErrInvalidServiceName is returned when a service is registered with an empty or whitespace-only key.
 	ErrInvalidServiceName = errors.New("service name must not be empty")
 
+	// ErrServiceTypeMismatch is returned when a resolved service cannot be type-asserted to the requested type.
+	ErrServiceTypeMismatch = errors.New("service type mismatch")
+
 	// ErrInvalidLifecycleState is returned when a lifecycle operation is requested while the manager is in an incompatible state.
 	ErrInvalidLifecycleState = errors.New("invalid lifecycle state")
 )
