@@ -1,0 +1,19 @@
+quiet: false
+all: false
+issue-845-fix: true
+packages:
+  github.com/mediusfy/modulex:
+    config:
+      dir: mocks
+      outpkg: mocks
+      filename: "{{.InterfaceName}}.go"
+    interfaces:
+      Module:
+        config:
+          structname: MockModule
+      EventBus:
+        config:
+          structname: MockEventBus
+      Registry:
+        config:
+          structname: MockRegistry

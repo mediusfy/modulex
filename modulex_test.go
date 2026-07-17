@@ -13,7 +13,9 @@ import (
 
 	gochi "github.com/go-chi/chi/v5"
 	"github.com/mediusfy/modulex"
+	"github.com/mediusfy/modulex/mocks"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -34,72 +36,52 @@ func (s *MockServiceImpl) DoSomething() string {
 	return "mocked"
 }
 
-type DummyModule struct {
-	name          string
-	deps          []string
-	initCalled    bool
-	startCalled   bool
-	stopCalled    bool
-	initSequence  *[]string
-	startSequence *[]string
-	stopSequence  *[]string
+// mockModuleConfig configures a mockery MockModule for use in tests.
+type mockModuleConfig struct {
+	name     string
+	deps     []string
+	initErr  error
+	startErr error
+	stopErr  error
+	onInit   func(reg modulex.Registry)
+	onStart  func()
+	onStop   func()
 }
 
-func NewDummyModule(name string, deps []string, initSeq, startSeq, stopSeq *[]string) *DummyModule {
-	return &DummyModule{
-		name:          name,
-		deps:          deps,
-		initSequence:  initSeq,
-		startSequence: startSeq,
-		stopSequence:  stopSeq,
-	}
+func newMockModule(t *testing.T, cfg mockModuleConfig) *mocks.MockModule {
+	mod := mocks.NewMockModule(t)
+	mod.On("Name").Return(cfg.name).Maybe()
+	mod.On("DependsOn").Return(cfg.deps).Maybe()
+	mod.On("Init", mock.Anything, mock.Anything).
+		Return(cfg.initErr).
+		Maybe().
+		Run(func(args mock.Arguments) {
+			if cfg.onInit != nil {
+				cfg.onInit(args.Get(1).(modulex.Registry))
+			}
+		})
+	mod.On("Start", mock.Anything).
+		Return(cfg.startErr).
+		Maybe().
+		Run(func(args mock.Arguments) {
+			if cfg.onStart != nil {
+				cfg.onStart()
+			}
+		})
+	mod.On("Stop", mock.Anything).
+		Return(cfg.stopErr).
+		Maybe().
+		Run(func(args mock.Arguments) {
+			if cfg.onStop != nil {
+				cfg.onStop()
+			}
+		})
+	return mod
 }
 
-func (m *DummyModule) Name() string {
-	return m.name
-}
-
-func (m *DummyModule) DependsOn() []string {
-	return m.deps
-}
-
-func (m *DummyModule) Init(ctx context.Context, reg modulex.Registry) error {
-	m.initCalled = true
-	if m.initSequence != nil {
-		*m.initSequence = append(*m.initSequence, m.name)
-	}
-
-	// Register a service for others to consume
-	if m.name == "module-a" {
-		_ = reg.RegisterService("module-a.Service", &MockServiceImpl{})
-	}
-
-	// Register HTTP route
-	reg.Router().Get("/"+m.name, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(m.name + " active"))
-	})
-
-	return nil
-}
-
-func (m *DummyModule) Start(ctx context.Context) error {
-	m.startCalled = true
-	if m.startSequence != nil {
-		*m.startSequence = append(*m.startSequence, m.name)
-	}
-	return nil
-}
-
-func (m *DummyModule) Stop(ctx context.Context) error {
-	m.stopCalled = true
-	if m.stopSequence != nil {
-		*m.stopSequence = append(*m.stopSequence, m.name)
-	}
-	return nil
-}
-
-// InMemoryEventBus acts as a mock/in-memory EventBus implementation.
+// InMemoryEventBus is a fake event bus used for integration-style pub/sub
+// assertions. It is kept only where the test genuinely needs messages to be
+// delivered between publishers and subscribers.
 type InMemoryEventBus struct {
 	mu          sync.Mutex
 	subscribers map[string][]modulex.EventHandler
@@ -138,6 +120,12 @@ func (eb *InMemoryEventBus) Close(ctx context.Context) error {
 	return nil
 }
 
+func newTestManager(eb modulex.EventBus) *modulex.Manager {
+	router := gochi.NewRouter()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	return modulex.NewManager(router, eb, logger, nil)
+}
+
 func TestManagerLifecycleAndWiring(t *testing.T) {
 	router := gochi.NewRouter()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -151,12 +139,38 @@ func TestManagerLifecycleAndWiring(t *testing.T) {
 		return nil
 	}
 
-	eb := NewInMemoryEventBus()
-	manager := modulex.NewManager(router, eb, logger, configLoader)
+	mockEB := mocks.NewMockEventBus(t)
+	mockEB.On("Close", mock.Anything).Return(nil).Maybe()
+
+	manager := modulex.NewManager(router, mockEB, logger, configLoader)
 
 	var initSeq, startSeq, stopSeq []string
-	modB := NewDummyModule("module-b", []string{"module-a"}, &initSeq, &startSeq, &stopSeq)
-	modA := NewDummyModule("module-a", nil, &initSeq, &startSeq, &stopSeq)
+	modA := newMockModule(t, mockModuleConfig{
+		name: "module-a",
+		onInit: func(reg modulex.Registry) {
+			initSeq = append(initSeq, "module-a")
+			_ = reg.RegisterService("module-a.Service", &MockServiceImpl{})
+			reg.Router().Get("/module-a", func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("module-a active"))
+			})
+		},
+		onStart: func() { startSeq = append(startSeq, "module-a") },
+		onStop:  func() { stopSeq = append(stopSeq, "module-a") },
+	})
+	modB := newMockModule(t, mockModuleConfig{
+		name: "module-b",
+		deps: []string{"module-a"},
+		onInit: func(reg modulex.Registry) {
+			initSeq = append(initSeq, "module-b")
+			reg.Router().Get("/module-b", func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("module-b active"))
+			})
+		},
+		onStart: func() { startSeq = append(startSeq, "module-b") },
+		onStop:  func() { stopSeq = append(stopSeq, "module-b") },
+	})
 
 	require.NoError(t, manager.RegisterModule(modB))
 	require.NoError(t, manager.RegisterModule(modA))
@@ -166,8 +180,6 @@ func TestManagerLifecycleAndWiring(t *testing.T) {
 	err := manager.InitModules(ctx)
 	require.NoError(t, err)
 
-	assert.True(t, modA.initCalled)
-	assert.True(t, modB.initCalled)
 	assert.Equal(t, []string{"module-a", "module-b"}, initSeq)
 
 	// Verify service registration and resolution
@@ -206,26 +218,19 @@ func TestManagerLifecycleAndWiring(t *testing.T) {
 	// 2. Start modules
 	err = manager.StartModules(ctx)
 	require.NoError(t, err)
-	assert.True(t, modA.startCalled)
-	assert.True(t, modB.startCalled)
 	assert.Equal(t, []string{"module-a", "module-b"}, startSeq)
 
 	// 3. Stop modules
 	err = manager.StopModules(ctx)
 	require.NoError(t, err)
-	assert.True(t, modA.stopCalled)
-	assert.True(t, modB.stopCalled)
 	assert.Equal(t, []string{"module-b", "module-a"}, stopSeq)
 }
 
 func TestCircularDependencyDetection(t *testing.T) {
-	router := gochi.NewRouter()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	manager := modulex.NewManager(router, nil, logger, nil)
+	manager := newTestManager(nil)
 
-	var initSeq, startSeq, stopSeq []string
-	modA := NewDummyModule("module-a", []string{"module-b"}, &initSeq, &startSeq, &stopSeq)
-	modB := NewDummyModule("module-b", []string{"module-a"}, &initSeq, &startSeq, &stopSeq)
+	modA := newMockModule(t, mockModuleConfig{name: "module-a", deps: []string{"module-b"}})
+	modB := newMockModule(t, mockModuleConfig{name: "module-b", deps: []string{"module-a"}})
 
 	require.NoError(t, manager.RegisterModule(modA))
 	require.NoError(t, manager.RegisterModule(modB))
@@ -239,12 +244,9 @@ func TestTracesNoGaps(t *testing.T) {
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
 	otel.SetTracerProvider(tp)
 
-	router := gochi.NewRouter()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	manager := modulex.NewManager(router, nil, logger, nil)
+	manager := newTestManager(nil)
 
-	var initSeq, startSeq, stopSeq []string
-	modA := NewDummyModule("module-a", nil, &initSeq, &startSeq, &stopSeq)
+	modA := newMockModule(t, mockModuleConfig{name: "module-a"})
 	require.NoError(t, manager.RegisterModule(modA))
 
 	ctx := context.Background()
@@ -276,9 +278,7 @@ func TestBackgroundGoTracingPropagation(t *testing.T) {
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
 	otel.SetTracerProvider(tp)
 
-	router := gochi.NewRouter()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	manager := modulex.NewManager(router, nil, logger, nil)
+	manager := newTestManager(nil)
 
 	ctx, parentSpan := otel.Tracer("test").Start(context.Background(), "RootTask")
 
@@ -317,11 +317,7 @@ func TestBackgroundGoTracingPropagation(t *testing.T) {
 }
 
 func TestEventBusIntegration(t *testing.T) {
-	router := gochi.NewRouter()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	eb := NewInMemoryEventBus()
-
-	manager := modulex.NewManager(router, eb, logger, nil)
+	manager := newTestManager(NewInMemoryEventBus())
 
 	var received []byte
 	err := manager.EventBus().Subscribe(context.Background(), "test.topic", func(ctx context.Context, payload []byte) error {
@@ -337,12 +333,10 @@ func TestEventBusIntegration(t *testing.T) {
 }
 
 func TestWatermillEventBusIntegration(t *testing.T) {
-	router := gochi.NewRouter()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	eb := modulex.NewWatermillEventBus(10, false, false)
 	defer func() { _ = eb.Close(context.Background()) }()
 
-	manager := modulex.NewManager(router, eb, logger, nil)
+	manager := newTestManager(eb)
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -363,124 +357,150 @@ func TestWatermillEventBusIntegration(t *testing.T) {
 }
 
 func TestRegisterModuleValidation(t *testing.T) {
-	router := gochi.NewRouter()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	tests := []struct {
+		name      string
+		act       func(t *testing.T, manager *modulex.Manager) error
+		wantErr   error
+		wantState modulex.LifecycleState
+	}{
+		{
+			name: "nil module",
+			act: func(t *testing.T, manager *modulex.Manager) error {
+				return manager.RegisterModule(nil)
+			},
+			wantErr:   modulex.ErrModuleNil,
+			wantState: modulex.StateConfiguring,
+		},
+		{
+			name: "empty module name",
+			act: func(t *testing.T, manager *modulex.Manager) error {
+				mod := newMockModule(t, mockModuleConfig{name: ""})
+				return manager.RegisterModule(mod)
+			},
+			wantErr:   modulex.ErrInvalidModuleName,
+			wantState: modulex.StateConfiguring,
+		},
+		{
+			name: "whitespace module name",
+			act: func(t *testing.T, manager *modulex.Manager) error {
+				mod := newMockModule(t, mockModuleConfig{name: "   "})
+				return manager.RegisterModule(mod)
+			},
+			wantErr:   modulex.ErrInvalidModuleName,
+			wantState: modulex.StateConfiguring,
+		},
+		{
+			name: "duplicate module name",
+			act: func(t *testing.T, manager *modulex.Manager) error {
+				mod := newMockModule(t, mockModuleConfig{name: "module-a"})
+				require.NoError(t, manager.RegisterModule(mod))
 
-	t.Run("nil module", func(t *testing.T) {
-		manager := modulex.NewManager(router, nil, logger, nil)
-		err := manager.RegisterModule(nil)
-		assert.ErrorIs(t, err, modulex.ErrModuleNil)
-	})
+				return manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "module-a"}))
+			},
+			wantErr:   modulex.ErrDuplicateModule,
+			wantState: modulex.StateConfiguring,
+		},
+		{
+			name: "module registration after init",
+			act: func(t *testing.T, manager *modulex.Manager) error {
+				mod := newMockModule(t, mockModuleConfig{name: "module-a"})
+				require.NoError(t, manager.RegisterModule(mod))
+				require.NoError(t, manager.InitModules(context.Background()))
 
-	t.Run("empty module name", func(t *testing.T) {
-		manager := modulex.NewManager(router, nil, logger, nil)
-		mod := NewDummyModule("", nil, nil, nil, nil)
-		err := manager.RegisterModule(mod)
-		assert.ErrorIs(t, err, modulex.ErrInvalidModuleName)
-	})
+				return manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "module-b"}))
+			},
+			wantErr:   modulex.ErrRegistryLocked,
+			wantState: modulex.StateInitialized,
+		},
+		{
+			name: "module registration during init",
+			act: func(t *testing.T, manager *modulex.Manager) error {
+				blocking := make(chan struct{})
+				resume := make(chan struct{})
 
-	t.Run("whitespace module name", func(t *testing.T) {
-		manager := modulex.NewManager(router, nil, logger, nil)
-		mod := NewDummyModule("   ", nil, nil, nil, nil)
-		err := manager.RegisterModule(mod)
-		assert.ErrorIs(t, err, modulex.ErrInvalidModuleName)
-	})
+				modA := newMockModule(t, mockModuleConfig{
+					name: "module-a",
+					onInit: func(reg modulex.Registry) {
+						close(blocking)
+						<-resume
+					},
+				})
+				require.NoError(t, manager.RegisterModule(modA))
 
-	t.Run("duplicate module name", func(t *testing.T) {
-		manager := modulex.NewManager(router, nil, logger, nil)
-		mod := NewDummyModule("module-a", nil, nil, nil, nil)
-		require.NoError(t, manager.RegisterModule(mod))
+				var wg sync.WaitGroup
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					_ = manager.InitModules(context.Background())
+				}()
 
-		err := manager.RegisterModule(NewDummyModule("module-a", nil, nil, nil, nil))
-		assert.ErrorIs(t, err, modulex.ErrDuplicateModule)
-	})
+				<-blocking // wait until InitModules is inside module A's Init
+				err := manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "module-b"}))
 
-	t.Run("module registration after init", func(t *testing.T) {
-		manager := modulex.NewManager(router, nil, logger, nil)
-		mod := NewDummyModule("module-a", nil, nil, nil, nil)
-		require.NoError(t, manager.RegisterModule(mod))
-		require.NoError(t, manager.InitModules(context.Background()))
+				close(resume)
+				wg.Wait()
 
-		err := manager.RegisterModule(NewDummyModule("module-b", nil, nil, nil, nil))
-		assert.ErrorIs(t, err, modulex.ErrRegistryLocked)
-	})
+				return err
+			},
+			wantErr:   modulex.ErrRegistryLocked,
+			wantState: modulex.StateInitialized,
+		},
+	}
 
-	t.Run("module registration during init", func(t *testing.T) {
-		manager := modulex.NewManager(router, nil, logger, nil)
-		blocking := make(chan struct{})
-		resume := make(chan struct{})
-
-		modA := &blockingModule{
-			name:   "module-a",
-			block:  blocking,
-			resume: resume,
-		}
-		require.NoError(t, manager.RegisterModule(modA))
-
-		var wg sync.WaitGroup
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_ = manager.InitModules(context.Background())
-		}()
-
-		<-blocking // wait until InitModules is inside module A's Init
-		err := manager.RegisterModule(NewDummyModule("module-b", nil, nil, nil, nil))
-		assert.ErrorIs(t, err, modulex.ErrRegistryLocked)
-
-		close(resume)
-		wg.Wait()
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manager := newTestManager(nil)
+			err := tt.act(t, manager)
+			assert.ErrorIs(t, err, tt.wantErr)
+			assert.Equal(t, tt.wantState, manager.State())
+		})
+	}
 }
-
-type blockingModule struct {
-	name   string
-	block  chan struct{}
-	resume chan struct{}
-}
-
-func (m *blockingModule) Name() string        { return m.name }
-func (m *blockingModule) DependsOn() []string { return nil }
-func (m *blockingModule) Init(ctx context.Context, reg modulex.Registry) error {
-	close(m.block)
-	<-m.resume
-	return nil
-}
-func (m *blockingModule) Start(ctx context.Context) error { return nil }
-func (m *blockingModule) Stop(ctx context.Context) error  { return nil }
 
 func TestRegisterServiceValidation(t *testing.T) {
-	router := gochi.NewRouter()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	tests := []struct {
+		name    string
+		act     func(t *testing.T, manager *modulex.Manager) error
+		wantErr error
+	}{
+		{
+			name: "empty service name",
+			act: func(t *testing.T, manager *modulex.Manager) error {
+				return manager.RegisterService("", &MockServiceImpl{})
+			},
+			wantErr: modulex.ErrInvalidServiceName,
+		},
+		{
+			name: "duplicate service key",
+			act: func(t *testing.T, manager *modulex.Manager) error {
+				require.NoError(t, manager.RegisterService("svc", &MockServiceImpl{}))
 
-	t.Run("empty service name", func(t *testing.T) {
-		manager := modulex.NewManager(router, nil, logger, nil)
-		err := manager.RegisterService("", &MockServiceImpl{})
-		assert.ErrorIs(t, err, modulex.ErrInvalidServiceName)
-	})
+				return manager.RegisterService("svc", &MockServiceImpl{})
+			},
+			wantErr: modulex.ErrDuplicateService,
+		},
+		{
+			name: "whitespace service name",
+			act: func(t *testing.T, manager *modulex.Manager) error {
+				return manager.RegisterService("   ", &MockServiceImpl{})
+			},
+			wantErr: modulex.ErrInvalidServiceName,
+		},
+	}
 
-	t.Run("duplicate service key", func(t *testing.T) {
-		manager := modulex.NewManager(router, nil, logger, nil)
-		require.NoError(t, manager.RegisterService("svc", &MockServiceImpl{}))
-
-		err := manager.RegisterService("svc", &MockServiceImpl{})
-		assert.ErrorIs(t, err, modulex.ErrDuplicateService)
-	})
-
-	t.Run("whitespace service name", func(t *testing.T) {
-		manager := modulex.NewManager(router, nil, logger, nil)
-		err := manager.RegisterService("   ", &MockServiceImpl{})
-		assert.ErrorIs(t, err, modulex.ErrInvalidServiceName)
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manager := newTestManager(nil)
+			err := tt.act(t, manager)
+			assert.ErrorIs(t, err, tt.wantErr)
+		})
+	}
 }
 
 func TestSelfDependencyDetection(t *testing.T) {
-	router := gochi.NewRouter()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	manager := modulex.NewManager(router, nil, logger, nil)
+	manager := newTestManager(nil)
 
-	var initSeq, startSeq, stopSeq []string
-	modA := NewDummyModule("module-a", []string{"module-a"}, &initSeq, &startSeq, &stopSeq)
+	modA := newMockModule(t, mockModuleConfig{name: "module-a", deps: []string{"module-a"}})
 	require.NoError(t, manager.RegisterModule(modA))
 
 	err := manager.InitModules(context.Background())
@@ -488,12 +508,9 @@ func TestSelfDependencyDetection(t *testing.T) {
 }
 
 func TestUnknownDependencyDetection(t *testing.T) {
-	router := gochi.NewRouter()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	manager := modulex.NewManager(router, nil, logger, nil)
+	manager := newTestManager(nil)
 
-	var initSeq, startSeq, stopSeq []string
-	modA := NewDummyModule("module-a", []string{"missing-module"}, &initSeq, &startSeq, &stopSeq)
+	modA := newMockModule(t, mockModuleConfig{name: "module-a", deps: []string{"missing-module"}})
 	require.NoError(t, manager.RegisterModule(modA))
 
 	err := manager.InitModules(context.Background())
@@ -502,14 +519,11 @@ func TestUnknownDependencyDetection(t *testing.T) {
 }
 
 func TestCircularDependencyReportsPath(t *testing.T) {
-	router := gochi.NewRouter()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	manager := modulex.NewManager(router, nil, logger, nil)
+	manager := newTestManager(nil)
 
-	var initSeq, startSeq, stopSeq []string
-	modA := NewDummyModule("module-a", []string{"module-b"}, &initSeq, &startSeq, &stopSeq)
-	modB := NewDummyModule("module-b", []string{"module-c"}, &initSeq, &startSeq, &stopSeq)
-	modC := NewDummyModule("module-c", []string{"module-a"}, &initSeq, &startSeq, &stopSeq)
+	modA := newMockModule(t, mockModuleConfig{name: "module-a", deps: []string{"module-b"}})
+	modB := newMockModule(t, mockModuleConfig{name: "module-b", deps: []string{"module-c"}})
+	modC := newMockModule(t, mockModuleConfig{name: "module-c", deps: []string{"module-a"}})
 
 	require.NoError(t, manager.RegisterModule(modA))
 	require.NoError(t, manager.RegisterModule(modB))
@@ -523,14 +537,27 @@ func TestCircularDependencyReportsPath(t *testing.T) {
 }
 
 func TestRegistrationOrderTieBreak(t *testing.T) {
-	router := gochi.NewRouter()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	manager := modulex.NewManager(router, nil, logger, nil)
+	manager := newTestManager(nil)
 
-	var initSeq, startSeq, stopSeq []string
-	modA := NewDummyModule("module-a", nil, &initSeq, &startSeq, &stopSeq)
-	modB := NewDummyModule("module-b", nil, &initSeq, &startSeq, &stopSeq)
-	modC := NewDummyModule("module-c", nil, &initSeq, &startSeq, &stopSeq)
+	var order []string
+	modA := newMockModule(t, mockModuleConfig{
+		name:    "module-a",
+		onInit:  func(reg modulex.Registry) { order = append(order, "module-a") },
+		onStart: func() { order = append(order, "module-a") },
+		onStop:  func() { order = append(order, "module-a") },
+	})
+	modB := newMockModule(t, mockModuleConfig{
+		name:    "module-b",
+		onInit:  func(reg modulex.Registry) { order = append(order, "module-b") },
+		onStart: func() { order = append(order, "module-b") },
+		onStop:  func() { order = append(order, "module-b") },
+	})
+	modC := newMockModule(t, mockModuleConfig{
+		name:    "module-c",
+		onInit:  func(reg modulex.Registry) { order = append(order, "module-c") },
+		onStart: func() { order = append(order, "module-c") },
+		onStop:  func() { order = append(order, "module-c") },
+	})
 
 	// Register in a specific order; independent modules should initialize in that order.
 	require.NoError(t, manager.RegisterModule(modC))
@@ -538,24 +565,33 @@ func TestRegistrationOrderTieBreak(t *testing.T) {
 	require.NoError(t, manager.RegisterModule(modB))
 
 	require.NoError(t, manager.InitModules(context.Background()))
-	assert.Equal(t, []string{"module-c", "module-a", "module-b"}, initSeq)
+	assert.Equal(t, []string{"module-c", "module-a", "module-b"}, order)
 }
 
 func TestDependencyOrderOverridesRegistrationOrder(t *testing.T) {
-	router := gochi.NewRouter()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	manager := modulex.NewManager(router, nil, logger, nil)
+	manager := newTestManager(nil)
 
-	var initSeq, startSeq, stopSeq []string
-	modA := NewDummyModule("module-a", nil, &initSeq, &startSeq, &stopSeq)
-	modB := NewDummyModule("module-b", []string{"module-a"}, &initSeq, &startSeq, &stopSeq)
+	var order []string
+	modA := newMockModule(t, mockModuleConfig{
+		name:    "module-a",
+		onInit:  func(reg modulex.Registry) { order = append(order, "module-a") },
+		onStart: func() { order = append(order, "module-a") },
+		onStop:  func() { order = append(order, "module-a") },
+	})
+	modB := newMockModule(t, mockModuleConfig{
+		name:    "module-b",
+		deps:    []string{"module-a"},
+		onInit:  func(reg modulex.Registry) { order = append(order, "module-b") },
+		onStart: func() { order = append(order, "module-b") },
+		onStop:  func() { order = append(order, "module-b") },
+	})
 
 	// Register dependent module first.
 	require.NoError(t, manager.RegisterModule(modB))
 	require.NoError(t, manager.RegisterModule(modA))
 
 	require.NoError(t, manager.InitModules(context.Background()))
-	assert.Equal(t, []string{"module-a", "module-b"}, initSeq)
+	assert.Equal(t, []string{"module-a", "module-b"}, order)
 }
 
 func TestGraphValidationTable(t *testing.T) {
@@ -662,13 +698,18 @@ func TestGraphValidationTable(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			router := gochi.NewRouter()
-			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-			manager := modulex.NewManager(router, nil, logger, nil)
+			manager := newTestManager(nil)
 
 			var order []string
 			for _, m := range tt.modules {
-				mod := NewDummyModule(m.name, m.deps, &order, &order, &order)
+				name := m.name
+				mod := newMockModule(t, mockModuleConfig{
+					name:    name,
+					deps:    m.deps,
+					onInit:  func(reg modulex.Registry) { order = append(order, name) },
+					onStart: func() { order = append(order, name) },
+					onStop:  func() { order = append(order, name) },
+				})
 				require.NoError(t, manager.RegisterModule(mod))
 			}
 
@@ -684,9 +725,7 @@ func TestGraphValidationTable(t *testing.T) {
 }
 
 func TestConcurrentRegistration(t *testing.T) {
-	router := gochi.NewRouter()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	manager := modulex.NewManager(router, nil, logger, nil)
+	manager := newTestManager(nil)
 
 	const n = 100
 	var wg sync.WaitGroup
@@ -696,7 +735,7 @@ func TestConcurrentRegistration(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			name := fmt.Sprintf("module-%d", i)
-			mod := NewDummyModule(name, nil, nil, nil, nil)
+			mod := newMockModule(t, mockModuleConfig{name: name})
 			require.NoError(t, manager.RegisterModule(mod))
 		}(i)
 	}
@@ -708,130 +747,140 @@ func TestConcurrentRegistration(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// failModule is a test module that can be configured to fail at Init, Start, or Stop.
-type failModule struct {
-	name       string
-	deps       []string
-	initErr    error
-	startErr   error
-	stopErr    error
-	initCalls  *[]string
-	startCalls *[]string
-	stopCalls  *[]string
-}
-
-func (m *failModule) Name() string        { return m.name }
-func (m *failModule) DependsOn() []string { return m.deps }
-func (m *failModule) Init(ctx context.Context, reg modulex.Registry) error {
-	if m.initCalls != nil {
-		*m.initCalls = append(*m.initCalls, m.name)
-	}
-	return m.initErr
-}
-func (m *failModule) Start(ctx context.Context) error {
-	if m.startCalls != nil {
-		*m.startCalls = append(*m.startCalls, m.name)
-	}
-	return m.startErr
-}
-func (m *failModule) Stop(ctx context.Context) error {
-	if m.stopCalls != nil {
-		*m.stopCalls = append(*m.stopCalls, m.name)
-	}
-	return m.stopErr
-}
-
 func TestLifecycleStateTransitions(t *testing.T) {
-	router := gochi.NewRouter()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	tests := []struct {
+		name      string
+		setup     func(t *testing.T, manager *modulex.Manager)
+		act       func(t *testing.T, manager *modulex.Manager) error
+		wantState modulex.LifecycleState
+		wantErr   error
+	}{
+		{
+			name: "configuring -> initialized",
+			setup: func(t *testing.T, manager *modulex.Manager) {
+				require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "module-a"})))
+			},
+			act: func(t *testing.T, manager *modulex.Manager) error {
+				return manager.InitModules(context.Background())
+			},
+			wantState: modulex.StateInitialized,
+		},
+		{
+			name: "initialized -> running",
+			setup: func(t *testing.T, manager *modulex.Manager) {
+				require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "module-a"})))
+				require.NoError(t, manager.InitModules(context.Background()))
+			},
+			act: func(t *testing.T, manager *modulex.Manager) error {
+				return manager.StartModules(context.Background())
+			},
+			wantState: modulex.StateRunning,
+		},
+		{
+			name: "running -> stopped",
+			setup: func(t *testing.T, manager *modulex.Manager) {
+				require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "module-a"})))
+				require.NoError(t, manager.InitModules(context.Background()))
+				require.NoError(t, manager.StartModules(context.Background()))
+			},
+			act: func(t *testing.T, manager *modulex.Manager) error {
+				return manager.StopModules(context.Background())
+			},
+			wantState: modulex.StateStopped,
+		},
+		{
+			name: "stop is idempotent",
+			setup: func(t *testing.T, manager *modulex.Manager) {
+				require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "module-a"})))
+				require.NoError(t, manager.InitModules(context.Background()))
+				require.NoError(t, manager.StartModules(context.Background()))
+				require.NoError(t, manager.StopModules(context.Background()))
+			},
+			act: func(t *testing.T, manager *modulex.Manager) error {
+				return manager.StopModules(context.Background())
+			},
+			wantState: modulex.StateStopped,
+		},
+		{
+			name:  "stop from configured state",
+			setup: func(t *testing.T, manager *modulex.Manager) {},
+			act: func(t *testing.T, manager *modulex.Manager) error {
+				return manager.StopModules(context.Background())
+			},
+			wantState: modulex.StateStopped,
+		},
+		{
+			name: "stop from initialized state",
+			setup: func(t *testing.T, manager *modulex.Manager) {
+				require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "module-a"})))
+				require.NoError(t, manager.InitModules(context.Background()))
+			},
+			act: func(t *testing.T, manager *modulex.Manager) error {
+				return manager.StopModules(context.Background())
+			},
+			wantState: modulex.StateStopped,
+		},
+		{
+			name: "init cannot be called twice",
+			setup: func(t *testing.T, manager *modulex.Manager) {
+				require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "module-a"})))
+				require.NoError(t, manager.InitModules(context.Background()))
+			},
+			act: func(t *testing.T, manager *modulex.Manager) error {
+				return manager.InitModules(context.Background())
+			},
+			wantState: modulex.StateInitialized,
+			wantErr:   modulex.ErrInvalidLifecycleState,
+		},
+		{
+			name: "start before init fails",
+			setup: func(t *testing.T, manager *modulex.Manager) {
+				require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "module-a"})))
+			},
+			act: func(t *testing.T, manager *modulex.Manager) error {
+				return manager.StartModules(context.Background())
+			},
+			wantState: modulex.StateConfiguring,
+			wantErr:   modulex.ErrInvalidLifecycleState,
+		},
+	}
 
-	t.Run("configuring -> initialized", func(t *testing.T) {
-		manager := modulex.NewManager(router, nil, logger, nil)
-		mod := NewDummyModule("module-a", nil, nil, nil, nil)
-		require.NoError(t, manager.RegisterModule(mod))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manager := newTestManager(nil)
+			tt.setup(t, manager)
 
-		require.NoError(t, manager.InitModules(context.Background()))
-		assert.Equal(t, modulex.StateInitialized, manager.State())
-	})
-
-	t.Run("initialized -> running", func(t *testing.T) {
-		manager := modulex.NewManager(router, nil, logger, nil)
-		mod := NewDummyModule("module-a", nil, nil, nil, nil)
-		require.NoError(t, manager.RegisterModule(mod))
-		require.NoError(t, manager.InitModules(context.Background()))
-
-		require.NoError(t, manager.StartModules(context.Background()))
-		assert.Equal(t, modulex.StateRunning, manager.State())
-	})
-
-	t.Run("running -> stopped", func(t *testing.T) {
-		manager := modulex.NewManager(router, nil, logger, nil)
-		mod := NewDummyModule("module-a", nil, nil, nil, nil)
-		require.NoError(t, manager.RegisterModule(mod))
-		require.NoError(t, manager.InitModules(context.Background()))
-		require.NoError(t, manager.StartModules(context.Background()))
-
-		require.NoError(t, manager.StopModules(context.Background()))
-		assert.Equal(t, modulex.StateStopped, manager.State())
-	})
-
-	t.Run("stop is idempotent", func(t *testing.T) {
-		manager := modulex.NewManager(router, nil, logger, nil)
-		mod := NewDummyModule("module-a", nil, nil, nil, nil)
-		require.NoError(t, manager.RegisterModule(mod))
-		require.NoError(t, manager.InitModules(context.Background()))
-		require.NoError(t, manager.StartModules(context.Background()))
-
-		require.NoError(t, manager.StopModules(context.Background()))
-		require.NoError(t, manager.StopModules(context.Background()))
-		assert.Equal(t, modulex.StateStopped, manager.State())
-	})
-
-	t.Run("stop from configured state", func(t *testing.T) {
-		manager := modulex.NewManager(router, nil, logger, nil)
-		require.NoError(t, manager.StopModules(context.Background()))
-		assert.Equal(t, modulex.StateStopped, manager.State())
-	})
-
-	t.Run("stop from initialized state", func(t *testing.T) {
-		manager := modulex.NewManager(router, nil, logger, nil)
-		mod := NewDummyModule("module-a", nil, nil, nil, nil)
-		require.NoError(t, manager.RegisterModule(mod))
-		require.NoError(t, manager.InitModules(context.Background()))
-
-		require.NoError(t, manager.StopModules(context.Background()))
-		assert.Equal(t, modulex.StateStopped, manager.State())
-	})
-
-	t.Run("init cannot be called twice", func(t *testing.T) {
-		manager := modulex.NewManager(router, nil, logger, nil)
-		mod := NewDummyModule("module-a", nil, nil, nil, nil)
-		require.NoError(t, manager.RegisterModule(mod))
-		require.NoError(t, manager.InitModules(context.Background()))
-
-		err := manager.InitModules(context.Background())
-		assert.ErrorIs(t, err, modulex.ErrInvalidLifecycleState)
-	})
-
-	t.Run("start before init fails", func(t *testing.T) {
-		manager := modulex.NewManager(router, nil, logger, nil)
-		mod := NewDummyModule("module-a", nil, nil, nil, nil)
-		require.NoError(t, manager.RegisterModule(mod))
-
-		err := manager.StartModules(context.Background())
-		assert.ErrorIs(t, err, modulex.ErrInvalidLifecycleState)
-	})
+			err := tt.act(t, manager)
+			if tt.wantErr != nil {
+				assert.ErrorIs(t, err, tt.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tt.wantState, manager.State())
+		})
+	}
 }
 
 func TestInitFailureRollback(t *testing.T) {
-	router := gochi.NewRouter()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	manager := modulex.NewManager(router, nil, logger, nil)
+	manager := newTestManager(nil)
 
 	var initCalls, stopCalls []string
-	modA := &failModule{name: "module-a", initCalls: &initCalls, stopCalls: &stopCalls}
-	modB := &failModule{name: "module-b", deps: []string{"module-a"}, initCalls: &initCalls, stopCalls: &stopCalls, initErr: errors.New("module-b init failed")}
-	modC := &failModule{name: "module-c", deps: []string{"module-b"}, initCalls: &initCalls, stopCalls: &stopCalls}
+	modA := newMockModule(t, mockModuleConfig{
+		name:   "module-a",
+		onInit: func(reg modulex.Registry) { initCalls = append(initCalls, "module-a") },
+		onStop: func() { stopCalls = append(stopCalls, "module-a") },
+	})
+	modB := newMockModule(t, mockModuleConfig{
+		name:    "module-b",
+		deps:    []string{"module-a"},
+		initErr: errors.New("module-b init failed"),
+		onInit:  func(reg modulex.Registry) { initCalls = append(initCalls, "module-b") },
+	})
+	modC := newMockModule(t, mockModuleConfig{
+		name:   "module-c",
+		deps:   []string{"module-b"},
+		onInit: func(reg modulex.Registry) { initCalls = append(initCalls, "module-c") },
+	})
 
 	require.NoError(t, manager.RegisterModule(modA))
 	require.NoError(t, manager.RegisterModule(modB))
@@ -850,14 +899,25 @@ func TestInitFailureRollback(t *testing.T) {
 }
 
 func TestStartFailureReverseStop(t *testing.T) {
-	router := gochi.NewRouter()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	manager := modulex.NewManager(router, nil, logger, nil)
+	manager := newTestManager(nil)
 
 	var startCalls, stopCalls []string
-	modA := &failModule{name: "module-a", startCalls: &startCalls, stopCalls: &stopCalls}
-	modB := &failModule{name: "module-b", deps: []string{"module-a"}, startCalls: &startCalls, stopCalls: &stopCalls, startErr: errors.New("module-b start failed")}
-	modC := &failModule{name: "module-c", deps: []string{"module-b"}, startCalls: &startCalls, stopCalls: &stopCalls}
+	modA := newMockModule(t, mockModuleConfig{
+		name:    "module-a",
+		onStart: func() { startCalls = append(startCalls, "module-a") },
+		onStop:  func() { stopCalls = append(stopCalls, "module-a") },
+	})
+	modB := newMockModule(t, mockModuleConfig{
+		name:     "module-b",
+		deps:     []string{"module-a"},
+		startErr: errors.New("module-b start failed"),
+		onStart:  func() { startCalls = append(startCalls, "module-b") },
+	})
+	modC := newMockModule(t, mockModuleConfig{
+		name:    "module-c",
+		deps:    []string{"module-b"},
+		onStart: func() { startCalls = append(startCalls, "module-c") },
+	})
 
 	require.NoError(t, manager.RegisterModule(modA))
 	require.NoError(t, manager.RegisterModule(modB))
@@ -877,12 +937,17 @@ func TestStartFailureReverseStop(t *testing.T) {
 }
 
 func TestStopModulesAggregatesErrors(t *testing.T) {
-	router := gochi.NewRouter()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	manager := modulex.NewManager(router, nil, logger, nil)
+	manager := newTestManager(nil)
 
-	modA := &failModule{name: "module-a", stopErr: errors.New("module-a stop failed")}
-	modB := &failModule{name: "module-b", deps: []string{"module-a"}, stopErr: errors.New("module-b stop failed")}
+	modA := newMockModule(t, mockModuleConfig{
+		name:    "module-a",
+		stopErr: errors.New("module-a stop failed"),
+	})
+	modB := newMockModule(t, mockModuleConfig{
+		name:    "module-b",
+		deps:    []string{"module-a"},
+		stopErr: errors.New("module-b stop failed"),
+	})
 
 	require.NoError(t, manager.RegisterModule(modA))
 	require.NoError(t, manager.RegisterModule(modB))
@@ -897,12 +962,10 @@ func TestStopModulesAggregatesErrors(t *testing.T) {
 }
 
 func TestInitContextCancellation(t *testing.T) {
-	router := gochi.NewRouter()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	manager := modulex.NewManager(router, nil, logger, nil)
+	manager := newTestManager(nil)
 
-	modA := NewDummyModule("module-a", nil, nil, nil, nil)
-	modB := NewDummyModule("module-b", []string{"module-a"}, nil, nil, nil)
+	modA := newMockModule(t, mockModuleConfig{name: "module-a"})
+	modB := newMockModule(t, mockModuleConfig{name: "module-b", deps: []string{"module-a"}})
 	require.NoError(t, manager.RegisterModule(modA))
 	require.NoError(t, manager.RegisterModule(modB))
 
@@ -916,12 +979,10 @@ func TestInitContextCancellation(t *testing.T) {
 }
 
 func TestStartContextCancellation(t *testing.T) {
-	router := gochi.NewRouter()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	manager := modulex.NewManager(router, nil, logger, nil)
+	manager := newTestManager(nil)
 
-	modA := NewDummyModule("module-a", nil, nil, nil, nil)
-	modB := NewDummyModule("module-b", []string{"module-a"}, nil, nil, nil)
+	modA := newMockModule(t, mockModuleConfig{name: "module-a"})
+	modB := newMockModule(t, mockModuleConfig{name: "module-b", deps: []string{"module-a"}})
 	require.NoError(t, manager.RegisterModule(modA))
 	require.NoError(t, manager.RegisterModule(modB))
 	require.NoError(t, manager.InitModules(context.Background()))
@@ -936,12 +997,17 @@ func TestStartContextCancellation(t *testing.T) {
 }
 
 func TestRollbackStopErrorsAreJoined(t *testing.T) {
-	router := gochi.NewRouter()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	manager := modulex.NewManager(router, nil, logger, nil)
+	manager := newTestManager(nil)
 
-	modA := &failModule{name: "module-a", stopErr: errors.New("rollback stop failed")}
-	modB := &failModule{name: "module-b", deps: []string{"module-a"}, initErr: errors.New("module-b init failed")}
+	modA := newMockModule(t, mockModuleConfig{
+		name:    "module-a",
+		stopErr: errors.New("rollback stop failed"),
+	})
+	modB := newMockModule(t, mockModuleConfig{
+		name:    "module-b",
+		deps:    []string{"module-a"},
+		initErr: errors.New("module-b init failed"),
+	})
 
 	require.NoError(t, manager.RegisterModule(modA))
 	require.NoError(t, manager.RegisterModule(modB))
@@ -953,11 +1019,9 @@ func TestRollbackStopErrorsAreJoined(t *testing.T) {
 }
 
 func TestStopModulesContextCancellation(t *testing.T) {
-	router := gochi.NewRouter()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	manager := modulex.NewManager(router, nil, logger, nil)
+	manager := newTestManager(nil)
 
-	modA := NewDummyModule("module-a", nil, nil, nil, nil)
+	modA := newMockModule(t, mockModuleConfig{name: "module-a"})
 	require.NoError(t, manager.RegisterModule(modA))
 	require.NoError(t, manager.InitModules(context.Background()))
 	require.NoError(t, manager.StartModules(context.Background()))
@@ -972,11 +1036,12 @@ func TestStopModulesContextCancellation(t *testing.T) {
 }
 
 func TestStartModulesAfterInitFailure(t *testing.T) {
-	router := gochi.NewRouter()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	manager := modulex.NewManager(router, nil, logger, nil)
+	manager := newTestManager(nil)
 
-	modA := &failModule{name: "module-a", initErr: errors.New("init failed")}
+	modA := newMockModule(t, mockModuleConfig{
+		name:    "module-a",
+		initErr: errors.New("init failed"),
+	})
 	require.NoError(t, manager.RegisterModule(modA))
 
 	require.Error(t, manager.InitModules(context.Background()))
@@ -986,11 +1051,12 @@ func TestStartModulesAfterInitFailure(t *testing.T) {
 }
 
 func TestStopModulesAfterInitFailure(t *testing.T) {
-	router := gochi.NewRouter()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	manager := modulex.NewManager(router, nil, logger, nil)
+	manager := newTestManager(nil)
 
-	modA := &failModule{name: "module-a", initErr: errors.New("init failed")}
+	modA := newMockModule(t, mockModuleConfig{
+		name:    "module-a",
+		initErr: errors.New("init failed"),
+	})
 	require.NoError(t, manager.RegisterModule(modA))
 
 	require.Error(t, manager.InitModules(context.Background()))
