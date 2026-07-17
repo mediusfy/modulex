@@ -59,6 +59,10 @@ var (
 
 	// ErrInvalidLifecycleState is returned when a lifecycle operation is requested while the manager is in an incompatible state.
 	ErrInvalidLifecycleState = errors.New("invalid lifecycle state")
+
+	// ErrNoConfigLoader is returned by GetConfig when no config loader was
+	// configured at construction time or via WithConfigLoader.
+	ErrNoConfigLoader = errors.New("no config loader configured")
 )
 
 // LifecycleState represents the current phase of the Manager's lifecycle.
@@ -130,6 +134,9 @@ func (h *TaskHandle) finish(err error) {
 	h.mu.Lock()
 	h.err = err
 	h.mu.Unlock()
+	// close is done outside the lock so Wait() callers blocked on <-h.done can
+	// observe the final error after acquiring the lock. Changing this ordering
+	// would introduce a race.
 	close(h.done)
 }
 
@@ -140,6 +147,15 @@ type ManagerOption func(*Manager)
 func WithPanicPolicy(policy PanicPolicy) ManagerOption {
 	return func(m *Manager) {
 		m.panicPolicy = policy
+	}
+}
+
+// WithConfigLoader configures the config loader after construction. This is
+// useful when using the options pattern and keeps the positional configLoader
+// argument nil-safe.
+func WithConfigLoader(loader func(target interface{}) error) ManagerOption {
+	return func(m *Manager) {
+		m.configLoader = loader
 	}
 }
 
@@ -264,6 +280,9 @@ func NewManager(router gochi.Router, eb EventBus, logger *slog.Logger, configLoa
 	for _, opt := range opts {
 		opt(m)
 	}
+	if m.configLoader == nil {
+		m.loggerCtx.Warn("no config loader configured; GetConfig will return an error until WithConfigLoader is used")
+	}
 	return m
 }
 
@@ -355,7 +374,7 @@ func (m *Manager) EventBus() EventBus {
 // GetConfig implements Registry.
 func (m *Manager) GetConfig(target interface{}) error {
 	if m.configLoader == nil {
-		return fmt.Errorf("no config loader configured")
+		return ErrNoConfigLoader
 	}
 	return m.configLoader(target)
 }
@@ -489,6 +508,7 @@ func (m *Manager) InitModules(ctx context.Context) error {
 	m.mu.Lock()
 	ordered, err := m.sortModules()
 	if err != nil {
+		m.orderedMods = nil
 		m.mu.Unlock()
 		if waitErr := m.waitForTasks(ctx); waitErr != nil {
 			err = errors.Join(err, waitErr)
@@ -533,6 +553,9 @@ func (m *Manager) InitModules(ctx context.Context) error {
 		if rollbackErr := m.rollbackInit(ctx, ordered[:initializedCount]); rollbackErr != nil {
 			initErr = errors.Join(initErr, rollbackErr)
 		}
+		m.mu.Lock()
+		m.orderedMods = nil
+		m.mu.Unlock()
 		m.setState(StateStopped)
 		return initErr
 	}
@@ -631,6 +654,10 @@ func (m *Manager) rollbackStart(ctx context.Context, started []Module) error {
 // waitForTasks cancels the task context and waits for all supervised tasks to
 // finish, respecting the caller's deadline. Errors from individual tasks are
 // joined together.
+//
+// After all tasks are awaited, the shared task context is recreated so the
+// manager is not left with a permanently cancelled context after a failure or
+// shutdown path. New tasks are still rejected by the lifecycle state machine.
 func (m *Manager) waitForTasks(ctx context.Context) error {
 	m.taskCancel()
 
@@ -642,6 +669,7 @@ func (m *Manager) waitForTasks(ctx context.Context) error {
 	m.taskMu.Unlock()
 
 	if len(tasks) == 0 {
+		m.resetTaskCtx()
 		return nil
 	}
 
@@ -651,6 +679,7 @@ func (m *Manager) waitForTasks(ctx context.Context) error {
 		select {
 		case <-t.done:
 		case <-ctx.Done():
+			m.resetTaskCtx()
 			return fmt.Errorf("timed out waiting for tasks to finish: %w", ctx.Err())
 		}
 	}
@@ -666,7 +695,15 @@ func (m *Manager) waitForTasks(ctx context.Context) error {
 	m.tasks = make(map[string]*TaskHandle)
 	m.taskMu.Unlock()
 
+	m.resetTaskCtx()
 	return errors.Join(errs...)
+}
+
+// resetTaskCtx recreates the shared task context after a shutdown or failure.
+func (m *Manager) resetTaskCtx() {
+	m.taskMu.Lock()
+	defer m.taskMu.Unlock()
+	m.taskCtx, m.taskCancel = context.WithCancel(context.Background())
 }
 
 // StopModules cancels supervised tasks, stops registered modules in reverse
@@ -783,25 +820,28 @@ func (m *Manager) sortModules() ([]Module, error) {
 		state[name] = visiting
 		path = append(path, name)
 
-		defer func() {
-			path = path[:len(path)-1]
-			state[name] = visited
-		}()
-
 		for _, depName := range mod.DependsOn() {
 			depName = strings.TrimSpace(depName)
 			if depName == "" {
+				path = path[:len(path)-1]
+				state[name] = visited
 				return fmt.Errorf("%w: module %q has an empty dependency name", ErrInvalidDependencyName, name)
 			}
 			if depName == name {
+				path = path[:len(path)-1]
+				state[name] = visited
 				return fmt.Errorf("%w: %q", ErrSelfDependency, name)
 			}
 			if err := visit(depName); err != nil {
+				path = path[:len(path)-1]
+				state[name] = visited
 				return err
 			}
 		}
 
 		order = append(order, mod)
+		path = path[:len(path)-1]
+		state[name] = visited
 		return nil
 	}
 

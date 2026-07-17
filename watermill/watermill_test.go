@@ -53,23 +53,11 @@ func TestEventBus_PublishSubscribe(t *testing.T) {
 				once     sync.Once
 			)
 
-			// Watermill's GoChannel redelivers Nack'd messages, so the handler-error
-			// case may produce duplicates. Wait until every unique payload has been
-			// received at least once instead of relying on exact counts.
+			// Handler errors are acknowledged (not Nack'd) to prevent infinite
+			// redelivery from the in-memory GoChannel, so every payload is delivered
+			// exactly once.
 			allReceived := func() bool {
-				if len(received) < len(tt.payloads) {
-					return false
-				}
-				seen := make(map[string]struct{}, len(received))
-				for _, p := range received {
-					seen[string(p)] = struct{}{}
-				}
-				for _, want := range tt.payloads {
-					if _, ok := seen[string(want)]; !ok {
-						return false
-					}
-				}
-				return true
+				return len(received) == len(tt.payloads)
 			}
 
 			handler := func(_ context.Context, payload []byte) error {
@@ -97,12 +85,13 @@ func TestEventBus_PublishSubscribe(t *testing.T) {
 			mu.Lock()
 			defer mu.Unlock()
 
-			unique := make(map[string]struct{}, len(received))
+			require.Len(t, received, len(tt.payloads))
+			seen := make(map[string]struct{}, len(received))
 			for _, p := range received {
-				unique[string(p)] = struct{}{}
+				seen[string(p)] = struct{}{}
 			}
 			for _, want := range tt.payloads {
-				require.Contains(t, unique, string(want))
+				require.Contains(t, seen, string(want))
 			}
 		})
 	}
