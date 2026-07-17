@@ -4,23 +4,41 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/mediusfy/modulex)](https://goreportcard.com/report/github.com/mediusfy/modulex)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**Modulex** is an industry-standard Go library designed to orchestrate and enforce architectural boundaries in Go applications. 
+**Modulex** is a Go library that orchestrates the lifecycle of modular applications and encourages clean architectural boundaries. It helps teams build feature modules that can run together in a single process today and be extracted into standalone services tomorrow without changing core business logic.
 
 ---
 
 ## What this Repository is Designed to Do
 
-Modulex is built to solve a critical architectural challenge: **how to build a modular monorepo application that can be run as a single monolithic process today, yet easily compile and deploy individual features as independent, standalone binaries in the future—without modifying core business logic.**
+Modulex is built to solve a critical orchestration challenge: **how to initialize, start, and stop a set of interdependent feature modules in a deterministic order, while keeping their wiring configurable at the composition root.**
 
 Specifically, it is designed to:
-1. **Decouple Features at Compile-Time:** Prevent direct imports of concrete service implementations or database/network adapters between different feature modules. All feature-to-feature communication is handled via resolved interface boundaries (ports).
-2. **Enforce Hexagonal Architecture Boundaries:** Provide a structured initialization registry where features register their public inbound ports and dynamically request outbound ports.
-3. **Automate Topological DAG Lifecycles:** Analyze feature dependencies at startup to construct a Directed Acyclic Graph (DAG), detect circular loops, and execute lifecycle stages (`Init`, `Start`, `Stop`) in strict topological order (and reverse order for teardown).
-4. **Abstract Messaging Infrastructure (Dependency Inversion):** Introduce a generic `EventBus` interface that decouples modules from specific messaging frameworks (e.g. NATS, RabbitMQ, Kafka).
-5. **Provide Built-In OpenTelemetry (OTel) Tracing:** Automatically trace module initialization and startup cycles. Provide trace-safe concurrency mechanisms to ensure traces continue seamlessly in background goroutines.
-6. **Enable Flexible Deployment Topologies:**
+1. **Encourage Feature Decoupling:** Make it easy to depend on interface contracts (ports) rather than concrete implementations, so features can be wired locally or remotely at the composition root.
+2. **Automate Topological DAG Lifecycles:** Analyze feature dependencies at startup, detect circular loops, and execute lifecycle stages (`Init`, `Start`, `Stop`) in strict topological order (and reverse order for teardown).
+3. **Abstract Messaging Infrastructure:** Provide a generic `EventBus` interface that decouples modules from specific messaging frameworks (e.g. NATS, RabbitMQ, Kafka).
+4. **Provide OpenTelemetry-Ready Tracing:** Automatically trace module initialization and startup cycles, and provide trace-safe concurrency helpers for background work.
+5. **Enable Flexible Deployment Topologies:**
    * **Monolithic Run:** Register all feature modules locally. The service registry wires interfaces directly to in-process service implementations.
-   * **Distributed Run (Microservices):** Register only the target module in its own standalone binary. For other modules it depends on, the composition root registers network client adapters (HTTP/gRPC/NATS) instead, pointing to the external service.
+   * **Distributed Run (Microservices):** Register only the target module in its own standalone binary. For modules it depends on, the composition root registers network client adapters (HTTP/gRPC/NATS) instead, pointing to the external service.
+
+---
+
+## What Modulex Is (and Is Not)
+
+Modulex is a **runtime lifecycle orchestrator and service locator**, not a compile-time dependency enforcer. It cannot prevent one Go package from importing another; that guarantee belongs to the Go compiler and, optionally, to a separate `go/analysis` static-analysis tool.
+
+What it does provide:
+
+- A deterministic startup and shutdown order.
+- A typed, runtime service registry.
+- A consistent pattern for registering local or remote implementations of the same interface.
+- Trace-safe background task execution.
+
+What it does **not** provide:
+
+- Compile-time prevention of cross-feature imports.
+- Automatic code generation for wiring.
+- A microservices runtime, service mesh, or deployment platform.
 
 ---
 
@@ -44,7 +62,11 @@ type EventBus interface {
 
 ### 2. Built-In Adapters (Drivers)
 
-Modulex includes production-ready adapters for popular brokers. To use them:
+Modulex includes reference adapters for popular brokers. They are usable as-is,
+but you should validate them against your own reliability and observability
+requirements before production use. The Watermill driver shown below uses the
+in-memory `GoChannel` implementation, which is ideal for local development and
+tests.
 
 #### NATS Driver
 ```go
@@ -197,7 +219,7 @@ We need a standardized framework and layout rules to enforce linear execution pa
 
 ### Confirming the Design
 
-We confirm the selection of **Option 2** (the Service Locator and Module Registry Pattern). Modulex enforces clean hexagonal segregation and supports runtime topology mapping:
+We confirm the selection of **Option 2** (the Service Locator and Module Registry Pattern). Modulex encourages clean hexagonal segregation and supports runtime topology mapping:
 
 ```mermaid
 graph TD
@@ -225,7 +247,7 @@ graph TD
   * **Strict Clean Deletion:** If a feature is deprecated, deleting its package directory does not break the compilation of other modules, since no other module imported its code.
   * **No Resource Leakage:** Reverse-order shutdowns ensure downstream DB connectors/event lines are terminated only after upstream services have stopped consuming them.
 * **Negative:**
-  * **Type Assertions:** Developers must cast resolved interfaces (`val.(ports.Service)`). Missing registrations are caught during startup sequence checks.
+  * **Type Assertions:** Developers must cast resolved interfaces (`val.(ports.Service)`). Missing service registrations surface when a module calls `ResolveService`/`Resolve` during `Init`.
 
 ---
 
@@ -272,7 +294,7 @@ func (m *Module) Name() string      { return "database" }
 func (m *Module) DependsOn() []string { return nil } // No dependencies
 
 func (m *Module) Init(ctx context.Context, reg modulex.Registry) error {
-	m.dbConn = ConnectDB()
+	m.dbConn = ConnectDB() // your database constructor
 	// Register service for other modules to resolve
 	return reg.RegisterService("database.Connection", m.dbConn)
 }
@@ -352,6 +374,32 @@ func (m *OtherModule) Init(ctx context.Context, reg modulex.Registry) error {
 `Provide` and `Resolve` wrap the underlying string-keyed registry and return
 `ErrServiceTypeMismatch` when the registered value does not match the key's
 compile-time type.
+
+---
+
+## Quickstart
+
+See [`examples/quickstart`](./examples/quickstart/main.go) for a minimal,
+runnable application that registers two modules, resolves a typed service, and
+runs the full lifecycle.
+
+```bash
+go run ./examples/quickstart
+```
+
+---
+
+## How Modulex Compares to Alternatives
+
+| Approach | What it does best | Where Modulex differs |
+|---|---|---|
+| **Plain constructor injection** | Simple, type-safe, no dependencies | Modulex adds deterministic lifecycle ordering and runtime topology switching for large monorepos. |
+| **Wire** | Compile-time dependency graphs | Modulex wires at runtime, so topology can change without re-running code generation. |
+| **Fx (Uber)** | Rich dependency injection and lifecycle hooks | Modulex is smaller and exposes an explicit state machine; it does not use reflection for DI. |
+| **Dig** | Runtime container with parameter objects | Modulex favors explicit `Init`/`Start`/`Stop` methods and typed service keys over a generic container. |
+
+Modulex is a good fit when you need a small, predictable orchestrator that
+encourages clean boundaries without taking over your entire application.
 
 ---
 

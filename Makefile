@@ -1,12 +1,16 @@
-.PHONY: test test-arch fmt lint build help
+.PHONY: deps test test-arch fmt lint build help
 
 help:
 	@echo "Available targets:"
+	@echo "  deps      - Download Go module dependencies"
 	@echo "  test      - Run go test"
 	@echo "  test-arch - Run go test -race ./..."
 	@echo "  fmt       - Format Go code using gofmt"
 	@echo "  lint      - Run golangci-lint if installed"
 	@echo "  build     - Compile packages and examples"
+
+deps:
+	go mod download
 
 test:
 	go test -v ./...
