@@ -18,7 +18,7 @@ if err != nil {
 defer conn.Close()
 
 eb := natsadapter.NewEventBus(conn)
-manager := modulex.NewManager(router, eb, logger, nil)
+manager := modulex.NewManager(eb, logger, nil)
 ```
 
 ## Behavior

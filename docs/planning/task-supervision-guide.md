@@ -50,8 +50,10 @@ the task, inspect its final error, or read its name.
 
 The context passed to the task function is cancelled when the manager begins
 shutdown. Tasks should listen to `ctx.Done()` and return promptly. The manager
-waits for all tasks to finish before stopping modules. OpenTelemetry trace
-context from the caller is propagated into the task goroutine.
+waits for all tasks to finish before stopping modules. The manager uses
+`golang.org/x/sync/errgroup` to await tasks concurrently while respecting the
+caller's deadline. OpenTelemetry trace context from the caller is propagated
+into the task goroutine.
 
 If a task does not respect cancellation, `StopModules` still proceeds after a
 timeout and reports the timeout error.
@@ -79,7 +81,7 @@ records them as task errors, and continues shutdown. You can configure the
 behavior with a panic policy when constructing the manager:
 
 ```go
-manager := modulex.NewManager(router, eb, logger, nil,
+manager := modulex.NewManager(eb, logger, nil,
     modulex.WithPanicPolicy(modulex.PanicPolicyPropagate),
 )
 ```

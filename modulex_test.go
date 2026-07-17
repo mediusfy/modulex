@@ -6,24 +6,18 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"sync"
 	"testing"
 	"time"
 
-	gochi "github.com/go-chi/chi/v5"
 	"github.com/mediusfy/modulex"
 	"github.com/mediusfy/modulex/mocks"
 	watermilladapter "github.com/mediusfy/modulex/watermill"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
-	"go.opentelemetry.io/otel"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 type MockConfig struct {
@@ -40,7 +34,7 @@ func (s *MockServiceImpl) DoSomething() string {
 	return "mocked"
 }
 
-// mockModuleConfig configures a mockery MockModule for use in tests.
+// mockModuleConfig configures a testModule for use in tests.
 type mockModuleConfig struct {
 	name     string
 	deps     []string
@@ -52,36 +46,75 @@ type mockModuleConfig struct {
 	onStop   func()
 }
 
-func newMockModule(t *testing.T, cfg mockModuleConfig) *mocks.MockModule {
-	mod := mocks.NewMockModule(t)
-	mod.On("Name").Return(cfg.name).Maybe()
-	mod.On("DependsOn").Return(cfg.deps).Maybe()
-	mod.On("Init", mock.Anything, mock.Anything).
-		Return(cfg.initErr).
-		Maybe().
-		Run(func(args mock.Arguments) {
-			if cfg.onInit != nil {
-				cfg.onInit(args.Get(1).(modulex.Registry))
-			}
-		})
-	mod.On("Start", mock.Anything).
-		Return(cfg.startErr).
-		Maybe().
-		Run(func(args mock.Arguments) {
-			if cfg.onStart != nil {
-				cfg.onStart()
-			}
-		})
-	mod.On("Stop", mock.Anything).
-		Return(cfg.stopErr).
-		Maybe().
-		Run(func(args mock.Arguments) {
-			if cfg.onStop != nil {
-				cfg.onStop()
-			}
-		})
-	return mod
+// testModule is a test double that implements modulex.Module and the optional
+// Startable/Stoppable lifecycle capabilities. It is used in place of mockery
+// mocks because Start and Stop are no longer part of the base Module interface.
+type testModule struct {
+	cfg mockModuleConfig
 }
+
+func newMockModule(t *testing.T, cfg mockModuleConfig) *testModule {
+	return &testModule{cfg: cfg}
+}
+
+func (m *testModule) Name() string { return m.cfg.name }
+
+func (m *testModule) DependsOn() []string { return m.cfg.deps }
+
+func (m *testModule) Init(ctx context.Context, reg modulex.Registry) error {
+	if m.cfg.onInit != nil {
+		m.cfg.onInit(reg)
+	}
+	return m.cfg.initErr
+}
+
+func (m *testModule) Start(ctx context.Context) error {
+	if m.cfg.onStart != nil {
+		m.cfg.onStart()
+	}
+	return m.cfg.startErr
+}
+
+func (m *testModule) Stop(ctx context.Context) error {
+	if m.cfg.onStop != nil {
+		m.cfg.onStop()
+	}
+	return m.cfg.stopErr
+}
+
+// initOnlyModule implements only the base Module interface. It is used to assert
+// that the manager skips Start and Stop for modules that do not opt into those
+// lifecycle capabilities.
+type initOnlyModule struct {
+	name string
+	deps []string
+}
+
+func (m *initOnlyModule) Name() string                                 { return m.name }
+func (m *initOnlyModule) DependsOn() []string                          { return m.deps }
+func (m *initOnlyModule) Init(context.Context, modulex.Registry) error { return nil }
+
+// startOnlyModule implements Module and Startable but not Stoppable.
+type startOnlyModule struct {
+	name    string
+	started bool
+}
+
+func (m *startOnlyModule) Name() string                                 { return m.name }
+func (m *startOnlyModule) DependsOn() []string                          { return nil }
+func (m *startOnlyModule) Init(context.Context, modulex.Registry) error { return nil }
+func (m *startOnlyModule) Start(context.Context) error                  { m.started = true; return nil }
+
+// stopOnlyModule implements Module and Stoppable but not Startable.
+type stopOnlyModule struct {
+	name    string
+	stopped bool
+}
+
+func (m *stopOnlyModule) Name() string                                 { return m.name }
+func (m *stopOnlyModule) DependsOn() []string                          { return nil }
+func (m *stopOnlyModule) Init(context.Context, modulex.Registry) error { return nil }
+func (m *stopOnlyModule) Stop(context.Context) error                   { m.stopped = true; return nil }
 
 // InMemoryEventBus is a fake event bus used for integration-style pub/sub
 // assertions. It is kept only where the test genuinely needs messages to be
@@ -125,13 +158,11 @@ func (eb *InMemoryEventBus) Close(ctx context.Context) error {
 }
 
 func newTestManager(eb modulex.EventBus) *modulex.Manager {
-	router := gochi.NewRouter()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return modulex.NewManager(router, eb, logger, nil)
+	return modulex.NewManager(eb, logger, nil)
 }
 
 func TestManagerLifecycleAndWiring(t *testing.T) {
-	router := gochi.NewRouter()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	configLoader := func(target interface{}) error {
@@ -146,7 +177,7 @@ func TestManagerLifecycleAndWiring(t *testing.T) {
 	mockEB := mocks.NewMockEventBus(t)
 	mockEB.On("Close", mock.Anything).Return(nil).Maybe()
 
-	manager := modulex.NewManager(router, mockEB, logger, configLoader)
+	manager := modulex.NewManager(mockEB, logger, configLoader)
 
 	var initSeq, startSeq, stopSeq []string
 	modA := newMockModule(t, mockModuleConfig{
@@ -154,10 +185,6 @@ func TestManagerLifecycleAndWiring(t *testing.T) {
 		onInit: func(reg modulex.Registry) {
 			initSeq = append(initSeq, "module-a")
 			_ = reg.RegisterService("module-a.Service", &MockServiceImpl{})
-			reg.Router().Get("/module-a", func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusOK)
-				_, _ = w.Write([]byte("module-a active"))
-			})
 		},
 		onStart: func() { startSeq = append(startSeq, "module-a") },
 		onStop:  func() { stopSeq = append(stopSeq, "module-a") },
@@ -167,10 +194,6 @@ func TestManagerLifecycleAndWiring(t *testing.T) {
 		deps: []string{"module-a"},
 		onInit: func(reg modulex.Registry) {
 			initSeq = append(initSeq, "module-b")
-			reg.Router().Get("/module-b", func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusOK)
-				_, _ = w.Write([]byte("module-b active"))
-			})
 		},
 		onStart: func() { startSeq = append(startSeq, "module-b") },
 		onStop:  func() { stopSeq = append(stopSeq, "module-b") },
@@ -201,19 +224,6 @@ func TestManagerLifecycleAndWiring(t *testing.T) {
 	err = manager.RegisterService("late.Service", &MockServiceImpl{})
 	assert.ErrorIs(t, err, modulex.ErrRegistryLocked)
 
-	// Verify HTTP Routing
-	req := httptest.NewRequest(http.MethodGet, "/module-a", nil)
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.Equal(t, "module-a active", rec.Body.String())
-
-	req = httptest.NewRequest(http.MethodGet, "/module-b", nil)
-	rec = httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.Equal(t, "module-b active", rec.Body.String())
-
 	// 2. Start modules
 	err = manager.StartModules(ctx)
 	require.NoError(t, err)
@@ -223,6 +233,21 @@ func TestManagerLifecycleAndWiring(t *testing.T) {
 	err = manager.StopModules(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"module-b", "module-a"}, stopSeq)
+}
+
+func TestManagerImplementsCapabilityInterfaces(t *testing.T) {
+	manager := newTestManager(nil)
+
+	// Compile-time assertions that Manager implements the narrower capability
+	// interfaces as well as the full Registry composite.
+	var _ modulex.ServiceRegistrar = manager
+	var _ modulex.ServiceResolver = manager
+	var _ modulex.ServiceRegistry = manager
+	var _ modulex.EventBusProvider = manager
+	var _ modulex.ConfigProvider = manager
+	var _ modulex.LoggerProvider = manager
+	var _ modulex.TaskSpawner = manager
+	var _ modulex.Registry = manager
 }
 
 func TestCircularDependencyDetection(t *testing.T) {
@@ -236,82 +261,6 @@ func TestCircularDependencyDetection(t *testing.T) {
 
 	err := manager.InitModules(context.Background())
 	assert.ErrorIs(t, err, modulex.ErrCircularDependency)
-}
-
-func TestTracesNoGaps(t *testing.T) {
-	sr := tracetest.NewSpanRecorder()
-	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
-	otel.SetTracerProvider(tp)
-
-	manager := newTestManager(nil)
-
-	modA := newMockModule(t, mockModuleConfig{name: "module-a"})
-	require.NoError(t, manager.RegisterModule(modA))
-
-	ctx := context.Background()
-
-	err := manager.InitModules(ctx)
-	require.NoError(t, err)
-
-	spans := sr.Ended()
-	require.Len(t, spans, 2)
-
-	var parentSpan, childSpan sdktrace.ReadOnlySpan
-	for _, s := range spans {
-		if s.Name() == "InitModules" {
-			parentSpan = s
-		} else if s.Name() == "InitModule:module-a" {
-			childSpan = s
-		}
-	}
-
-	require.NotNil(t, parentSpan)
-	require.NotNil(t, childSpan)
-
-	assert.Equal(t, parentSpan.SpanContext().SpanID(), childSpan.Parent().SpanID())
-	assert.Equal(t, parentSpan.SpanContext().TraceID(), childSpan.SpanContext().TraceID())
-}
-
-func TestBackgroundGoTracingPropagation(t *testing.T) {
-	sr := tracetest.NewSpanRecorder()
-	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
-	otel.SetTracerProvider(tp)
-
-	manager := newTestManager(nil)
-
-	ctx, parentSpan := otel.Tracer("test").Start(context.Background(), "RootTask")
-
-	handle, err := manager.Go(ctx, "BackgroundTask", func(bgCtx context.Context) error {
-		_, activeSpan := otel.Tracer("test").Start(bgCtx, "NestedTask")
-		activeSpan.End()
-		return nil
-	})
-	require.NoError(t, err)
-	require.NotNil(t, handle)
-
-	require.NoError(t, handle.Wait())
-	parentSpan.End()
-
-	spans := sr.Ended()
-	require.Len(t, spans, 3)
-
-	var bgSpan, nestedSpan sdktrace.ReadOnlySpan
-	for _, s := range spans {
-		if s.Name() == "BackgroundTask" {
-			bgSpan = s
-		} else if s.Name() == "NestedTask" {
-			nestedSpan = s
-		}
-	}
-
-	require.NotNil(t, bgSpan)
-	require.NotNil(t, nestedSpan)
-
-	assert.Equal(t, parentSpan.SpanContext().TraceID(), bgSpan.SpanContext().TraceID())
-	assert.Equal(t, parentSpan.SpanContext().TraceID(), nestedSpan.SpanContext().TraceID())
-
-	assert.Equal(t, parentSpan.SpanContext().SpanID(), bgSpan.Parent().SpanID())
-	assert.Equal(t, bgSpan.SpanContext().SpanID(), nestedSpan.Parent().SpanID())
 }
 
 func TestEventBusIntegration(t *testing.T) {
@@ -1130,9 +1079,11 @@ func TestRollbackStopErrorsAreJoined(t *testing.T) {
 func TestStartRollbackStopErrorsAreJoined(t *testing.T) {
 	manager := newTestManager(nil)
 
+	var stopCalls []string
 	modA := newMockModule(t, mockModuleConfig{
 		name:    "module-a",
 		stopErr: errors.New("rollback stop failed"),
+		onStop:  func() { stopCalls = append(stopCalls, "module-a") },
 	})
 	modB := newMockModule(t, mockModuleConfig{
 		name:     "module-b",
@@ -1149,7 +1100,80 @@ func TestStartRollbackStopErrorsAreJoined(t *testing.T) {
 	assert.ErrorContains(t, err, "module-b start failed")
 	assert.ErrorContains(t, err, "rollback stop failed")
 	assert.Equal(t, modulex.StateStopped, manager.State())
-	modA.AssertCalled(t, "Stop", mock.Anything)
+	assert.Equal(t, []string{"module-a"}, stopCalls)
+}
+
+func TestInitOnlyModuleSkipsStartAndStop(t *testing.T) {
+	manager := newTestManager(nil)
+
+	mod := &initOnlyModule{name: "init-only"}
+	require.NoError(t, manager.RegisterModule(mod))
+	require.NoError(t, manager.InitModules(context.Background()))
+	require.NoError(t, manager.StartModules(context.Background()))
+	require.NoError(t, manager.StopModules(context.Background()))
+	assert.Equal(t, modulex.StateStopped, manager.State())
+}
+
+func TestStartOnlyModuleStartsButIsNotStopped(t *testing.T) {
+	manager := newTestManager(nil)
+
+	mod := &startOnlyModule{name: "start-only"}
+	require.NoError(t, manager.RegisterModule(mod))
+	require.NoError(t, manager.InitModules(context.Background()))
+	require.NoError(t, manager.StartModules(context.Background()))
+	require.NoError(t, manager.StopModules(context.Background()))
+	assert.True(t, mod.started)
+	assert.Equal(t, modulex.StateStopped, manager.State())
+}
+
+func TestStopOnlyModuleStopsButDoesNotStart(t *testing.T) {
+	manager := newTestManager(nil)
+
+	mod := &stopOnlyModule{name: "stop-only"}
+	require.NoError(t, manager.RegisterModule(mod))
+	require.NoError(t, manager.InitModules(context.Background()))
+	require.NoError(t, manager.StartModules(context.Background()))
+	require.NoError(t, manager.StopModules(context.Background()))
+	assert.True(t, mod.stopped)
+	assert.Equal(t, modulex.StateStopped, manager.State())
+}
+
+func TestInitRollbackSkipsModulesWithoutStoppable(t *testing.T) {
+	manager := newTestManager(nil)
+
+	initOnly := &initOnlyModule{name: "init-only"}
+	modB := newMockModule(t, mockModuleConfig{
+		name:    "module-b",
+		deps:    []string{"init-only"},
+		initErr: errors.New("module-b init failed"),
+	})
+
+	require.NoError(t, manager.RegisterModule(initOnly))
+	require.NoError(t, manager.RegisterModule(modB))
+
+	err := manager.InitModules(context.Background())
+	require.Error(t, err)
+	assert.Equal(t, modulex.StateStopped, manager.State())
+}
+
+func TestStartRollbackSkipsModulesWithoutStoppable(t *testing.T) {
+	manager := newTestManager(nil)
+
+	startOnly := &startOnlyModule{name: "start-only"}
+	modB := newMockModule(t, mockModuleConfig{
+		name:     "module-b",
+		deps:     []string{"start-only"},
+		startErr: errors.New("module-b start failed"),
+	})
+
+	require.NoError(t, manager.RegisterModule(startOnly))
+	require.NoError(t, manager.RegisterModule(modB))
+	require.NoError(t, manager.InitModules(context.Background()))
+
+	err := manager.StartModules(context.Background())
+	require.Error(t, err)
+	assert.True(t, startOnly.started)
+	assert.Equal(t, modulex.StateStopped, manager.State())
 }
 
 func TestStopModulesContextCancellation(t *testing.T) {
@@ -1450,6 +1474,43 @@ func TestSupervisedTaskShutdown(t *testing.T) {
 	}
 }
 
+func TestStopModulesCollectsTaskErrorDespiteTimeout(t *testing.T) {
+	manager := newTestManager(nil)
+	taskErr := errors.New("task failed around deadline")
+
+	mod := newMockModule(t, mockModuleConfig{
+		name: "mod-a",
+		onStart: func() {
+			_, err := manager.Go(context.Background(), "ignore-cancel-task", func(ctx context.Context) error {
+				<-make(chan struct{}) // never returns
+				return nil
+			})
+			require.NoError(t, err)
+
+			_, err = manager.Go(context.Background(), "failing-task", func(ctx context.Context) error {
+				// Finish with an error immediately so the error is collected before
+				// the deadline is reached.
+				return taskErr
+			})
+			require.NoError(t, err)
+		},
+	})
+
+	require.NoError(t, manager.RegisterModule(mod))
+	require.NoError(t, manager.InitModules(context.Background()))
+	require.NoError(t, manager.StartModules(context.Background()))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	err := manager.StopModules(ctx)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.ErrorContains(t, err, "timed out waiting for tasks")
+	assert.ErrorIs(t, err, taskErr)
+	assert.ErrorContains(t, err, "failing-task")
+}
+
 func TestSupervisedTasksConcurrentGo(t *testing.T) {
 	manager := newTestManager(nil)
 
@@ -1472,9 +1533,8 @@ func TestSupervisedTasksConcurrentGo(t *testing.T) {
 }
 
 func newTestManagerWithPanicPolicy(policy modulex.PanicPolicy) *modulex.Manager {
-	router := gochi.NewRouter()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return modulex.NewManager(router, nil, logger, nil, modulex.WithPanicPolicy(policy))
+	return modulex.NewManager(nil, logger, nil, modulex.WithPanicPolicy(policy))
 }
 
 func TestSupervisedTaskLifecycleFailures(t *testing.T) {

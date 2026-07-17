@@ -10,7 +10,9 @@ import (
 	"time"
 
 	gochi "github.com/go-chi/chi/v5"
+
 	"github.com/mediusfy/modulex"
+	modulexchi "github.com/mediusfy/modulex/chi"
 	"github.com/mediusfy/modulex/examples/hexagonal/incident"
 	watermilladapter "github.com/mediusfy/modulex/watermill"
 )
@@ -28,7 +30,13 @@ func main() {
 	watermillBus := watermilladapter.NewEventBus(100, false, false)
 
 	// Create manager
-	mgr := modulex.NewManager(router, watermillBus, logger, configLoader)
+	mgr := modulex.NewManager(watermillBus, logger, configLoader)
+
+	// Register the Chi router as a typed service so modules can resolve it
+	if err := modulexchi.RegisterRouter(mgr, router); err != nil {
+		logger.Error("failed to register router", slog.Any("error", err))
+		os.Exit(1)
+	}
 
 	// Register our business module
 	if err := mgr.RegisterModule(incident.NewModule()); err != nil {
