@@ -48,6 +48,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Failure-injection test asserting start rollback joins stop errors.
 - Isolated table-driven tests for the NATS `EventBus` adapter using an
   embedded NATS server.
+- Table-driven tests for the RabbitMQ `EventBus` adapter that skip gracefully
+  when no broker is available.
 - OpenSSF Scorecard workflow for supply-chain health checks.
 - README links to compatibility, comparison, migration, support, security, and
   contributing documentation.
