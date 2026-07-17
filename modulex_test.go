@@ -8,8 +8,11 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"sync"
 	"testing"
+	"time"
 
 	gochi "github.com/go-chi/chi/v5"
 	"github.com/mediusfy/modulex"
@@ -282,16 +285,15 @@ func TestBackgroundGoTracingPropagation(t *testing.T) {
 
 	ctx, parentSpan := otel.Tracer("test").Start(context.Background(), "RootTask")
 
-	var wg sync.WaitGroup
-	wg.Add(1)
-
-	manager.Go(ctx, "BackgroundTask", func(bgCtx context.Context) {
-		defer wg.Done()
+	handle, err := manager.Go(ctx, "BackgroundTask", func(bgCtx context.Context) error {
 		_, activeSpan := otel.Tracer("test").Start(bgCtx, "NestedTask")
 		activeSpan.End()
+		return nil
 	})
+	require.NoError(t, err)
+	require.NotNil(t, handle)
 
-	wg.Wait()
+	require.NoError(t, handle.Wait())
 	parentSpan.End()
 
 	spans := sr.Ended()
@@ -1064,4 +1066,376 @@ func TestStopModulesAfterInitFailure(t *testing.T) {
 	// StopModules should be idempotent even after a failed init.
 	require.NoError(t, manager.StopModules(context.Background()))
 	assert.Equal(t, modulex.StateStopped, manager.State())
+}
+
+func TestSupervisedTaskGo(t *testing.T) {
+	sentinelErr := errors.New("task failed")
+
+	tests := []struct {
+		name   string
+		policy modulex.PanicPolicy
+		act    func(t *testing.T, manager *modulex.Manager) (*modulex.TaskHandle, error)
+		assert func(t *testing.T, handle *modulex.TaskHandle, err error)
+	}{
+		{
+			name: "successful task returns nil and exposes its name",
+			act: func(t *testing.T, manager *modulex.Manager) (*modulex.TaskHandle, error) {
+				return manager.Go(context.Background(), "ok-task", func(ctx context.Context) error {
+					return nil
+				})
+			},
+			assert: func(t *testing.T, handle *modulex.TaskHandle, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, handle)
+				assert.Equal(t, "ok-task", handle.Name())
+				assert.NoError(t, handle.Wait())
+			},
+		},
+		{
+			name: "task error is returned by Wait",
+			act: func(t *testing.T, manager *modulex.Manager) (*modulex.TaskHandle, error) {
+				return manager.Go(context.Background(), "err-task", func(ctx context.Context) error {
+					return sentinelErr
+				})
+			},
+			assert: func(t *testing.T, handle *modulex.TaskHandle, err error) {
+				require.NoError(t, err)
+				assert.ErrorIs(t, handle.Wait(), sentinelErr)
+			},
+		},
+		{
+			name: "duplicate task name is rejected",
+			act: func(t *testing.T, manager *modulex.Manager) (*modulex.TaskHandle, error) {
+				_, err := manager.Go(context.Background(), "dup-task", func(ctx context.Context) error {
+					<-ctx.Done()
+					return nil
+				})
+				require.NoError(t, err)
+				return manager.Go(context.Background(), "dup-task", func(ctx context.Context) error {
+					return nil
+				})
+			},
+			assert: func(t *testing.T, handle *modulex.TaskHandle, err error) {
+				assert.ErrorIs(t, err, modulex.ErrDuplicateTask)
+			},
+		},
+		{
+			name: "task rejected after manager is stopped",
+			act: func(t *testing.T, manager *modulex.Manager) (*modulex.TaskHandle, error) {
+				require.NoError(t, manager.StopModules(context.Background()))
+				return manager.Go(context.Background(), "late-task", func(ctx context.Context) error {
+					return nil
+				})
+			},
+			assert: func(t *testing.T, handle *modulex.TaskHandle, err error) {
+				assert.ErrorIs(t, err, modulex.ErrRegistryLocked)
+			},
+		},
+		{
+			name: "panic is recovered and reported by default",
+			act: func(t *testing.T, manager *modulex.Manager) (*modulex.TaskHandle, error) {
+				return manager.Go(context.Background(), "panic-task", func(ctx context.Context) error {
+					panic("simulated panic")
+				})
+			},
+			assert: func(t *testing.T, handle *modulex.TaskHandle, err error) {
+				require.NoError(t, err)
+				waitErr := handle.Wait()
+				require.Error(t, waitErr)
+				assert.ErrorContains(t, waitErr, "simulated panic")
+			},
+		},
+		{
+			name: "empty task name is rejected",
+			act: func(t *testing.T, manager *modulex.Manager) (*modulex.TaskHandle, error) {
+				return manager.Go(context.Background(), "   ", func(ctx context.Context) error { return nil })
+			},
+			assert: func(t *testing.T, handle *modulex.TaskHandle, err error) {
+				assert.ErrorIs(t, err, modulex.ErrInvalidTaskName)
+			},
+		},
+		{
+			name: "nil task function is rejected",
+			act: func(t *testing.T, manager *modulex.Manager) (*modulex.TaskHandle, error) {
+				return manager.Go(context.Background(), "nil-fn", nil)
+			},
+			assert: func(t *testing.T, handle *modulex.TaskHandle, err error) {
+				require.Error(t, err)
+				assert.ErrorContains(t, err, "task function must not be nil")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manager := newTestManagerWithPanicPolicy(tt.policy)
+			defer func() { _ = manager.StopModules(context.Background()) }()
+			handle, err := tt.act(t, manager)
+			tt.assert(t, handle, err)
+		})
+	}
+}
+
+func TestSupervisedTaskShutdown(t *testing.T) {
+	sentinelErr := errors.New("background task failed")
+
+	tests := []struct {
+		name   string
+		act    func(t *testing.T, manager *modulex.Manager) error
+		assert func(t *testing.T, manager *modulex.Manager, err error)
+	}{
+		{
+			name: "tasks are cancelled and awaited before modules stop",
+			act: func(t *testing.T, manager *modulex.Manager) error {
+				var handle *modulex.TaskHandle
+				var taskStarted, taskFinished sync.WaitGroup
+				taskStarted.Add(1)
+				taskFinished.Add(1)
+
+				mod := newMockModule(t, mockModuleConfig{
+					name: "mod-a",
+					onStart: func() {
+						h, err := manager.Go(context.Background(), "blocking-task", func(ctx context.Context) error {
+							taskStarted.Done()
+							<-ctx.Done()
+							taskFinished.Done()
+							return nil
+						})
+						require.NoError(t, err)
+						handle = h
+					},
+					onStop: func() {
+						require.NotNil(t, handle)
+						assert.NoError(t, handle.Wait())
+					},
+				})
+				require.NoError(t, manager.RegisterModule(mod))
+				require.NoError(t, manager.InitModules(context.Background()))
+				require.NoError(t, manager.StartModules(context.Background()))
+
+				taskStarted.Wait()
+				err := manager.StopModules(context.Background())
+				taskFinished.Wait()
+				return err
+			},
+			assert: func(t *testing.T, manager *modulex.Manager, err error) {
+				assert.NoError(t, err)
+				assert.Equal(t, modulex.StateStopped, manager.State())
+			},
+		},
+		{
+			name: "task errors are joined into StopModules error",
+			act: func(t *testing.T, manager *modulex.Manager) error {
+				mod := newMockModule(t, mockModuleConfig{
+					name: "mod-a",
+					onStart: func() {
+						_, err := manager.Go(context.Background(), "failing-task", func(ctx context.Context) error {
+							return sentinelErr
+						})
+						require.NoError(t, err)
+					},
+				})
+				require.NoError(t, manager.RegisterModule(mod))
+				require.NoError(t, manager.InitModules(context.Background()))
+				require.NoError(t, manager.StartModules(context.Background()))
+				return manager.StopModules(context.Background())
+			},
+			assert: func(t *testing.T, manager *modulex.Manager, err error) {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, sentinelErr)
+				assert.ErrorContains(t, err, "failing-task")
+			},
+		},
+		{
+			name: "new tasks are rejected while StopModules is in progress",
+			act: func(t *testing.T, manager *modulex.Manager) error {
+				mod := newMockModule(t, mockModuleConfig{
+					name: "mod-a",
+					onStart: func() {
+						_, err := manager.Go(context.Background(), "blocking-task", func(ctx context.Context) error {
+							<-ctx.Done()
+							return nil
+						})
+						require.NoError(t, err)
+					},
+				})
+				require.NoError(t, manager.RegisterModule(mod))
+				require.NoError(t, manager.InitModules(context.Background()))
+				require.NoError(t, manager.StartModules(context.Background()))
+
+				stopDone := make(chan error, 1)
+				go func() { stopDone <- manager.StopModules(context.Background()) }()
+
+				var startErr error
+				require.Eventually(t, func() bool {
+					_, startErr = manager.Go(context.Background(), "late-task", func(ctx context.Context) error {
+						return nil
+					})
+					return errors.Is(startErr, modulex.ErrRegistryLocked)
+				}, 2*time.Second, 10*time.Millisecond)
+
+				return <-stopDone
+			},
+			assert: func(t *testing.T, manager *modulex.Manager, err error) {
+				assert.NoError(t, err)
+			},
+		},
+		{
+			name: "StopModules timeout is reported when tasks ignore cancellation",
+			act: func(t *testing.T, manager *modulex.Manager) error {
+				mod := newMockModule(t, mockModuleConfig{
+					name: "mod-a",
+					onStart: func() {
+						_, err := manager.Go(context.Background(), "ignore-cancel-task", func(ctx context.Context) error {
+							<-make(chan struct{}) // never returns
+							return nil
+						})
+						require.NoError(t, err)
+					},
+				})
+				require.NoError(t, manager.RegisterModule(mod))
+				require.NoError(t, manager.InitModules(context.Background()))
+				require.NoError(t, manager.StartModules(context.Background()))
+
+				ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+				defer cancel()
+				return manager.StopModules(ctx)
+			},
+			assert: func(t *testing.T, manager *modulex.Manager, err error) {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, context.DeadlineExceeded)
+				assert.ErrorContains(t, err, "timed out waiting for tasks")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manager := newTestManager(nil)
+			err := tt.act(t, manager)
+			tt.assert(t, manager, err)
+		})
+	}
+}
+
+func TestSupervisedTasksConcurrentGo(t *testing.T) {
+	manager := newTestManager(nil)
+
+	const n = 100
+	var started sync.WaitGroup
+	started.Add(n)
+
+	for i := 0; i < n; i++ {
+		name := fmt.Sprintf("concurrent-task-%d", i)
+		_, err := manager.Go(context.Background(), name, func(ctx context.Context) error {
+			started.Done()
+			<-ctx.Done()
+			return nil
+		})
+		require.NoError(t, err)
+	}
+
+	started.Wait()
+	require.NoError(t, manager.StopModules(context.Background()))
+}
+
+func newTestManagerWithPanicPolicy(policy modulex.PanicPolicy) *modulex.Manager {
+	router := gochi.NewRouter()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	return modulex.NewManager(router, nil, logger, nil, modulex.WithPanicPolicy(policy))
+}
+
+func TestSupervisedTaskLifecycleFailures(t *testing.T) {
+	tests := []struct {
+		name   string
+		act    func(t *testing.T, manager *modulex.Manager) (*modulex.TaskHandle, error)
+		assert func(t *testing.T, handle *modulex.TaskHandle, err error)
+	}{
+		{
+			name: "tasks started during Init are cancelled when Init fails",
+			act: func(t *testing.T, manager *modulex.Manager) (*modulex.TaskHandle, error) {
+				var handle *modulex.TaskHandle
+				mod := newMockModule(t, mockModuleConfig{
+					name: "failing-init",
+					onInit: func(reg modulex.Registry) {
+						h, err := manager.Go(context.Background(), "init-task", func(ctx context.Context) error {
+							<-ctx.Done()
+							return nil
+						})
+						require.NoError(t, err)
+						handle = h
+					},
+					initErr: errors.New("init failed"),
+				})
+				require.NoError(t, manager.RegisterModule(mod))
+				err := manager.InitModules(context.Background())
+				return handle, err
+			},
+			assert: func(t *testing.T, handle *modulex.TaskHandle, err error) {
+				require.Error(t, err)
+				require.NotNil(t, handle)
+				assert.NoError(t, handle.Wait())
+			},
+		},
+		{
+			name: "tasks started during Start are cancelled when Start fails",
+			act: func(t *testing.T, manager *modulex.Manager) (*modulex.TaskHandle, error) {
+				var handle *modulex.TaskHandle
+				mod := newMockModule(t, mockModuleConfig{
+					name: "failing-start",
+					onStart: func() {
+						h, err := manager.Go(context.Background(), "start-task", func(ctx context.Context) error {
+							<-ctx.Done()
+							return nil
+						})
+						require.NoError(t, err)
+						handle = h
+					},
+					startErr: errors.New("start failed"),
+				})
+				require.NoError(t, manager.RegisterModule(mod))
+				require.NoError(t, manager.InitModules(context.Background()))
+				err := manager.StartModules(context.Background())
+				return handle, err
+			},
+			assert: func(t *testing.T, handle *modulex.TaskHandle, err error) {
+				require.Error(t, err)
+				require.NotNil(t, handle)
+				assert.NoError(t, handle.Wait())
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manager := newTestManager(nil)
+			handle, err := tt.act(t, manager)
+			tt.assert(t, handle, err)
+			assert.Equal(t, modulex.StateStopped, manager.State())
+		})
+	}
+}
+
+func TestPanicPolicyPropagate(t *testing.T) {
+	if os.Getenv("MODULEX_PANIC_PROPAGATE_HELPER") == "1" {
+		manager := newTestManagerWithPanicPolicy(modulex.PanicPolicyPropagate)
+		handle, err := manager.Go(context.Background(), "panic-propagate-task", func(ctx context.Context) error {
+			panic("propagated panic")
+		})
+		require.NoError(t, err)
+		// Wait until the panic has been recorded; the task goroutine will then
+		// re-panic and crash the helper process.
+		_ = handle.Wait()
+		<-time.After(2 * time.Second)
+		t.Fatal("expected panic did not occur")
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestPanicPolicyPropagate$", "-test.v")
+	cmd.Env = append(os.Environ(), "MODULEX_PANIC_PROPAGATE_HELPER=1")
+	cmd.Dir = "."
+
+	out, err := cmd.CombinedOutput()
+	t.Logf("subprocess output:\n%s", out)
+	require.Error(t, err, "expected subprocess to exit because of an unrecovered panic")
+	assert.Contains(t, string(out), "propagated panic")
 }

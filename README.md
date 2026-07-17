@@ -117,17 +117,22 @@ To prevent this, the `Registry` provides a `Go` helper that handles trace contex
 ```go
 // Inside a module's Start method:
 func (m *Module) Start(ctx context.Context) error {
-    m.registry.Go(ctx, "invoices.ProcessQueue", func(bgCtx context.Context) {
+    _, err := m.registry.Go(ctx, "invoices.ProcessQueue", func(bgCtx context.Context) error {
         // bgCtx carries the parent span context from the caller.
         // Spans created here are correctly linked, preventing telemetry gaps.
         _, span := m.registry.Tracer().Start(bgCtx, "ProcessNextInvoice")
         defer span.End()
 
         // Do background work safely...
+        return nil
     })
-    return nil
+    return err
 }
 ```
+
+`Go` returns a `*TaskHandle` that can be awaited, and the manager guarantees that
+all supervised tasks are cancelled and awaited before modules are stopped during
+shutdown. Panic recovery is configurable via `WithPanicPolicy`.
 
 ### Verifying Spans (Asserting No Gaps)
 

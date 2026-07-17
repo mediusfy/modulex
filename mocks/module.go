@@ -14,6 +14,14 @@ type MockModule struct {
 	mock.Mock
 }
 
+type MockModule_Expecter struct {
+	mock *mock.Mock
+}
+
+func (_m *MockModule) EXPECT() *MockModule_Expecter {
+	return &MockModule_Expecter{mock: &_m.Mock}
+}
+
 // DependsOn provides a mock function with no fields
 func (_m *MockModule) DependsOn() []string {
 	ret := _m.Called()
@@ -34,6 +42,33 @@ func (_m *MockModule) DependsOn() []string {
 	return r0
 }
 
+// MockModule_DependsOn_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'DependsOn'
+type MockModule_DependsOn_Call struct {
+	*mock.Call
+}
+
+// DependsOn is a helper method to define mock.On call
+func (_e *MockModule_Expecter) DependsOn() *MockModule_DependsOn_Call {
+	return &MockModule_DependsOn_Call{Call: _e.mock.On("DependsOn")}
+}
+
+func (_c *MockModule_DependsOn_Call) Run(run func()) *MockModule_DependsOn_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run()
+	})
+	return _c
+}
+
+func (_c *MockModule_DependsOn_Call) Return(_a0 []string) *MockModule_DependsOn_Call {
+	_c.Call.Return(_a0)
+	return _c
+}
+
+func (_c *MockModule_DependsOn_Call) RunAndReturn(run func() []string) *MockModule_DependsOn_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // Init provides a mock function with given fields: ctx, reg
 func (_m *MockModule) Init(ctx context.Context, reg modulex.Registry) error {
 	ret := _m.Called(ctx, reg)
@@ -50,6 +85,35 @@ func (_m *MockModule) Init(ctx context.Context, reg modulex.Registry) error {
 	}
 
 	return r0
+}
+
+// MockModule_Init_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Init'
+type MockModule_Init_Call struct {
+	*mock.Call
+}
+
+// Init is a helper method to define mock.On call
+//   - ctx context.Context
+//   - reg modulex.Registry
+func (_e *MockModule_Expecter) Init(ctx interface{}, reg interface{}) *MockModule_Init_Call {
+	return &MockModule_Init_Call{Call: _e.mock.On("Init", ctx, reg)}
+}
+
+func (_c *MockModule_Init_Call) Run(run func(ctx context.Context, reg modulex.Registry)) *MockModule_Init_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(context.Context), args[1].(modulex.Registry))
+	})
+	return _c
+}
+
+func (_c *MockModule_Init_Call) Return(_a0 error) *MockModule_Init_Call {
+	_c.Call.Return(_a0)
+	return _c
+}
+
+func (_c *MockModule_Init_Call) RunAndReturn(run func(context.Context, modulex.Registry) error) *MockModule_Init_Call {
+	_c.Call.Return(run)
+	return _c
 }
 
 // Name provides a mock function with no fields
@@ -70,6 +134,33 @@ func (_m *MockModule) Name() string {
 	return r0
 }
 
+// MockModule_Name_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Name'
+type MockModule_Name_Call struct {
+	*mock.Call
+}
+
+// Name is a helper method to define mock.On call
+func (_e *MockModule_Expecter) Name() *MockModule_Name_Call {
+	return &MockModule_Name_Call{Call: _e.mock.On("Name")}
+}
+
+func (_c *MockModule_Name_Call) Run(run func()) *MockModule_Name_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run()
+	})
+	return _c
+}
+
+func (_c *MockModule_Name_Call) Return(_a0 string) *MockModule_Name_Call {
+	_c.Call.Return(_a0)
+	return _c
+}
+
+func (_c *MockModule_Name_Call) RunAndReturn(run func() string) *MockModule_Name_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // Start provides a mock function with given fields: ctx
 func (_m *MockModule) Start(ctx context.Context) error {
 	ret := _m.Called(ctx)
@@ -88,6 +179,34 @@ func (_m *MockModule) Start(ctx context.Context) error {
 	return r0
 }
 
+// MockModule_Start_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Start'
+type MockModule_Start_Call struct {
+	*mock.Call
+}
+
+// Start is a helper method to define mock.On call
+//   - ctx context.Context
+func (_e *MockModule_Expecter) Start(ctx interface{}) *MockModule_Start_Call {
+	return &MockModule_Start_Call{Call: _e.mock.On("Start", ctx)}
+}
+
+func (_c *MockModule_Start_Call) Run(run func(ctx context.Context)) *MockModule_Start_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(context.Context))
+	})
+	return _c
+}
+
+func (_c *MockModule_Start_Call) Return(_a0 error) *MockModule_Start_Call {
+	_c.Call.Return(_a0)
+	return _c
+}
+
+func (_c *MockModule_Start_Call) RunAndReturn(run func(context.Context) error) *MockModule_Start_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // Stop provides a mock function with given fields: ctx
 func (_m *MockModule) Stop(ctx context.Context) error {
 	ret := _m.Called(ctx)
@@ -104,6 +223,34 @@ func (_m *MockModule) Stop(ctx context.Context) error {
 	}
 
 	return r0
+}
+
+// MockModule_Stop_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Stop'
+type MockModule_Stop_Call struct {
+	*mock.Call
+}
+
+// Stop is a helper method to define mock.On call
+//   - ctx context.Context
+func (_e *MockModule_Expecter) Stop(ctx interface{}) *MockModule_Stop_Call {
+	return &MockModule_Stop_Call{Call: _e.mock.On("Stop", ctx)}
+}
+
+func (_c *MockModule_Stop_Call) Run(run func(ctx context.Context)) *MockModule_Stop_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(context.Context))
+	})
+	return _c
+}
+
+func (_c *MockModule_Stop_Call) Return(_a0 error) *MockModule_Stop_Call {
+	_c.Call.Return(_a0)
+	return _c
+}
+
+func (_c *MockModule_Stop_Call) RunAndReturn(run func(context.Context) error) *MockModule_Stop_Call {
+	_c.Call.Return(run)
+	return _c
 }
 
 // NewMockModule creates a new instance of MockModule. It also registers a testing interface on the mock and a cleanup function to assert the mocks expectations.
