@@ -1435,3 +1435,58 @@ func TestPanicPolicyPropagate(t *testing.T) {
 	require.Error(t, err, "expected subprocess to exit because of an unrecovered panic")
 	assert.Contains(t, string(out), "propagated panic")
 }
+
+func TestSupervisedTaskErrorCollectedAfterEarlyFinish(t *testing.T) {
+	t.Parallel()
+
+	sentinelErr := errors.New("early failure")
+
+	tests := []struct {
+		name             string
+		finishBeforeStop bool
+		wantErr          error
+	}{
+		{
+			name:             "error collected when task finishes before StopModules",
+			finishBeforeStop: true,
+			wantErr:          sentinelErr,
+		},
+		{
+			name:             "error collected when task finishes during StopModules",
+			finishBeforeStop: false,
+			wantErr:          sentinelErr,
+		},
+		{
+			name:             "success when task finishes before StopModules",
+			finishBeforeStop: true,
+			wantErr:          nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			manager := newTestManager(NewInMemoryEventBus())
+
+			handle, err := manager.Go(context.Background(), "early-task", func(ctx context.Context) error {
+				return tt.wantErr
+			})
+			require.NoError(t, err)
+
+			if tt.finishBeforeStop {
+				if tt.wantErr != nil {
+					require.ErrorIs(t, handle.Wait(), tt.wantErr)
+				} else {
+					require.NoError(t, handle.Wait())
+				}
+			}
+
+			if tt.wantErr != nil {
+				require.ErrorIs(t, manager.StopModules(context.Background()), tt.wantErr)
+			} else {
+				require.NoError(t, manager.StopModules(context.Background()))
+			}
+		})
+	}
+}
