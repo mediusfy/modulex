@@ -60,6 +60,10 @@ var (
 	// ErrNoConfigLoader is returned by GetConfig when no config loader was
 	// configured at construction time or via WithConfigLoader.
 	ErrNoConfigLoader = errors.New("no config loader configured")
+
+	// ErrInvalidPanicPolicy is returned by NewManager when WithPanicPolicy is
+	// given a value outside the defined PanicPolicy enum.
+	ErrInvalidPanicPolicy = errors.New("invalid panic policy")
 )
 
 // LifecycleState represents the current phase of the Manager's lifecycle.
@@ -106,6 +110,32 @@ const (
 	// PanicPolicyPropagate allows the panic to crash the application.
 	PanicPolicyPropagate
 )
+
+func (p PanicPolicy) valid() bool {
+	switch p {
+	case PanicPolicyLog, PanicPolicyPropagate:
+		return true
+	default:
+		return false
+	}
+}
+
+// noopEventBus is a no-op EventBus used when NewManager is constructed
+// without one, keeping the event bus optional for consumers that only use
+// direct constructor injection.
+type noopEventBus struct{}
+
+func (noopEventBus) Publish(ctx context.Context, topic string, payload []byte) error {
+	return nil
+}
+
+func (noopEventBus) Subscribe(ctx context.Context, topic string, handler EventHandler) error {
+	return nil
+}
+
+func (noopEventBus) Close(ctx context.Context) error {
+	return nil
+}
 
 // TaskHandle identifies a supervised background task started by Manager.Go.
 // Callers can use it to wait for completion or inspect the final error.
@@ -365,7 +395,15 @@ type Manager struct {
 var _ Registry = (*Manager)(nil)
 
 // NewManager creates a new instance of Manager.
-func NewManager(eb EventBus, logger *slog.Logger, configLoader func(target interface{}) error, opts ...ManagerOption) *Manager {
+//
+// eb may be nil, in which case a no-op EventBus is used. logger may be nil,
+// in which case slog.Default() is used. NewManager returns
+// ErrInvalidPanicPolicy if WithPanicPolicy is given a value outside the
+// defined PanicPolicy enum.
+func NewManager(eb EventBus, logger *slog.Logger, configLoader func(target interface{}) error, opts ...ManagerOption) (*Manager, error) {
+	if eb == nil {
+		eb = noopEventBus{}
+	}
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -390,10 +428,14 @@ func NewManager(eb EventBus, logger *slog.Logger, configLoader func(target inter
 	if m.tracer == nil {
 		m.tracer = noopTracer{}
 	}
+	if !m.panicPolicy.valid() {
+		taskCancel()
+		return nil, fmt.Errorf("%w: %d", ErrInvalidPanicPolicy, m.panicPolicy)
+	}
 	if m.configLoader == nil {
 		m.loggerCtx.Warn("no config loader configured; GetConfig will return an error until WithConfigLoader is used")
 	}
-	return m
+	return m, nil
 }
 
 // RegisterModule registers a feature module in the manager.

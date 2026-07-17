@@ -102,6 +102,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING:** The `Module` interface no longer requires `Start` and `Stop`.
   Modules that need startup/shutdown behavior now implement `modulex.Startable`
   and/or `modulex.Stoppable`.
+- **BREAKING:** `NewManager` now returns `(*Manager, error)` instead of
+  `*Manager`. Construction fails with `ErrInvalidPanicPolicy` if
+  `WithPanicPolicy` is given a value outside the defined `PanicPolicy` enum.
+  A `nil` event bus still defaults to a no-op implementation, so existing
+  callers that pass `nil` for local development are unaffected beyond the
+  new return value.
 
 ### Fixed
 

@@ -20,7 +20,11 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	router := gochi.NewRouter()
 
-	mgr := modulex.NewManager(nil, logger, nil)
+	mgr, err := modulex.NewManager(nil, logger, nil)
+	if err != nil {
+		logger.Error("failed to create manager", slog.Any("error", err))
+		os.Exit(1)
+	}
 	if err := modulexchi.RegisterRouter(mgr, router); err != nil {
 		logger.Error("failed to register router", slog.Any("error", err))
 		os.Exit(1)

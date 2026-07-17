@@ -81,9 +81,12 @@ records them as task errors, and continues shutdown. You can configure the
 behavior with a panic policy when constructing the manager:
 
 ```go
-manager := modulex.NewManager(eb, logger, nil,
+manager, err := modulex.NewManager(eb, logger, nil,
     modulex.WithPanicPolicy(modulex.PanicPolicyPropagate),
 )
+if err != nil {
+    return err
+}
 ```
 
 Available policies:

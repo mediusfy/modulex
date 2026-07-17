@@ -30,7 +30,11 @@ func main() {
 	watermillBus := watermilladapter.NewEventBus(100, false, false)
 
 	// Create manager
-	mgr := modulex.NewManager(watermillBus, logger, configLoader)
+	mgr, err := modulex.NewManager(watermillBus, logger, configLoader)
+	if err != nil {
+		logger.Error("failed to create manager", slog.Any("error", err))
+		os.Exit(1)
+	}
 
 	// Register the Chi router as a typed service so modules can resolve it
 	if err := modulexchi.RegisterRouter(mgr, router); err != nil {
