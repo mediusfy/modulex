@@ -722,6 +722,117 @@ func TestGraphValidationTable(t *testing.T) {
 	}
 }
 
+// FuzzGraphValidation feeds random dependency graphs to the manager and checks
+// that InitModules either produces a valid topological order or returns one of
+// the expected validation errors.
+//
+// The fuzzer encodes edges as pairs of bytes in a flat slice. For each pair
+// (source, target), target is added as a dependency of module source. Target
+// values are interpreted as:
+//   - [0, numModules): dependency on that module
+//   - 253: missing dependency
+//   - 254: empty dependency name
+//   - otherwise (including 255): self dependency
+func FuzzGraphValidation(f *testing.F) {
+	const (
+		missingDep = byte(253)
+		emptyDep   = byte(254)
+		selfDep    = byte(255)
+	)
+
+	seedCases := []struct {
+		numModules int
+		deps       []byte
+	}{
+		{3, []byte{1, 0, 2, 1}},             // simple chain
+		{2, []byte{0, 1, 1, 0}},             // two-node cycle
+		{3, []byte{0, 1, 1, 2, 2, 0}},       // three-node cycle
+		{4, []byte{1, 0, 2, 0, 3, 1, 3, 2}}, // diamond
+		{1, []byte{0, selfDep}},             // self dependency
+		{1, []byte{0, missingDep}},          // missing dependency
+		{1, []byte{0, emptyDep}},            // empty dependency name
+	}
+	for _, sc := range seedCases {
+		f.Add(sc.numModules, sc.deps)
+	}
+
+	f.Fuzz(func(t *testing.T, numModules int, deps []byte) {
+		if numModules <= 0 || numModules > 15 {
+			return
+		}
+		const maxDeps = 60 // 30 edges is plenty for ≤15 modules
+		if len(deps) > maxDeps {
+			deps = deps[:maxDeps]
+		}
+
+		names := make([]string, numModules)
+		for i := 0; i < numModules; i++ {
+			names[i] = fmt.Sprintf("m%d", i)
+		}
+
+		// Map fuzzed edge pairs to module dependency lists.
+		moduleDeps := make([][]string, numModules)
+		for i := 0; i+1 < len(deps); i += 2 {
+			source := int(deps[i])
+			target := deps[i+1]
+			if source >= numModules {
+				continue
+			}
+			switch {
+			case int(target) >= 0 && int(target) < numModules:
+				moduleDeps[source] = append(moduleDeps[source], names[target])
+			case target == missingDep:
+				moduleDeps[source] = append(moduleDeps[source], "missing")
+			case target == emptyDep:
+				moduleDeps[source] = append(moduleDeps[source], "")
+			case target == selfDep || int(target) >= numModules:
+				moduleDeps[source] = append(moduleDeps[source], names[source])
+			}
+		}
+
+		manager := newTestManager(nil)
+		var initOrder []string
+		for i := 0; i < numModules; i++ {
+			name := names[i]
+			mod := newMockModule(t, mockModuleConfig{
+				name: name,
+				deps: moduleDeps[i],
+				onInit: func(reg modulex.Registry) {
+					initOrder = append(initOrder, name)
+				},
+			})
+			require.NoError(t, manager.RegisterModule(mod))
+		}
+
+		err := manager.InitModules(context.Background())
+		if err != nil {
+			require.True(t,
+				errors.Is(err, modulex.ErrCircularDependency) ||
+					errors.Is(err, modulex.ErrDependencyNotFound) ||
+					errors.Is(err, modulex.ErrSelfDependency) ||
+					errors.Is(err, modulex.ErrInvalidDependencyName),
+				"expected a known graph validation error, got %v", err)
+			return
+		}
+
+		require.Len(t, initOrder, numModules, "expected all modules to be initialized")
+
+		// On success, verify every dependency appears before its consumer.
+		positions := make(map[string]int, numModules)
+		for i, name := range initOrder {
+			positions[name] = i
+		}
+		for i, name := range names {
+			for _, dep := range moduleDeps[i] {
+				depPos, ok := positions[dep]
+				require.True(t, ok, "dependency %q of %q not found in init order", dep, name)
+				require.Less(t, depPos, positions[name],
+					"dependency %q of %q does not appear before it in topological order", dep, name)
+			}
+		}
+	})
+}
+
 func TestConcurrentRegistration(t *testing.T) {
 	manager := newTestManager(nil)
 
