@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 
 	gochi "github.com/go-chi/chi/v5"
@@ -25,6 +26,30 @@ var (
 
 	// ErrAlreadyInitialized is returned when InitModules is called more than once.
 	ErrAlreadyInitialized = errors.New("manager already initialized")
+
+	// ErrModuleNil is returned when a nil module is passed to RegisterModule.
+	ErrModuleNil = errors.New("module must not be nil")
+
+	// ErrInvalidModuleName is returned when a module name is empty or whitespace-only.
+	ErrInvalidModuleName = errors.New("module name must not be empty")
+
+	// ErrDuplicateModule is returned when RegisterModule is called with a module name that is already registered.
+	ErrDuplicateModule = errors.New("module already registered")
+
+	// ErrDuplicateService is returned when RegisterService is called with a service key that is already registered.
+	ErrDuplicateService = errors.New("service already registered")
+
+	// ErrDependencyNotFound is returned when a module depends on a module that has not been registered.
+	ErrDependencyNotFound = errors.New("module dependency not found")
+
+	// ErrSelfDependency is returned when a module declares itself as a dependency.
+	ErrSelfDependency = errors.New("module cannot depend on itself")
+
+	// ErrInvalidDependencyName is returned when a module declares a dependency with an empty or whitespace-only name.
+	ErrInvalidDependencyName = errors.New("module dependency name must not be empty")
+
+	// ErrInvalidServiceName is returned when a service is registered with an empty or whitespace-only key.
+	ErrInvalidServiceName = errors.New("service name must not be empty")
 )
 
 // EventHandler is a generic callback function signature for incoming events.
@@ -103,12 +128,14 @@ type Manager struct {
 	mu           sync.RWMutex
 	services     map[string]interface{}
 	modules      map[string]Module
+	moduleOrder  []string
 	orderedMods  []Module
 	router       gochi.Router
 	eventBus     EventBus
 	loggerCtx    *slog.Logger
 	configLoader func(target interface{}) error
 	initialized  bool
+	initializing bool
 	tracer       trace.Tracer
 }
 
@@ -122,6 +149,7 @@ func NewManager(router gochi.Router, eb EventBus, logger *slog.Logger, configLoa
 	return &Manager{
 		services:     make(map[string]interface{}),
 		modules:      make(map[string]Module),
+		moduleOrder:  make([]string, 0),
 		router:       router,
 		eventBus:     eb,
 		loggerCtx:    logger,
@@ -132,10 +160,33 @@ func NewManager(router gochi.Router, eb EventBus, logger *slog.Logger, configLoa
 
 // RegisterModule registers a feature module in the manager.
 // Modules should be registered before calling InitModules.
-func (m *Manager) RegisterModule(mod Module) {
+//
+// Registration is rejected if the module is nil, its name is empty, another
+// module with the same name is already registered, or initialization has
+// already started. Independent modules preserve their registration order as
+// the deterministic tie-break during topological sorting.
+func (m *Manager) RegisterModule(mod Module) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.modules[mod.Name()] = mod
+
+	if m.initialized || m.initializing {
+		return ErrRegistryLocked
+	}
+	if mod == nil {
+		return ErrModuleNil
+	}
+
+	name := strings.TrimSpace(mod.Name())
+	if name == "" {
+		return ErrInvalidModuleName
+	}
+	if _, exists := m.modules[name]; exists {
+		return fmt.Errorf("%w: %q", ErrDuplicateModule, name)
+	}
+
+	m.modules[name] = mod
+	m.moduleOrder = append(m.moduleOrder, name)
+	return nil
 }
 
 // RegisterService implements Registry. It registers a service instance to the service locator.
@@ -146,6 +197,14 @@ func (m *Manager) RegisterService(name string, svc interface{}) error {
 
 	if m.initialized {
 		return ErrRegistryLocked
+	}
+
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ErrInvalidServiceName
+	}
+	if _, exists := m.services[name]; exists {
+		return fmt.Errorf("%w: %q", ErrDuplicateService, name)
 	}
 
 	m.services[name] = svc
@@ -227,6 +286,11 @@ func (m *Manager) InitModules(ctx context.Context) error {
 		m.mu.Unlock()
 		return ErrAlreadyInitialized
 	}
+	if m.initializing {
+		m.mu.Unlock()
+		return ErrRegistryLocked
+	}
+	m.initializing = true
 
 	ordered, err := m.sortModules()
 	if err != nil {
@@ -332,41 +396,72 @@ func (m *Manager) StopModules(ctx context.Context) error {
 }
 
 // sortModules performs a topological sort on registered modules.
-// It returns an ordered slice of modules or an error if a circular dependency is detected.
+// It returns an ordered slice of modules or an error if a circular dependency,
+// missing dependency, or self-dependency is detected.
+//
+// Independent modules are processed in registration order, which provides a
+// deterministic tie-break when multiple valid orderings exist.
 func (m *Manager) sortModules() ([]Module, error) {
-	visited := make(map[string]int) // 0 = unvisited, 1 = visiting, 2 = visited
+	const (
+		unvisited = 0
+		visiting  = 1
+		visited   = 2
+	)
+
+	state := make(map[string]int)
 	var order []Module
+	var path []string
 
 	var visit func(name string) error
 	visit = func(name string) error {
-		state := visited[name]
-		if state == 1 {
-			return fmt.Errorf("%w: cycle involves module %q", ErrCircularDependency, name)
-		}
-		if state == 2 {
+		switch state[name] {
+		case visiting:
+			// Build the cycle path from the first occurrence of this node in path.
+			cycleStart := 0
+			for i, n := range path {
+				if n == name {
+					cycleStart = i
+					break
+				}
+			}
+			cycle := append(path[cycleStart:], name)
+			return fmt.Errorf("%w: %s", ErrCircularDependency, strings.Join(cycle, " -> "))
+		case visited:
 			return nil
 		}
 
-		visited[name] = 1
-
 		mod, exists := m.modules[name]
 		if !exists {
-			return fmt.Errorf("module %q dependency not found", name)
+			return fmt.Errorf("%w: %q", ErrDependencyNotFound, name)
 		}
 
+		state[name] = visiting
+		path = append(path, name)
+
+		defer func() {
+			path = path[:len(path)-1]
+			state[name] = visited
+		}()
+
 		for _, depName := range mod.DependsOn() {
+			depName = strings.TrimSpace(depName)
+			if depName == "" {
+				return fmt.Errorf("%w: module %q has an empty dependency name", ErrInvalidDependencyName, name)
+			}
+			if depName == name {
+				return fmt.Errorf("%w: %q", ErrSelfDependency, name)
+			}
 			if err := visit(depName); err != nil {
 				return err
 			}
 		}
 
-		visited[name] = 2
 		order = append(order, mod)
 		return nil
 	}
 
-	for name := range m.modules {
-		if visited[name] == 0 {
+	for _, name := range m.moduleOrder {
+		if state[name] == unvisited {
 			if err := visit(name); err != nil {
 				return nil, err
 			}

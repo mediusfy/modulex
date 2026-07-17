@@ -3,8 +3,10 @@ module github.com/mediusfy/modulex
 go 1.26.0
 
 require (
+	github.com/ThreeDotsLabs/watermill v1.5.2
 	github.com/go-chi/chi/v5 v5.2.5
 	github.com/nats-io/nats.go v1.52.0
+	github.com/rabbitmq/amqp091-go v1.12.0
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/otel v1.44.0
 	go.opentelemetry.io/otel/sdk v1.44.0
@@ -12,7 +14,6 @@ require (
 )
 
 require (
-	github.com/ThreeDotsLabs/watermill v1.5.2 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
@@ -25,7 +26,6 @@ require (
 	github.com/oklog/ulid v1.3.1 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
-	github.com/rabbitmq/amqp091-go v1.12.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/metric v1.44.0 // indirect
 	golang.org/x/crypto v0.49.0 // indirect
