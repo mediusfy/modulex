@@ -6,8 +6,6 @@ import (
 	"io"
 	"log/slog"
 
-	gochi "github.com/go-chi/chi/v5"
-
 	"github.com/mediusfy/modulex"
 )
 
@@ -97,11 +95,8 @@ type exampleModule struct{}
 func (m *exampleModule) Name() string                                 { return "example" }
 func (m *exampleModule) DependsOn() []string                          { return nil }
 func (m *exampleModule) Init(context.Context, modulex.Registry) error { return nil }
-func (m *exampleModule) Start(context.Context) error                  { return nil }
-func (m *exampleModule) Stop(context.Context) error                   { return nil }
 
 func newExampleManager() *modulex.Manager {
-	router := gochi.NewRouter()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return modulex.NewManager(router, nil, logger, nil)
+	return modulex.NewManager(nil, logger, nil)
 }

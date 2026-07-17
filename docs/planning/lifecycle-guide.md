@@ -14,6 +14,12 @@ configuring -> initializing -> initialized -> starting -> running -> stopping ->
 `InitModules` and `StartModules` failures transition the manager directly to
 `stopped` after rolling back successfully initialized/started modules.
 
+`Start` and `Stop` are optional lifecycle capabilities. Modules that need to run
+background work implement `modulex.Startable`; modules that own resources that
+must be released implement `modulex.Stoppable`. The manager skips modules that
+do not implement these interfaces, so simple modules do not require no-op
+methods.
+
 - **Configuring**: modules and services can be registered. No lifecycle
   operations may run.
 - **Initializing**: `InitModules` is running. Modules are initialized in
@@ -39,12 +45,12 @@ Invalid transitions return `ErrInvalidLifecycleState`.
 2. Sort modules topologically.
 3. Call `Init` on each module in order.
 4. If any module fails, roll back successfully initialized modules by calling
-   their `Stop` in reverse order.
+   `Stop` (for modules that implement `modulex.Stoppable`) in reverse order.
 
 ### Example
 
 ```go
-manager := modulex.NewManager(router, eb, logger, nil)
+manager := modulex.NewManager(eb, logger, nil)
 
 if err := manager.RegisterModule(modA); err != nil {
     return err
@@ -61,16 +67,19 @@ if err := manager.InitModules(context.Background()); err != nil {
 ### Rollback on init failure
 
 If `module-b` fails to initialize after `module-a` succeeded, `module-a.Stop`
-runs before the error is returned. Errors from the failed init and from rollback
-stops are joined.
+runs before the error is returned for modules that implement
+`modulex.Stoppable`. Modules that do not implement `Stoppable` are skipped.
+Errors from the failed init and from rollback stops are joined.
 
 ## Startup
 
 `StartModules` performs these steps:
 
 1. Verify the manager is in the `initialized` state.
-2. Call `Start` on each module in topological order.
-3. If any module fails, stop modules that already started in reverse order.
+2. Call `Start` on each module that implements `modulex.Startable` in
+   topological order.
+3. If any module fails, stop modules that already started (and implement
+   `modulex.Stoppable`) in reverse order.
 
 ### Rollback on start failure
 
@@ -85,7 +94,8 @@ Modules that were never reached are not started and are not stopped.
 `StopModules` performs these steps:
 
 1. Cancel and await supervised background tasks.
-2. Call `Stop` on each started module in reverse topological order.
+2. Call `Stop` on each started module that implements `modulex.Stoppable` in
+   reverse topological order.
 3. Close the configured `EventBus`.
 
 ### Idempotency
@@ -133,6 +143,10 @@ Tasks are awaited before modules are stopped. Task errors are joined into the
 - Lifecycle errors may wrap multiple failures with `errors.Join`; inspect them
   with `errors.Is` or iterate with `errors.Unwrap`.
 - Modules should return actionable errors from `Init`, `Start`, and `Stop`.
+- Implement `modulex.Startable` only when the module begins background work or
+  listeners during startup.
+- Implement `modulex.Stoppable` only when the module owns resources that must be
+  released during shutdown.
 
 ## Checklist for module authors
 

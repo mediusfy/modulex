@@ -1,6 +1,7 @@
 # Modulex
 
 [![CI](https://github.com/mediusfy/modulex/actions/workflows/ci.yml/badge.svg)](https://github.com/mediusfy/modulex/actions/workflows/ci.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/mediusfy/modulex/badge)](https://scorecard.dev/viewer/?uri=github.com/mediusfy/modulex)
 [![Go Reference](https://pkg.go.dev/badge/github.com/mediusfy/modulex.svg)](https://pkg.go.dev/github.com/mediusfy/modulex)
 [![Go Report Card](https://goreportcard.com/badge/github.com/mediusfy/modulex)](https://goreportcard.com/report/github.com/mediusfy/modulex)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -75,7 +76,7 @@ import "github.com/mediusfy/modulex/nats"
 
 // Wrap a standard *nats.Conn connection
 eb := nats.NewEventBus(natsConn)
-mgr := modulex.NewManager(router, eb, logger, configLoader)
+mgr := modulex.NewManager(eb, logger, configLoader)
 ```
 
 #### RabbitMQ Driver
@@ -84,7 +85,7 @@ import "github.com/mediusfy/modulex/rabbitmq"
 
 // Wrap a standard *amqp.Channel channel
 eb := rabbitmq.NewEventBus(amqpChannel)
-mgr := modulex.NewManager(router, eb, logger, configLoader)
+mgr := modulex.NewManager(eb, logger, configLoader)
 ```
 
 #### Watermill Driver
@@ -93,7 +94,34 @@ import watermilladapter "github.com/mediusfy/modulex/watermill"
 
 // Initialize Watermill in-memory (Go Channel)
 eb := watermilladapter.NewEventBus(100, false, false)
-mgr := modulex.NewManager(router, eb, logger, configLoader)
+mgr := modulex.NewManager(eb, logger, configLoader)
+```
+
+#### Chi Router Integration
+```go
+import (
+    gochi "github.com/go-chi/chi/v5"
+    modulexchi "github.com/mediusfy/modulex/chi"
+)
+
+router := gochi.NewRouter()
+mgr := modulex.NewManager(eb, logger, configLoader)
+if err := modulexchi.RegisterRouter(mgr, router); err != nil {
+    // handle error
+}
+```
+
+Modules that need the router resolve it in `Init`:
+
+```go
+func (m *Module) Init(ctx context.Context, reg modulex.Registry) error {
+    router, err := modulexchi.ResolveRouter(reg)
+    if err != nil {
+        return err
+    }
+    router.Get("/api/incidents", m.listIncidents)
+    return nil
+}
 ```
 
 ### 3. InMemory Event Bus (For Testing)
@@ -130,20 +158,33 @@ func (eb *InMemoryEventBus) Close(ctx context.Context) error { return nil }
 
 ## Telemetry and Context Propagation
 
-Modulex comes with native support for OpenTelemetry tracing to monitor the startup sequences and execution paths of your modules.
+Modulex has an optional, pluggable `Tracer` interface. The `modulex/otel` package
+adapts an OpenTelemetry `TracerProvider` so the core library does not force the
+OpenTelemetry dependency on consumers who do not need tracing.
+
+```go
+import modulexotel "github.com/mediusfy/modulex/otel"
+
+sr := tracetest.NewSpanRecorder()
+tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+
+mgr := modulex.NewManager(eb, logger, configLoader,
+    modulex.WithTracer(modulexotel.NewTracer(tp)),
+)
+```
 
 ### Preventing Telemetry Gaps
 
-In Go, starting a background task using `go func()` breaks context propagation, leading to detached, orphaned spans (telemetry gaps). 
+In Go, starting a background task using `go func()` breaks context propagation, leading to detached, orphaned spans (telemetry gaps).
 To prevent this, the `Registry` provides a `Go` helper that handles trace context propagation and panic safety automatically:
 
 ```go
 // Inside a module's Start method:
-func (m *Module) Start(ctx context.Context) error {
+func (m *Module) Start(ctx context.Context, tracer trace.Tracer) error {
     _, err := m.registry.Go(ctx, "invoices.ProcessQueue", func(bgCtx context.Context) error {
         // bgCtx carries the parent span context from the caller.
         // Spans created here are correctly linked, preventing telemetry gaps.
-        _, span := m.registry.Tracer().Start(bgCtx, "ProcessNextInvoice")
+        _, span := tracer.Start(bgCtx, "ProcessNextInvoice")
         defer span.End()
 
         // Do background work safely...
@@ -166,9 +207,10 @@ func TestTracesNoGaps(t *testing.T) {
 	// Set up memory span exporter
 	sr := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
-	otel.SetTracerProvider(tp)
 
-	manager := modulex.NewManager(router, nil, logger, nil)
+	manager := modulex.NewManager(nil, logger, nil,
+	    modulex.WithTracer(modulexotel.NewTracer(tp)),
+	)
 	manager.RegisterModule(&myModule{})
 
 	// Initialize
@@ -300,8 +342,9 @@ func (m *Module) Init(ctx context.Context, reg modulex.Registry) error {
 	return reg.RegisterService("database.Connection", m.dbConn)
 }
 
-func (m *Module) Start(ctx context.Context) error { return nil }
-func (m *Module) Stop(ctx context.Context) error  { return m.dbConn.Close() }
+// Stop is optional; implement it only when the module owns resources that must
+// be released during shutdown.
+func (m *Module) Stop(ctx context.Context) error { return m.dbConn.Close() }
 ```
 
 #### 2. Declare a Dependent Module
@@ -331,9 +374,6 @@ func (m *Module) Init(ctx context.Context, reg modulex.Registry) error {
 	m.svc = NewService(conn)
 	return reg.RegisterService("incident.Service", m.svc)
 }
-
-func (m *Module) Start(ctx context.Context) error { return nil }
-func (m *Module) Stop(ctx context.Context) error  { return nil }
 ```
 
 ---
@@ -376,6 +416,36 @@ func (m *OtherModule) Init(ctx context.Context, reg modulex.Registry) error {
 `ErrServiceTypeMismatch` when the registered value does not match the key's
 compile-time type.
 
+## Capability interfaces
+
+`modulex.Registry` is a composite of smaller capability interfaces. The
+framework still passes the full `Registry` to `Module.Init`, but internal
+helpers and constructors can depend on only the capabilities they need:
+
+- `modulex.ServiceRegistry` – register and resolve services.
+- `modulex.ServiceRegistrar` – register services only.
+- `modulex.ServiceResolver` – resolve services only.
+- `modulex.EventBusProvider` – access the event bus.
+- `modulex.ConfigProvider` – load configuration.
+- `modulex.LoggerProvider` – access the logger.
+- `modulex.TaskSpawner` – start supervised background tasks.
+
+For example, a constructor that only needs to register a service and read the
+logger can accept the narrower interfaces:
+
+```go
+func NewService(reg modulex.ServiceRegistrar, log modulex.LoggerProvider) *Service {
+    svc := &Service{logger: log.Logger()}
+    _ = reg.RegisterService("my.Service", svc)
+    return svc
+}
+
+func (m *Module) Init(ctx context.Context, reg modulex.Registry) error {
+    m.svc = NewService(reg, reg)
+    return nil
+}
+```
+
 ---
 
 ## Quickstart
@@ -386,6 +456,30 @@ runs the full lifecycle.
 
 ```bash
 go run ./examples/quickstart
+```
+
+---
+
+## Deployment Topologies
+
+The same domain interfaces can be wired as a monolith or as separate processes.
+See [`examples/deployment`](./examples/deployment):
+
+- [`examples/deployment/monolith`](./examples/deployment/monolith/main.go) registers
+  the notification module and a consumer module in the same process. The consumer
+  resolves the local service implementation via typed key.
+- [`examples/deployment/remote`](./examples/deployment/remote) runs the notification
+  service and the consumer as two separate processes. The consumer binary registers
+  a `notification.RemoteModule` that provides an HTTP client adapter under the same
+  typed key, so the consumer module itself does not change.
+
+```bash
+# Monolith
+go run ./examples/deployment/monolith
+
+# Remote (two processes)
+go run ./examples/deployment/remote/notification-server
+NOTIFICATION_URL=http://localhost:8080 go run ./examples/deployment/remote/consumer
 ```
 
 ---
@@ -411,11 +505,13 @@ for a detailed comparison with plain constructor injection, Wire, Fx, and Dig.
 
 - [Compatibility Policy](./COMPATIBILITY.md)
 - [Comparison with Alternatives](./docs/planning/comparison-with-alternatives.md)
+- [Error Handling](./docs/planning/error-handling-guide.md)
 - [Lifecycle Guide](./docs/planning/lifecycle-guide.md)
 - [Migration Guide](./docs/planning/migration-guide.md)
 - [Support](./SUPPORT.md)
 - [Security](./SECURITY.md)
 - [Contributing](./CONTRIBUTING.md)
+- [Task Supervision](./docs/planning/task-supervision-guide.md)
 
 ---
 

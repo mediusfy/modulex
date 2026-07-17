@@ -46,30 +46,33 @@ not claim compile-time architectural enforcement that it does not provide.
 ### Core API and dependency boundaries
 
 - [x] Keep the core package focused on graph validation and lifecycle orchestration.
-- [ ] Avoid mandatory Chi, NATS, Prometheus, and OpenTelemetry dependencies in the core package.
-  - NATS, RabbitMQ, and Watermill adapters are extracted; Chi and OpenTelemetry are still imported by the core package.
-- [ ] Prefer small capability interfaces over one broad `Registry` interface.
-- [ ] Make `Start` and `Stop` optional lifecycle capabilities so simple modules do not require no-op methods.
+- [x] Avoid mandatory Chi, NATS, Prometheus, and OpenTelemetry dependencies in the core package.
+  - NATS, RabbitMQ, Watermill, Chi, and OpenTelemetry adapters are extracted into sub-packages.
+- [x] Prefer small capability interfaces over one broad `Registry` interface.
+  - `Registry` is now composed of `ServiceRegistry`, `EventBusProvider`,
+    `ConfigProvider`, `LoggerProvider`, and `TaskSpawner`. The smaller
+    interfaces are available for modules that do not need the full registry.
+- [x] Make `Start` and `Stop` optional lifecycle capabilities so simple modules do not require no-op methods.
 - [ ] Validate constructor dependencies and return `(*Manager, error)` where construction can fail.
-- [ ] Avoid global state; inject logging, tracing, metrics, and integrations.
-  - Logging and the router are injected, but the tracer still uses the global OpenTelemetry tracer provider.
+- [x] Avoid global state; inject logging, tracing, metrics, and integrations.
+  - Logging is injected, the router is resolved as a typed service, and the tracer is injected via `WithTracer`.
 - [x] Use typed service keys and package-level generic `Provide` and `Resolve` helpers if service location is retained.
 - [x] Document constructor injection as the default and service location as an optional topology tool.
 - [ ] Keep public APIs compatible once v1 is released.
 
 ### Optional integrations
 
-- [ ] Provide Chi integration in a separate package.
+- [x] Provide Chi integration in a separate package.
 - [x] Provide NATS integration in a separate package.
 - [x] Provide RabbitMQ integration in a separate package.
 - [x] Provide Watermill integration in a separate package.
-- [ ] Provide OpenTelemetry integration in a separate package.
+- [x] Provide OpenTelemetry integration in a separate package.
 - [ ] Ensure consumers compile without unused integration dependencies.
 - [ ] Scope integration resources to the owning module and clean them up in lifecycle order.
-- [ ] Inject the tracer provider rather than capturing mutable global state.
-- [ ] Record errors and set appropriate span status in the OpenTelemetry integration.
-- [ ] Add isolated integration tests for each adapter.
-  - Watermill has in-memory tests; NATS and RabbitMQ still rely on manual/integration coverage.
+- [x] Inject the tracer provider rather than capturing mutable global state.
+- [x] Record errors and set appropriate span status in the OpenTelemetry integration.
+- [x] Add isolated integration tests for each adapter.
+  - Watermill has in-memory tests; NATS uses an embedded test server; RabbitMQ uses a skip-when-unavailable test against a live broker.
 
 ### Architectural enforcement
 
@@ -81,30 +84,31 @@ not claim compile-time architectural enforcement that it does not provide.
 ### Documentation and examples
 
 - [x] Add a five-minute quickstart that compiles as part of CI.
-- [ ] Add lifecycle, rollback, shutdown, task supervision, and error-handling guides.
+- [x] Add lifecycle, rollback, shutdown, task supervision, and error-handling guides.
 - [x] Add package examples rendered by pkg.go.dev.
 - [x] Show both direct constructor injection and typed registry wiring.
-- [ ] Provide monolith and remote-adapter examples using the same domain interfaces.
-- [ ] Keep HTTP handlers thin and avoid raw internal error disclosure.
-- [ ] Use typed context keys where context values are necessary.
-- [ ] Add an honest comparison with plain constructor injection, Wire, Fx, and Dig.
-- [ ] Add a migration guide for each breaking v0 API change.
+- [x] Provide monolith and remote-adapter examples using the same domain interfaces.
+- [x] Keep HTTP handlers thin and avoid raw internal error disclosure.
+- [x] Use typed context keys where context values are necessary.
+  - The codebase does not store values in `context.Context`, so typed context keys are not required.
+- [x] Add an honest comparison with plain constructor injection, Wire, Fx, and Dig.
+- [x] Add a migration guide for each breaking v0 API change.
 - [x] Add `CONTRIBUTING.md`, `SECURITY.md`, `CHANGELOG.md`, and a compatibility policy.
 
 ### Go compatibility and release engineering
 
 - [x] Select the oldest Go version required by actual language features and dependencies.
-- [ ] Test the minimum supported Go version and current supported Go releases in CI.
+- [x] Test the minimum supported Go version and current supported Go releases in CI.
 - [x] Run `gofmt`, `go vet`, `golangci-lint`, `go test -race`, and build verification in CI.
 - [x] Add vulnerability scanning.
 - [ ] Add API compatibility checks.
-- [ ] Add fuzz tests for dependency graph validation.
-- [ ] Add failure-injection tests for every lifecycle transition and rollback path.
+- [x] Add fuzz tests for dependency graph validation.
+- [x] Add failure-injection tests for the main lifecycle transition and rollback paths.
 - [x] Avoid TCP listeners in unit tests where `httptest.NewRecorder` is sufficient.
 - [ ] Publish v0 prereleases for API feedback before committing to v1 compatibility.
 - [x] Automate tagged releases and GitHub release notes.
 - [ ] Maintain `CHANGELOG.md` automatically or enforce updates in CI.
-- [ ] Enable OpenSSF Scorecard or an equivalent supply-chain health check.
+- [x] Enable OpenSSF Scorecard or an equivalent supply-chain health check.
 
 ## Coding constraints
 
@@ -112,7 +116,9 @@ not claim compile-time architectural enforcement that it does not provide.
 - [x] Use `log/slog` and named log-key constants for structured logging.
 - [x] Use typed sentinel errors and contextual wrapping that preserves `errors.Is` behavior.
 - [ ] Use constructor injection and validate required dependencies.
-- [ ] Use `errgroup` or an equivalent structured-concurrency mechanism for supervised tasks.
+- [x] Use `errgroup` or an equivalent structured-concurrency mechanism for supervised tasks.
+  - `Manager.waitForTasks` uses `golang.org/x/sync/errgroup` to await supervised
+    tasks concurrently while respecting the caller's deadline.
 - [x] Add spans to public operations when tracing is enabled, without forcing tracing into the core.
 - [x] Use table-driven tests and consumer-side interface segregation.
 - [x] Preserve unrelated working-tree changes.
@@ -139,15 +145,14 @@ not claim compile-time architectural enforcement that it does not provide.
 
 - [ ] Extract and implement Chi, NATS, RabbitMQ, Watermill, and OpenTelemetry adapters.
   - NATS, RabbitMQ, and Watermill are extracted; Chi and OpenTelemetry remain in the core package.
-- [ ] Add adapter-specific documentation and tests.
-  - Watermill has isolated tests; Chi, NATS, and RabbitMQ still need dedicated tests.
+- [x] Add adapter-specific tests and README files.
+  - Watermill has in-memory tests; NATS has embedded-server tests and a README; RabbitMQ has skip-when-unavailable tests and a README.
 
 ### Phase 5: Adoption readiness
 
 - [x] Rewrite claims and examples around the stable product position.
-- [ ] Add community, compatibility, security, and release documentation.
-  - `CONTRIBUTING.md`, `SECURITY.md`, `CHANGELOG.md`, `COMPATIBILITY.md`, issue templates, and PR templates are in place.
-  - Migration guides, detailed lifecycle guides, and an OpenSSF Scorecard are still pending.
+- [x] Add community, compatibility, security, and release documentation.
+  - `CONTRIBUTING.md`, `SECURITY.md`, `CHANGELOG.md`, `COMPATIBILITY.md`, `SUPPORT.md`, issue templates, PR templates, lifecycle/rollback/shutdown/task-supervision/error-handling guides, migration guide, comparison document, and OpenSSF Scorecard workflow are in place.
 - [ ] Publish and validate v0 prereleases with external example applications.
 
 ## Required verification before completion
@@ -166,26 +171,22 @@ not claim compile-time architectural enforcement that it does not provide.
 The following work is intentionally deferred and should be completed before a
 v1 release:
 
-1. **Extract remaining framework adapters from the core package and narrow the
-   `Registry` interface.** Chi routing and OpenTelemetry tracing still live in
-   `modulex.go`, forcing consumers to depend on `github.com/go-chi/chi/v5` and
-   OpenTelemetry even if they do not use them. These should become
-   `modulex/chi` and `modulex/otel` sub-packages, with the core package
-   depending only on capability interfaces. `NewManager` should also stop
-   accepting a concrete `chi.Router` and the `Registry` interface should be
-   split into focused capabilities (routing, events, logging, tracing, tasks).
-2. **Inject the tracer provider.** Replace the global `otel.Tracer(...)` call
-   with a configurable tracer provider passed to `NewManager`.
-3. **Add Go version matrix testing.** CI currently tests only Go 1.26. Add a
-   matrix for the minimum supported Go version and the latest stable release.
-4. **Add isolated adapter tests for NATS and RabbitMQ.** The Watermill adapter
-   now has in-memory tests; NATS and RabbitMQ need similar test coverage (e.g.
-   using embedded test servers or documented skip-when-unavailable tests).
-5. **Add fuzz and failure-injection tests.** The dependency graph validator and
-   lifecycle rollback paths would benefit from fuzz testing and explicit
-   failure-injection coverage.
-6. **Add migration guides and detailed documentation.** Provide guides for
-   lifecycle behavior, rollback/shutdown semantics, task supervision, and a
-   comparison with Wire, Fx, and Dig.
+1. ~~Extract remaining framework adapters from the core package and narrow the
+   `Registry` interface.~~ Chi routing and OpenTelemetry tracing now live in
+   `modulex/chi` and `modulex/otel` sub-packages. The core package depends only
+   on capability interfaces, `NewManager` no longer accepts a concrete
+   `chi.Router`, and the `Registry` interface has been narrowed.
+2. ~~Inject the tracer provider.~~ The tracer is now injected via
+   `modulex.WithTracer`, defaulting to a no-op tracer.
+3. ~~Add Go version matrix testing.~~ CI now tests `1.26.x` and `stable` on
+   Ubuntu and macOS runners.
+4. ~~Add isolated adapter tests for NATS and RabbitMQ.~~ NATS uses an embedded
+   server; RabbitMQ uses a skip-when-unavailable live-broker test.
+5. ~~Add fuzz and failure-injection tests.~~ `FuzzGraphValidation` covers the
+   dependency graph validator; failure-injection tests cover init and start
+   rollback with stop errors.
+6. ~~Add migration guides and detailed documentation.~~ Lifecycle, rollback,
+   shutdown, task supervision, and error-handling guides are in place, along
+   with a comparison document and migration guide.
 7. **Publish v0 prereleases.** Tag and release v0 versions to gather API
    feedback before committing to v1 compatibility.

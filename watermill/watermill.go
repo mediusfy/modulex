@@ -84,9 +84,12 @@ func (w *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 
 				// Execute module's generic callback
 				if err := handler(msgCtx, msg.Payload); err != nil {
-					// Watermill relies on explicit Ack/Nack
-					msg.Nack()
-					w.logger.Error("handler error, message nacked", err, nil)
+					// Watermill's in-memory GoChannel redelivers Nack'd messages, which
+					// can cause infinite loops for a handler that persistently fails.
+					// For this local reference adapter we acknowledge and log the error
+					// instead, leaving dead-letter / retry semantics to production brokers.
+					msg.Ack()
+					w.logger.Error("handler error, message acknowledged to prevent redelivery", err, nil)
 				} else {
 					msg.Ack() // Standard acknowledgment
 				}
