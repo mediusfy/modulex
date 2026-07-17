@@ -100,7 +100,7 @@ func (m *Module) Init(ctx context.Context, reg modulex.Registry) error {
 	return nil
 }
 
-// Start implements modulex.Module.
+// Start implements modulex.Startable.
 func (m *Module) Start(ctx context.Context) error {
 	if m.reg == nil {
 		return nil
@@ -123,7 +123,7 @@ func (m *Module) Start(ctx context.Context) error {
 	return err
 }
 
-// Stop implements modulex.Module.
+// Stop implements modulex.Stoppable.
 func (m *Module) Stop(ctx context.Context) error {
 	return nil
 }

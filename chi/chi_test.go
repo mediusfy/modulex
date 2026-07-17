@@ -21,10 +21,8 @@ type chiModule struct {
 	handle func(w http.ResponseWriter, r *http.Request)
 }
 
-func (m *chiModule) Name() string                { return m.name }
-func (m *chiModule) DependsOn() []string         { return nil }
-func (m *chiModule) Start(context.Context) error { return nil }
-func (m *chiModule) Stop(context.Context) error  { return nil }
+func (m *chiModule) Name() string        { return m.name }
+func (m *chiModule) DependsOn() []string { return nil }
 
 func (m *chiModule) Init(_ context.Context, reg modulex.Registry) error {
 	router, err := modulexchi.ResolveRouter(reg)

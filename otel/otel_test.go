@@ -187,5 +187,3 @@ type testModule struct {
 func (m *testModule) Name() string                                 { return m.name }
 func (m *testModule) DependsOn() []string                          { return nil }
 func (m *testModule) Init(context.Context, modulex.Registry) error { return nil }
-func (m *testModule) Start(context.Context) error                  { return nil }
-func (m *testModule) Stop(context.Context) error                   { return nil }

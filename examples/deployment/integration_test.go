@@ -64,7 +64,9 @@ func TestRemoteComposition(t *testing.T) {
 	// Consumer process with a remote notification module that proxies to the
 	// standalone service over HTTP.
 	mgr := modulex.NewManager(nil, logger, nil)
-	require.NoError(t, mgr.RegisterModule(notification.NewRemoteModule(ts.URL, nil)))
+	remoteMod, err := notification.NewRemoteModule(ts.URL, nil)
+	require.NoError(t, err)
+	require.NoError(t, mgr.RegisterModule(remoteMod))
 	require.NoError(t, mgr.RegisterModule(consumer.NewModule()))
 
 	ctx := context.Background()
@@ -91,10 +93,10 @@ func TestNotificationModuleWithoutRouter(t *testing.T) {
 }
 
 type sendRecorder struct {
-	svc          ports.Service
-	called       bool
-	lastMessage  string
-	lastContext  context.Context
+	svc         ports.Service
+	called      bool
+	lastMessage string
+	lastContext context.Context
 }
 
 func (r *sendRecorder) Send(ctx context.Context, message string) error {
