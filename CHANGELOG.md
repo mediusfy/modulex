@@ -57,6 +57,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   transitions, rollback, shutdown, and task supervision.
 - `docs/planning/task-supervision-guide.md` documenting supervised background
   tasks, panic policies, and task error handling.
+- `docs/planning/error-handling-guide.md` documenting sentinel errors,
+  lifecycle errors, rollback errors, and task errors.
 
 ### Changed
 

@@ -411,6 +411,7 @@ for a detailed comparison with plain constructor injection, Wire, Fx, and Dig.
 
 - [Compatibility Policy](./COMPATIBILITY.md)
 - [Comparison with Alternatives](./docs/planning/comparison-with-alternatives.md)
+- [Error Handling](./docs/planning/error-handling-guide.md)
 - [Lifecycle Guide](./docs/planning/lifecycle-guide.md)
 - [Migration Guide](./docs/planning/migration-guide.md)
 - [Support](./SUPPORT.md)
