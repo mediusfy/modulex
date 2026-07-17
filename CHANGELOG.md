@@ -55,6 +55,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   contributing documentation.
 - `docs/planning/lifecycle-guide.md` documenting lifecycle states,
   transitions, rollback, shutdown, and task supervision.
+- `docs/planning/task-supervision-guide.md` documenting supervised background
+  tasks, panic policies, and task error handling.
 
 ### Changed
 

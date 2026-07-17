@@ -416,6 +416,7 @@ for a detailed comparison with plain constructor injection, Wire, Fx, and Dig.
 - [Support](./SUPPORT.md)
 - [Security](./SECURITY.md)
 - [Contributing](./CONTRIBUTING.md)
+- [Task Supervision](./docs/planning/task-supervision-guide.md)
 
 ---
 
