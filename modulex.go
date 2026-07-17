@@ -439,9 +439,8 @@ func (m *Manager) Go(ctx context.Context, taskName string, fn func(ctx context.C
 	go func() {
 		var taskErr error
 		defer func() {
-			m.taskMu.Lock()
-			delete(m.tasks, taskName)
-			m.taskMu.Unlock()
+			// Keep the handle in m.tasks until waitForTasks has had a chance to
+			// collect its result. It will clear the map after awaiting tasks.
 			taskCancel()
 			handle.finish(taskErr)
 		}()
@@ -662,6 +661,11 @@ func (m *Manager) waitForTasks(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("task %q failed: %w", t.Name(), err))
 		}
 	}
+
+	m.taskMu.Lock()
+	m.tasks = make(map[string]*TaskHandle)
+	m.taskMu.Unlock()
+
 	return errors.Join(errs...)
 }
 
