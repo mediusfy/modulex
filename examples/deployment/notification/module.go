@@ -1,0 +1,100 @@
+// Package notification is the composition root for the notification feature.
+// It wires the in-process service implementation and exposes it through typed
+// service keys and optional HTTP routes.
+package notification
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"net/http"
+
+	"github.com/mediusfy/modulex"
+	modulexchi "github.com/mediusfy/modulex/chi"
+	"github.com/mediusfy/modulex/examples/deployment/notification/adapters"
+	"github.com/mediusfy/modulex/examples/deployment/notification/ports"
+	"github.com/mediusfy/modulex/examples/deployment/notification/service"
+)
+
+// ServiceKey is the typed registry key for ports.Service.
+var ServiceKey = modulex.NewKey[ports.Service]("notification.Service")
+
+// Module wires the notification service and HTTP handlers.
+type Module struct {
+	logger *slog.Logger
+}
+
+// NewModule creates a notification module.
+func NewModule(logger *slog.Logger) *Module {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Module{logger: logger}
+}
+
+// Name implements modulex.Module.
+func (m *Module) Name() string { return "notification" }
+
+// DependsOn implements modulex.Module.
+func (m *Module) DependsOn() []string { return nil }
+
+// Init implements modulex.Module. It registers the notification service and,
+// if a Chi router is available, mounts the HTTP endpoint.
+func (m *Module) Init(ctx context.Context, reg modulex.Registry) error {
+	svc := ports.Service(service.New(reg.Logger()))
+	if err := modulex.Provide(reg, ServiceKey, svc); err != nil {
+		return err
+	}
+
+	router, err := modulexchi.ResolveRouter(reg)
+	if err != nil {
+		if !errors.Is(err, modulex.ErrServiceNotFound) {
+			return err
+		}
+		// No router registered; the module works purely as a service.
+		return nil
+	}
+
+	server := adapters.NewHTTPServer(svc, reg.Logger())
+	router.Post("/notify", server.SendHandler())
+	return nil
+}
+
+// Start implements modulex.Module.
+func (m *Module) Start(context.Context) error { return nil }
+
+// Stop implements modulex.Module.
+func (m *Module) Stop(context.Context) error { return nil }
+
+// RemoteModule registers a remote HTTP client adapter as the notification
+// service. It is used in standalone deployments where the real notification
+// service runs in a separate process.
+type RemoteModule struct {
+	baseURL string
+	client  *http.Client
+}
+
+// NewRemoteModule creates a notification module that proxies to a remote
+// service over HTTP.
+func NewRemoteModule(baseURL string, client *http.Client) *RemoteModule {
+	return &RemoteModule{baseURL: baseURL, client: client}
+}
+
+// Name implements modulex.Module.
+func (m *RemoteModule) Name() string { return "notification" }
+
+// DependsOn implements modulex.Module.
+func (m *RemoteModule) DependsOn() []string { return nil }
+
+// Init implements modulex.Module. It registers the remote client adapter under
+// the same typed key the local module uses.
+func (m *RemoteModule) Init(ctx context.Context, reg modulex.Registry) error {
+	remoteClient := ports.Service(adapters.NewHTTPClient(m.baseURL, m.client))
+	return modulex.Provide(reg, ServiceKey, remoteClient)
+}
+
+// Start implements modulex.Module.
+func (m *RemoteModule) Start(context.Context) error { return nil }
+
+// Stop implements modulex.Module.
+func (m *RemoteModule) Stop(context.Context) error { return nil }

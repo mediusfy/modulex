@@ -66,6 +66,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `modulex.Tracer`, including span status and error recording.
 - `modulex/chi` package providing typed service-key registration and resolution
   for Chi routers so the core package does not depend on Chi.
+- Monolith and remote-adapter deployment examples under `examples/deployment`
+  showing how the same domain interfaces can be wired locally or remotely.
+- `notification.RemoteModule` example demonstrating a remote client adapter
+  registered under the same typed service key as the local implementation.
 
 ### Changed
 

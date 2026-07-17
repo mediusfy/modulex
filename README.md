@@ -432,6 +432,26 @@ go run ./examples/quickstart
 
 ---
 
+## Deployment Topologies
+
+The same domain interfaces can be wired as a monolith or as separate processes.
+See [`examples/deployment`](./examples/deployment):
+
+- [`examples/deployment/monolith`](./examples/deployment/monolith/main.go) registers
+  the notification module and a consumer module in the same process. The consumer
+  resolves the local service implementation via typed key.
+- [`examples/deployment/remote`](./examples/deployment/remote/main.go) runs the
+  consumer in a separate process. A `notification.RemoteModule` registers an
+  HTTP client adapter under the same typed key, so the consumer module does not
+  change.
+
+```bash
+go run ./examples/deployment/monolith
+go run ./examples/deployment/remote
+```
+
+---
+
 ## How Modulex Compares to Alternatives
 
 | Approach | What it does best | Where Modulex differs |
