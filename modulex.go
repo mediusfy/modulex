@@ -9,6 +9,9 @@ import (
 
 	gochi "github.com/go-chi/chi/v5"
 	"github.com/nats-io/nats.go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var (
@@ -75,6 +78,14 @@ type Registry interface {
 
 	// Logger returns the system logger.
 	Logger() *slog.Logger
+
+	// Tracer returns the OpenTelemetry Tracer instance configured for this manager.
+	Tracer() trace.Tracer
+
+	// Go spawns a new goroutine to execute background work, automatically propagating
+	// the context's OpenTelemetry trace context and creating a child span for the task.
+	// It also includes panic recovery to prevent the application from crashing.
+	Go(ctx context.Context, taskName string, fn func(ctx context.Context))
 }
 
 // Manager implements the Registry interface and orchestrates the module lifecycles.
@@ -88,6 +99,7 @@ type Manager struct {
 	loggerCtx    *slog.Logger
 	configLoader func(target interface{}) error
 	initialized  bool
+	tracer       trace.Tracer
 
 	activeSubs []*nats.Subscription
 }
@@ -106,6 +118,7 @@ func NewManager(router gochi.Router, natsConn *nats.Conn, logger *slog.Logger, c
 		natsConn:     natsConn,
 		loggerCtx:    logger,
 		configLoader: configLoader,
+		tracer:       otel.Tracer("github.com/mediusfy/modulex"),
 	}
 }
 
@@ -183,8 +196,39 @@ func (m *Manager) Logger() *slog.Logger {
 	return m.loggerCtx
 }
 
+// Tracer implements Registry.
+func (m *Manager) Tracer() trace.Tracer {
+	return m.tracer
+}
+
+// Go implements Registry. It spawns a background routine while preserving OTel span ancestry.
+func (m *Manager) Go(ctx context.Context, taskName string, fn func(ctx context.Context)) {
+	spanCtx := trace.SpanContextFromContext(ctx)
+	bgCtx := trace.ContextWithSpanContext(context.Background(), spanCtx)
+
+	go func() {
+		bgCtx, span := m.tracer.Start(bgCtx, taskName,
+			trace.WithSpanKind(trace.SpanKindInternal),
+		)
+		defer span.End()
+
+		defer func() {
+			if r := recover(); r != nil {
+				err := fmt.Errorf("panic in background task %q: %v", taskName, r)
+				span.RecordError(err)
+				m.loggerCtx.Error("recovered from background task panic",
+					slog.String("task", taskName),
+					slog.Any("panic", r),
+				)
+			}
+		}()
+
+		fn(bgCtx)
+	}()
+}
+
 // InitModules sorts the modules topologically based on dependencies,
-// then initializes them sequentially in dependency order.
+// then initializes them sequentially in dependency order inside trace spans.
 func (m *Manager) InitModules(ctx context.Context) error {
 	m.mu.Lock()
 	if m.initialized {
@@ -200,11 +244,22 @@ func (m *Manager) InitModules(ctx context.Context) error {
 	m.orderedMods = ordered
 	m.mu.Unlock()
 
+	ctx, span := m.tracer.Start(ctx, "InitModules",
+		trace.WithAttributes(attribute.Int("modulex.module_count", len(ordered))),
+	)
+	defer span.End()
+
 	for _, mod := range ordered {
-		m.loggerCtx.Info("initializing module", slog.String("module", mod.Name()))
-		if err := mod.Init(ctx, m); err != nil {
+		modCtx, modSpan := m.tracer.Start(ctx, fmt.Sprintf("InitModule:%s", mod.Name()),
+			trace.WithAttributes(attribute.String("modulex.module_name", mod.Name())),
+		)
+		if err := mod.Init(modCtx, m); err != nil {
+			modSpan.RecordError(err)
+			modSpan.End()
+			span.RecordError(err)
 			return fmt.Errorf("failed to init module %q: %w", mod.Name(), err)
 		}
+		modSpan.End()
 	}
 
 	m.mu.Lock()
@@ -213,23 +268,34 @@ func (m *Manager) InitModules(ctx context.Context) error {
 	return nil
 }
 
-// StartModules starts all registered modules in topological dependency order.
+// StartModules starts all registered modules in topological dependency order inside trace spans.
 func (m *Manager) StartModules(ctx context.Context) error {
 	m.mu.RLock()
 	mods := make([]Module, len(m.orderedMods))
 	copy(mods, m.orderedMods)
 	m.mu.RUnlock()
 
+	ctx, span := m.tracer.Start(ctx, "StartModules",
+		trace.WithAttributes(attribute.Int("modulex.module_count", len(mods))),
+	)
+	defer span.End()
+
 	for _, mod := range mods {
-		m.loggerCtx.Info("starting module", slog.String("module", mod.Name()))
-		if err := mod.Start(ctx); err != nil {
+		modCtx, modSpan := m.tracer.Start(ctx, fmt.Sprintf("StartModule:%s", mod.Name()),
+			trace.WithAttributes(attribute.String("modulex.module_name", mod.Name())),
+		)
+		if err := mod.Start(modCtx); err != nil {
+			modSpan.RecordError(err)
+			modSpan.End()
+			span.RecordError(err)
 			return fmt.Errorf("failed to start module %q: %w", mod.Name(), err)
 		}
+		modSpan.End()
 	}
 	return nil
 }
 
-// StopModules stops all registered modules in reverse topological order and cleans up NATS subscriptions.
+// StopModules stops all registered modules in reverse topological order inside trace spans and cleans up NATS subscriptions.
 func (m *Manager) StopModules(ctx context.Context) error {
 	m.mu.Lock()
 	subs := m.activeSubs
@@ -247,18 +313,30 @@ func (m *Manager) StopModules(ctx context.Context) error {
 	copy(mods, m.orderedMods)
 	m.mu.RUnlock()
 
+	ctx, span := m.tracer.Start(ctx, "StopModules",
+		trace.WithAttributes(attribute.Int("modulex.module_count", len(mods))),
+	)
+	defer span.End()
+
 	var firstErr error
 	for i := len(mods) - 1; i >= 0; i-- {
 		mod := mods[i]
-		m.loggerCtx.Info("stopping module", slog.String("module", mod.Name()))
-		if err := mod.Stop(ctx); err != nil {
+		modCtx, modSpan := m.tracer.Start(ctx, fmt.Sprintf("StopModule:%s", mod.Name()),
+			trace.WithAttributes(attribute.String("modulex.module_name", mod.Name())),
+		)
+		if err := mod.Stop(modCtx); err != nil {
+			modSpan.RecordError(err)
 			m.loggerCtx.Error("failed to stop module", slog.String("module", mod.Name()), slog.Any("error", err))
 			if firstErr == nil {
 				firstErr = err
 			}
 		}
+		modSpan.End()
 	}
 
+	if firstErr != nil {
+		span.RecordError(firstErr)
+	}
 	return firstErr
 }
 
