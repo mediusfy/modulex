@@ -141,3 +141,19 @@ jobs:
 
     - name: Report API changes since the latest tag
       run: make check-api-compat
+
+  changelog:
+    name: CHANGELOG.md Check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
+
+    - name: Verify CHANGELOG.md is updated when required
+      env:
+        GITHUB_ACTOR: ${{ github.actor }}
+      run: ./scripts/check-changelog.sh "origin/${{ github.event.pull_request.base.ref }}" "${{ github.event.pull_request.head.sha }}"
