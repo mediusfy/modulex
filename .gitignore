@@ -3,6 +3,7 @@ bin/
 *.exe
 *.test
 *.prof
+examples/external-consumer/external-consumer
 
 # OS files
 .DS_Store

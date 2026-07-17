@@ -1,14 +1,15 @@
-.PHONY: deps test test-arch fmt lint build vuln help
+.PHONY: deps test test-arch fmt lint build vuln check-consumer-boundary help
 
 help:
 	@echo "Available targets:"
-	@echo "  deps      - Download Go module dependencies"
-	@echo "  test      - Run go test"
-	@echo "  test-arch - Run go test -race ./..."
-	@echo "  fmt       - Format Go code using gofmt"
-	@echo "  lint      - Verify linter config and run golangci-lint"
-	@echo "  build     - Compile packages and examples"
-	@echo "  vuln      - Run govulncheck vulnerability scan"
+	@echo "  deps                    - Download Go module dependencies"
+	@echo "  test                    - Run go test"
+	@echo "  test-arch               - Run go test -race ./..."
+	@echo "  fmt                     - Format Go code using gofmt"
+	@echo "  lint                    - Verify linter config and run golangci-lint"
+	@echo "  build                   - Compile packages and examples"
+	@echo "  vuln                    - Run govulncheck vulnerability scan"
+	@echo "  check-consumer-boundary - Verify core package has no adapter deps"
 
 deps:
 	go mod download
@@ -34,3 +35,6 @@ build:
 
 vuln:
 	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+check-consumer-boundary:
+	./scripts/check-consumer-boundary.sh

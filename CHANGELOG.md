@@ -79,6 +79,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `TaskSpawner`) so modules can depend on only the operations they need.
 - Tests verifying that modules without `Startable`/`Stoppable` are skipped
   during startup, shutdown, and rollback.
+- `examples/external-consumer`, a standalone Go module (its own `go.mod`)
+  that imports only the core `modulex` package, plus
+  `scripts/check-consumer-boundary.sh` and a `make check-consumer-boundary`
+  target that fail CI if any integration adapter dependency (chi, nats,
+  rabbitmq, watermill, otel) leaks into a core-only consumer's build graph.
 
 ### Changed
 
