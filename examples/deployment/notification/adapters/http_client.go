@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/mediusfy/modulex/examples/deployment/notification/ports"
 )
@@ -20,11 +22,17 @@ type HTTPClient struct {
 }
 
 // NewHTTPClient creates a remote notification client.
-func NewHTTPClient(baseURL string, client *http.Client) *HTTPClient {
+//
+// baseURL must be a non-empty string. If client is nil, http.DefaultClient is
+// used.
+func NewHTTPClient(baseURL string, client *http.Client) (*HTTPClient, error) {
+	if strings.TrimSpace(baseURL) == "" {
+		return nil, errors.New("baseURL must not be empty")
+	}
 	if client == nil {
 		client = http.DefaultClient
 	}
-	return &HTTPClient{baseURL: baseURL, client: client}
+	return &HTTPClient{baseURL: strings.TrimRight(baseURL, "/"), client: client}, nil
 }
 
 // Send implements ports.Service by forwarding the message to the remote service.

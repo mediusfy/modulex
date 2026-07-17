@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+
+	"golang.org/x/sync/errgroup"
 )
 
 var (
@@ -237,6 +239,11 @@ type EventBus interface {
 // Module represents a self-contained feature module that complies with Hexagonal Architecture.
 // It acts as the composition root of the feature, instantiating services and adapters,
 // and wiring them through the central registry.
+//
+// Start and Stop are optional lifecycle capabilities. A module that needs to run
+// background work during startup implements Startable; a module that owns resources
+// that must be released implements Stoppable. The manager skips modules that do not
+// implement these interfaces, so simple modules do not require no-op methods.
 type Module interface {
 	// Name returns the unique, kebab-case name of the feature module.
 	Name() string
@@ -248,36 +255,68 @@ type Module interface {
 	// Init initializes the module with the registry.
 	// This is where modules register their services, register routes, and resolve dependencies.
 	Init(ctx context.Context, reg Registry) error
+}
 
-	// Start starts any background tasks or listeners for the module.
+// Startable is an optional lifecycle capability for modules that begin background
+// work or listeners during startup. The manager calls Start after all modules have
+// been initialized successfully.
+type Startable interface {
 	Start(ctx context.Context) error
+}
 
-	// Stop gracefully shuts down the module's background tasks.
+// Stoppable is an optional lifecycle capability for modules that release resources
+// during shutdown. The manager calls Stop in reverse topological order when
+// stopping the application or rolling back a failed init/start.
+type Stoppable interface {
 	Stop(ctx context.Context) error
 }
 
-// Registry manages the collection of features and cross-cutting platform components.
-// It acts as a service locator and event bus hub, preventing features from importing each other directly
-// or coupling to specific messaging architectures.
-type Registry interface {
+// ServiceRegistrar is the capability to register a service instance under a
+// unique name. Registrations are only permitted before the registry has finished
+// initialization.
+type ServiceRegistrar interface {
 	// RegisterService registers a service implementation under a unique key (e.g. "incidents.Service").
 	// Returns ErrRegistryLocked if the registry has already finished initialization.
 	RegisterService(name string, svc interface{}) error
+}
 
+// ServiceResolver is the capability to resolve a previously registered service
+// by name.
+type ServiceResolver interface {
 	// ResolveService resolves a registered service implementation by name.
 	// If the service is not found, it returns ErrServiceNotFound.
 	ResolveService(name string) (interface{}, error)
+}
 
+// ServiceRegistry combines service registration and resolution.
+type ServiceRegistry interface {
+	ServiceRegistrar
+	ServiceResolver
+}
+
+// EventBusProvider is the capability to access the pluggable event bus.
+type EventBusProvider interface {
 	// EventBus returns the pluggable, configured event bus abstraction.
 	EventBus() EventBus
+}
 
+// ConfigProvider is the capability to unmarshal configuration values into a
+// target structure.
+type ConfigProvider interface {
 	// GetConfig unmarshals configuration values into the target structure.
 	// This abstract config retrieval prevents features from directly reading global configurations.
 	GetConfig(target interface{}) error
+}
 
+// LoggerProvider is the capability to access the system logger.
+type LoggerProvider interface {
 	// Logger returns the system logger.
 	Logger() *slog.Logger
+}
 
+// TaskSpawner is the capability to start a supervised background task. Tasks
+// receive a lifecycle-owned context and are cancelled during shutdown.
+type TaskSpawner interface {
 	// Go spawns a supervised goroutine to execute background work. It creates a
 	// child span when a Tracer is configured, recovers from panics according to
 	// the manager's panic policy, and returns a handle that can be used to wait
@@ -285,6 +324,22 @@ type Registry interface {
 	// shutdown. Returns ErrRegistryLocked if the manager is stopping or stopped,
 	// or ErrDuplicateTask if a task with the same name already exists.
 	Go(ctx context.Context, taskName string, fn func(ctx context.Context) error) (*TaskHandle, error)
+}
+
+// Registry manages the collection of features and cross-cutting platform components.
+// It acts as a service locator and event bus hub, preventing features from importing each other directly
+// or coupling to specific messaging architectures.
+//
+// Registry is a composite of smaller capability interfaces. Modules that only
+// need a subset of these capabilities can depend on the narrower interfaces
+// (ServiceRegistry, EventBusProvider, ConfigProvider, LoggerProvider, or
+// TaskSpawner) instead of the full Registry.
+type Registry interface {
+	ServiceRegistry
+	EventBusProvider
+	ConfigProvider
+	LoggerProvider
+	TaskSpawner
 }
 
 // Manager implements the Registry interface and orchestrates the module lifecycles.
@@ -609,13 +664,14 @@ func (m *Manager) InitModules(ctx context.Context) error {
 }
 
 // rollbackInit stops modules that were successfully initialized before a later
-// init failure. Errors from individual stops are joined together.
+// init failure. Only modules that implement Stoppable are stopped. Errors from
+// individual stops are joined together.
 func (m *Manager) rollbackInit(ctx context.Context, initialized []Module) error {
 	var errs []error
 	for i := len(initialized) - 1; i >= 0; i-- {
 		mod := initialized[i]
-		if err := mod.Stop(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("failed to stop module %q during init rollback: %w", mod.Name(), err))
+		if err := m.stopModule(ctx, mod, "init rollback"); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
@@ -656,7 +712,7 @@ func (m *Manager) StartModules(ctx context.Context) error {
 		modCtx, modSpan := m.tracer.Start(ctx, fmt.Sprintf("StartModule:%s", mod.Name()), map[string]any{
 			"modulex.module_name": mod.Name(),
 		})
-		if err := mod.Start(modCtx); err != nil {
+		if err := m.startModule(modCtx, mod); err != nil {
 			modSpan.RecordError(err)
 			modSpan.End()
 			span.RecordError(err)
@@ -683,16 +739,43 @@ func (m *Manager) StartModules(ctx context.Context) error {
 }
 
 // rollbackStart stops modules that were successfully started before a later
-// start failure. Errors from individual stops are joined together.
+// start failure. Only modules that implement Stoppable are stopped. Errors from
+// individual stops are joined together.
 func (m *Manager) rollbackStart(ctx context.Context, started []Module) error {
 	var errs []error
 	for i := len(started) - 1; i >= 0; i-- {
 		mod := started[i]
-		if err := mod.Stop(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("failed to stop module %q during start rollback: %w", mod.Name(), err))
+		if err := m.stopModule(ctx, mod, "start rollback"); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// startModule invokes mod.Start if the module implements Startable. Modules that
+// do not implement Startable are skipped without error.
+func (m *Manager) startModule(ctx context.Context, mod Module) error {
+	if s, ok := mod.(Startable); ok {
+		return s.Start(ctx)
+	}
+	return nil
+}
+
+// stopModule invokes mod.Stop if the module implements Stoppable. Modules that do
+// not implement Stoppable are skipped without error. The phase string is used for
+// error messages.
+func (m *Manager) stopModule(ctx context.Context, mod Module, phase string) error {
+	if s, ok := mod.(Stoppable); ok {
+		if err := s.Stop(ctx); err != nil {
+			m.loggerCtx.Error("failed to stop module",
+				slog.String("module", mod.Name()),
+				slog.String("phase", phase),
+				slog.Any("error", err),
+			)
+			return fmt.Errorf("failed to stop module %q during %s: %w", mod.Name(), phase, err)
+		}
+	}
+	return nil
 }
 
 // waitForTasks cancels the task context and waits for all supervised tasks to
@@ -719,20 +802,44 @@ func (m *Manager) waitForTasks(ctx context.Context) error {
 
 	m.loggerCtx.Info("waiting for supervised tasks to finish", slog.Int("task_count", len(tasks)))
 
+	g, gCtx := errgroup.WithContext(ctx)
+
+	for _, task := range tasks {
+		t := task
+		g.Go(func() error {
+			select {
+			case <-t.done:
+			case <-gCtx.Done():
+				// The caller's deadline expired. Return without waiting for the
+				// task to finish so the manager can report the timeout promptly.
+			}
+			return nil
+		})
+	}
+
+	// Wait for the errgroup to finish. Goroutines intentionally return nil so
+	// the group waits for every task even when one fails. The errgroup context
+	// is cancelled only by the caller's context deadline.
+	_ = g.Wait()
+
+	// Collect errors from tasks that completed. A non-blocking select is used
+	// because tasks that ignore cancellation may still be running after the
+	// caller's deadline expired.
+	var errs []error
 	for _, t := range tasks {
 		select {
 		case <-t.done:
-		case <-ctx.Done():
-			m.resetTaskCtx()
-			return fmt.Errorf("timed out waiting for tasks to finish: %w", ctx.Err())
+			if err := t.Wait(); err != nil {
+				errs = append(errs, fmt.Errorf("task %q failed: %w", t.Name(), err))
+			}
+		default:
 		}
 	}
 
-	var errs []error
-	for _, t := range tasks {
-		if err := t.Wait(); err != nil {
-			errs = append(errs, fmt.Errorf("task %q failed: %w", t.Name(), err))
-		}
+	if ctx.Err() != nil {
+		errs = append(errs, fmt.Errorf("timed out waiting for tasks to finish: %w", ctx.Err()))
+		m.resetTaskCtx()
+		return errors.Join(errs...)
 	}
 
 	m.taskMu.Lock()
@@ -804,10 +911,9 @@ func (m *Manager) StopModules(ctx context.Context) error {
 			modCtx, modSpan := m.tracer.Start(ctx, fmt.Sprintf("StopModule:%s", mod.Name()), map[string]any{
 				"modulex.module_name": mod.Name(),
 			})
-			if err := mod.Stop(modCtx); err != nil {
+			if err := m.stopModule(modCtx, mod, "stop"); err != nil {
 				modSpan.RecordError(err)
-				m.loggerCtx.Error("failed to stop module", slog.String("module", mod.Name()), slog.Any("error", err))
-				errs = append(errs, fmt.Errorf("failed to stop module %q: %w", mod.Name(), err))
+				errs = append(errs, err)
 			}
 			modSpan.End()
 		}

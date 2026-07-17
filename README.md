@@ -342,8 +342,9 @@ func (m *Module) Init(ctx context.Context, reg modulex.Registry) error {
 	return reg.RegisterService("database.Connection", m.dbConn)
 }
 
-func (m *Module) Start(ctx context.Context) error { return nil }
-func (m *Module) Stop(ctx context.Context) error  { return m.dbConn.Close() }
+// Stop is optional; implement it only when the module owns resources that must
+// be released during shutdown.
+func (m *Module) Stop(ctx context.Context) error { return m.dbConn.Close() }
 ```
 
 #### 2. Declare a Dependent Module
@@ -373,9 +374,6 @@ func (m *Module) Init(ctx context.Context, reg modulex.Registry) error {
 	m.svc = NewService(conn)
 	return reg.RegisterService("incident.Service", m.svc)
 }
-
-func (m *Module) Start(ctx context.Context) error { return nil }
-func (m *Module) Stop(ctx context.Context) error  { return nil }
 ```
 
 ---
@@ -417,6 +415,36 @@ func (m *OtherModule) Init(ctx context.Context, reg modulex.Registry) error {
 `Provide` and `Resolve` wrap the underlying string-keyed registry and return
 `ErrServiceTypeMismatch` when the registered value does not match the key's
 compile-time type.
+
+## Capability interfaces
+
+`modulex.Registry` is a composite of smaller capability interfaces. The
+framework still passes the full `Registry` to `Module.Init`, but internal
+helpers and constructors can depend on only the capabilities they need:
+
+- `modulex.ServiceRegistry` – register and resolve services.
+- `modulex.ServiceRegistrar` – register services only.
+- `modulex.ServiceResolver` – resolve services only.
+- `modulex.EventBusProvider` – access the event bus.
+- `modulex.ConfigProvider` – load configuration.
+- `modulex.LoggerProvider` – access the logger.
+- `modulex.TaskSpawner` – start supervised background tasks.
+
+For example, a constructor that only needs to register a service and read the
+logger can accept the narrower interfaces:
+
+```go
+func NewService(reg modulex.ServiceRegistrar, log modulex.LoggerProvider) *Service {
+    svc := &Service{logger: log.Logger()}
+    _ = reg.RegisterService("my.Service", svc)
+    return svc
+}
+
+func (m *Module) Init(ctx context.Context, reg modulex.Registry) error {
+    m.svc = NewService(reg, reg)
+    return nil
+}
+```
 
 ---
 

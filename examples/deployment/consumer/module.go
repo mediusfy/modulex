@@ -36,11 +36,8 @@ func (m *Module) Init(ctx context.Context, reg modulex.Registry) error {
 	return nil
 }
 
-// Start implements modulex.Module. It sends a notification to demonstrate that
-// the dependency is wired correctly.
+// Start implements modulex.Startable. It sends a notification to demonstrate
+// that the dependency is wired correctly.
 func (m *Module) Start(ctx context.Context) error {
 	return m.svc.Send(ctx, "hello from consumer")
 }
-
-// Stop implements modulex.Module.
-func (m *Module) Stop(context.Context) error { return nil }

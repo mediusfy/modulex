@@ -95,8 +95,6 @@ type exampleModule struct{}
 func (m *exampleModule) Name() string                                 { return "example" }
 func (m *exampleModule) DependsOn() []string                          { return nil }
 func (m *exampleModule) Init(context.Context, modulex.Registry) error { return nil }
-func (m *exampleModule) Start(context.Context) error                  { return nil }
-func (m *exampleModule) Stop(context.Context) error                   { return nil }
 
 func newExampleManager() *modulex.Manager {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
