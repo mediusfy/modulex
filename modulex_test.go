@@ -1127,6 +1127,31 @@ func TestRollbackStopErrorsAreJoined(t *testing.T) {
 	assert.ErrorContains(t, err, "rollback stop failed")
 }
 
+func TestStartRollbackStopErrorsAreJoined(t *testing.T) {
+	manager := newTestManager(nil)
+
+	modA := newMockModule(t, mockModuleConfig{
+		name:    "module-a",
+		stopErr: errors.New("rollback stop failed"),
+	})
+	modB := newMockModule(t, mockModuleConfig{
+		name:     "module-b",
+		deps:     []string{"module-a"},
+		startErr: errors.New("module-b start failed"),
+	})
+
+	require.NoError(t, manager.RegisterModule(modA))
+	require.NoError(t, manager.RegisterModule(modB))
+	require.NoError(t, manager.InitModules(context.Background()))
+
+	err := manager.StartModules(context.Background())
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "module-b start failed")
+	assert.ErrorContains(t, err, "rollback stop failed")
+	assert.Equal(t, modulex.StateStopped, manager.State())
+	modA.AssertCalled(t, "Stop", mock.Anything)
+}
+
 func TestStopModulesContextCancellation(t *testing.T) {
 	manager := newTestManager(nil)
 
