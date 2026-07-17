@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-07-18
+
+Initial v0 prerelease.
+
 ### Added
 
 - Typed service keys and generic `Provide`/`Resolve` helpers (`Key[T]`) for
@@ -149,5 +153,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   service locator, and pluggable event-bus adapters (Chi, NATS, RabbitMQ,
   Watermill, OpenTelemetry).
 
-[Unreleased]: https://github.com/mediusfy/modulex/compare/v0.0.0...HEAD
+[Unreleased]: https://github.com/mediusfy/modulex/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/mediusfy/modulex/releases/tag/v0.1.0
 [0.0.0]: https://github.com/mediusfy/modulex/releases/tag/v0.0.0
