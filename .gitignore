@@ -1,0 +1,18 @@
+# Binaries
+bin/
+*.exe
+*.test
+*.prof
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+
+# Cover profiles
+*.out
+coverage.html
