@@ -90,6 +90,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   clarifying that `Close` does not close the caller-owned connection/channel,
   and documentation in `docs/planning/lifecycle-guide.md` describing which
   integration resources the manager owns versus the caller.
+- `tools/modboundary`, an optional `go/analysis` module providing a
+  `modboundary` analyzer that flags direct imports between sibling feature
+  modules (only allow-listed subpackages such as `ports` may cross a
+  boundary), exempting composition roots and a module's own external test
+  package. Includes `analysistest`-driven allowed/forbidden import-graph
+  fixtures, `scripts/check-module-boundary.sh` (`make
+  check-module-boundary`), and a `module-boundary` CI job that runs it
+  against `examples/deployment`.
 
 ### Changed
 

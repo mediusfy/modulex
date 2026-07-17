@@ -93,8 +93,19 @@ not claim compile-time architectural enforcement that it does not provide.
 
 - [x] Describe Modulex accurately as a lifecycle and composition library.
 - [x] Remove claims that the runtime registry prevents imports or enforces directory structure at compile time.
-- [ ] Treat static boundary enforcement as a separate optional `go/analysis` tool.
-- [ ] If an analyzer is built, test allowed and forbidden import graphs with `analysistest`.
+- [x] Treat static boundary enforcement as a separate optional `go/analysis` tool.
+  - `tools/modboundary` is its own Go module (not a core-package
+    dependency) providing a `modboundary` analyzer that flags direct
+    imports between sibling feature modules under a configured `-root`,
+    exempting composition roots (`package main`) and a module's own
+    external test package. Runnable via `make check-module-boundary`
+    (wired into CI as the `module-boundary` job) or directly via
+    `go run ./tools/modboundary/cmd/modboundary -root=... ./...`.
+- [x] If an analyzer is built, test allowed and forbidden import graphs with `analysistest`.
+  - `tools/modboundary/modboundary_test.go` runs `analysistest.Run` against
+    `testdata/src/allowed` (ports subpackage import, composition-root
+    import) and `testdata/src/forbidden` (direct import of a sibling
+    module's internal package) fixtures.
 
 ### Documentation and examples
 
@@ -158,8 +169,11 @@ not claim compile-time architectural enforcement that it does not provide.
 
 ### Phase 4: Integrations
 
-- [ ] Extract and implement Chi, NATS, RabbitMQ, Watermill, and OpenTelemetry adapters.
-  - NATS, RabbitMQ, and Watermill are extracted; Chi and OpenTelemetry remain in the core package.
+- [x] Extract and implement Chi, NATS, RabbitMQ, Watermill, and OpenTelemetry adapters.
+  - All five adapters live in their own sub-packages (`modulex/chi`,
+    `modulex/nats`, `modulex/rabbitmq`, `modulex/watermill`,
+    `modulex/otel`); `make check-consumer-boundary` proves the core
+    package pulls in none of their dependencies.
 - [x] Add adapter-specific tests and README files.
   - Watermill has in-memory tests; NATS has embedded-server tests and a README; RabbitMQ has skip-when-unavailable tests and a README.
 

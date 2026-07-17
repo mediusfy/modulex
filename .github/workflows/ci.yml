@@ -107,3 +107,19 @@ jobs:
 
     - name: Verify core package has no adapter dependencies
       run: make check-consumer-boundary
+
+  module-boundary:
+    name: Module Boundary Analyzer
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v7
+
+    - name: Set up Go
+      uses: actions/setup-go@v7
+      with:
+        go-version: '1.26.x'
+
+    - name: Run the optional modboundary analyzer on examples/deployment
+      run: make check-module-boundary
