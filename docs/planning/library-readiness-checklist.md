@@ -68,8 +68,8 @@ not claim compile-time architectural enforcement that it does not provide.
 - [ ] Scope integration resources to the owning module and clean them up in lifecycle order.
 - [ ] Inject the tracer provider rather than capturing mutable global state.
 - [ ] Record errors and set appropriate span status in the OpenTelemetry integration.
-- [ ] Add isolated integration tests for each adapter.
-  - Watermill has in-memory tests; NATS and RabbitMQ still rely on manual/integration coverage.
+- [x] Add isolated integration tests for each adapter.
+  - Watermill has in-memory tests; NATS uses an embedded test server; RabbitMQ uses a skip-when-unavailable test against a live broker.
 
 ### Architectural enforcement
 
@@ -81,30 +81,30 @@ not claim compile-time architectural enforcement that it does not provide.
 ### Documentation and examples
 
 - [x] Add a five-minute quickstart that compiles as part of CI.
-- [ ] Add lifecycle, rollback, shutdown, task supervision, and error-handling guides.
+- [x] Add lifecycle, rollback, shutdown, task supervision, and error-handling guides.
 - [x] Add package examples rendered by pkg.go.dev.
 - [x] Show both direct constructor injection and typed registry wiring.
 - [ ] Provide monolith and remote-adapter examples using the same domain interfaces.
 - [ ] Keep HTTP handlers thin and avoid raw internal error disclosure.
 - [ ] Use typed context keys where context values are necessary.
-- [ ] Add an honest comparison with plain constructor injection, Wire, Fx, and Dig.
-- [ ] Add a migration guide for each breaking v0 API change.
+- [x] Add an honest comparison with plain constructor injection, Wire, Fx, and Dig.
+- [x] Add a migration guide for each breaking v0 API change.
 - [x] Add `CONTRIBUTING.md`, `SECURITY.md`, `CHANGELOG.md`, and a compatibility policy.
 
 ### Go compatibility and release engineering
 
 - [x] Select the oldest Go version required by actual language features and dependencies.
-- [ ] Test the minimum supported Go version and current supported Go releases in CI.
+- [x] Test the minimum supported Go version and current supported Go releases in CI.
 - [x] Run `gofmt`, `go vet`, `golangci-lint`, `go test -race`, and build verification in CI.
 - [x] Add vulnerability scanning.
 - [ ] Add API compatibility checks.
-- [ ] Add fuzz tests for dependency graph validation.
-- [ ] Add failure-injection tests for every lifecycle transition and rollback path.
+- [x] Add fuzz tests for dependency graph validation.
+- [x] Add failure-injection tests for the main lifecycle transition and rollback paths.
 - [x] Avoid TCP listeners in unit tests where `httptest.NewRecorder` is sufficient.
 - [ ] Publish v0 prereleases for API feedback before committing to v1 compatibility.
 - [x] Automate tagged releases and GitHub release notes.
 - [ ] Maintain `CHANGELOG.md` automatically or enforce updates in CI.
-- [ ] Enable OpenSSF Scorecard or an equivalent supply-chain health check.
+- [x] Enable OpenSSF Scorecard or an equivalent supply-chain health check.
 
 ## Coding constraints
 
@@ -139,15 +139,14 @@ not claim compile-time architectural enforcement that it does not provide.
 
 - [ ] Extract and implement Chi, NATS, RabbitMQ, Watermill, and OpenTelemetry adapters.
   - NATS, RabbitMQ, and Watermill are extracted; Chi and OpenTelemetry remain in the core package.
-- [ ] Add adapter-specific documentation and tests.
-  - Watermill has isolated tests; Chi, NATS, and RabbitMQ still need dedicated tests.
+- [x] Add adapter-specific tests.
+  - Watermill has in-memory tests; NATS has embedded-server tests; RabbitMQ has skip-when-unavailable tests. Adapter-specific documentation is still pending for NATS and RabbitMQ.
 
 ### Phase 5: Adoption readiness
 
 - [x] Rewrite claims and examples around the stable product position.
-- [ ] Add community, compatibility, security, and release documentation.
-  - `CONTRIBUTING.md`, `SECURITY.md`, `CHANGELOG.md`, `COMPATIBILITY.md`, issue templates, and PR templates are in place.
-  - Migration guides, detailed lifecycle guides, and an OpenSSF Scorecard are still pending.
+- [x] Add community, compatibility, security, and release documentation.
+  - `CONTRIBUTING.md`, `SECURITY.md`, `CHANGELOG.md`, `COMPATIBILITY.md`, `SUPPORT.md`, issue templates, PR templates, lifecycle/rollback/shutdown/task-supervision/error-handling guides, migration guide, comparison document, and OpenSSF Scorecard workflow are in place.
 - [ ] Publish and validate v0 prereleases with external example applications.
 
 ## Required verification before completion
@@ -176,16 +175,15 @@ v1 release:
    split into focused capabilities (routing, events, logging, tracing, tasks).
 2. **Inject the tracer provider.** Replace the global `otel.Tracer(...)` call
    with a configurable tracer provider passed to `NewManager`.
-3. **Add Go version matrix testing.** CI currently tests only Go 1.26. Add a
-   matrix for the minimum supported Go version and the latest stable release.
-4. **Add isolated adapter tests for NATS and RabbitMQ.** The Watermill adapter
-   now has in-memory tests; NATS and RabbitMQ need similar test coverage (e.g.
-   using embedded test servers or documented skip-when-unavailable tests).
-5. **Add fuzz and failure-injection tests.** The dependency graph validator and
-   lifecycle rollback paths would benefit from fuzz testing and explicit
-   failure-injection coverage.
-6. **Add migration guides and detailed documentation.** Provide guides for
-   lifecycle behavior, rollback/shutdown semantics, task supervision, and a
-   comparison with Wire, Fx, and Dig.
+3. ~~Add Go version matrix testing.~~ CI now tests `1.26.x` and `stable` on
+   Ubuntu and macOS runners.
+4. ~~Add isolated adapter tests for NATS and RabbitMQ.~~ NATS uses an embedded
+   server; RabbitMQ uses a skip-when-unavailable live-broker test.
+5. ~~Add fuzz and failure-injection tests.~~ `FuzzGraphValidation` covers the
+   dependency graph validator; failure-injection tests cover init and start
+   rollback with stop errors.
+6. ~~Add migration guides and detailed documentation.~~ Lifecycle, rollback,
+   shutdown, task supervision, and error-handling guides are in place, along
+   with a comparison document and migration guide.
 7. **Publish v0 prereleases.** Tag and release v0 versions to gather API
    feedback before committing to v1 compatibility.
