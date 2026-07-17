@@ -8,13 +8,15 @@ import (
 
 	"github.com/mediusfy/modulex"
 	"github.com/nats-io/nats.go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 // EventBus implements modulex.EventBus by wrapping a concrete NATS connection.
 type EventBus struct {
-	conn *nats.Conn
-	mu   sync.Mutex
-	subs []*nats.Subscription
+	conn   *nats.Conn
+	subsMu sync.Mutex
+	subs   []*nats.Subscription
 }
 
 // NewEventBus instantiates the NATS event bus driver.
@@ -24,19 +26,30 @@ func NewEventBus(conn *nats.Conn) *EventBus {
 
 // Publish implements modulex.EventBus.
 func (n *EventBus) Publish(ctx context.Context, topic string, payload []byte) error {
-	return n.conn.Publish(topic, payload)
+	// The NATS connection is safe for concurrent use by multiple goroutines.
+	msg := nats.NewMsg(topic)
+	msg.Data = payload
+
+	// Propagate the active trace context into NATS message headers so subscribers
+	// can continue the span across process boundaries.
+	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(msg.Header))
+
+	return n.conn.PublishMsg(msg)
 }
 
 // Subscribe implements modulex.EventBus. It registers a NATS subscription,
 // adapting the incoming message to the generic EventHandler signature.
+//
+// The subscriber's context is propagated into the handler. If the incoming NATS
+// message carries W3C trace context headers, they are extracted and merged so
+// OpenTelemetry span continuity is preserved across the broker.
 func (n *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.EventHandler) error {
-	n.mu.Lock()
-	defer n.mu.Unlock()
+	n.subsMu.Lock()
+	defer n.subsMu.Unlock()
 
 	sub, err := n.conn.Subscribe(topic, func(msg *nats.Msg) {
-		// Invoke the generic handler signature. In a production environment,
-		// context propagation can be managed here (e.g. extracting tracing headers).
-		_ = handler(context.Background(), msg.Data)
+		msgCtx := messageContext(ctx, msg)
+		_ = handler(msgCtx, msg.Data)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to subscribe to %s: %w", topic, err)
@@ -46,10 +59,20 @@ func (n *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 	return nil
 }
 
+// messageContext returns the subscriber context enriched with any trace context
+// carried by NATS message headers. The subscriber context is always used as the
+// base so cancellation is respected even when no headers are present.
+func messageContext(base context.Context, msg *nats.Msg) context.Context {
+	if msg.Header == nil {
+		return base
+	}
+	return otel.GetTextMapPropagator().Extract(base, propagation.HeaderCarrier(msg.Header))
+}
+
 // Close implements modulex.EventBus. It unsubscribes all registered NATS subscriptions.
 func (n *EventBus) Close(ctx context.Context) error {
-	n.mu.Lock()
-	defer n.mu.Unlock()
+	n.subsMu.Lock()
+	defer n.subsMu.Unlock()
 
 	for _, sub := range n.subs {
 		_ = sub.Unsubscribe()

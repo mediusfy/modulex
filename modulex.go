@@ -8,10 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	gochi "github.com/go-chi/chi/v5"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/sync/errgroup"
 )
 
 var (
@@ -59,6 +56,10 @@ var (
 
 	// ErrInvalidLifecycleState is returned when a lifecycle operation is requested while the manager is in an incompatible state.
 	ErrInvalidLifecycleState = errors.New("invalid lifecycle state")
+
+	// ErrNoConfigLoader is returned by GetConfig when no config loader was
+	// configured at construction time or via WithConfigLoader.
+	ErrNoConfigLoader = errors.New("no config loader configured")
 )
 
 // LifecycleState represents the current phase of the Manager's lifecycle.
@@ -130,7 +131,67 @@ func (h *TaskHandle) finish(err error) {
 	h.mu.Lock()
 	h.err = err
 	h.mu.Unlock()
+	// close is done outside the lock so Wait() callers blocked on <-h.done can
+	// observe the final error after acquiring the lock. Changing this ordering
+	// would introduce a race.
 	close(h.done)
+}
+
+// Tracer abstracts span creation so the core package does not depend on a
+// concrete OpenTelemetry implementation. A nil Tracer defaults to a no-op
+// implementation.
+type Tracer interface {
+	// Start creates a new span and returns a context that carries it.
+	Start(ctx context.Context, spanName string, attrs map[string]any) (context.Context, Span)
+	// SpanContextFromContext extracts the current span context from ctx.
+	SpanContextFromContext(ctx context.Context) SpanContext
+	// ContextWithSpanContext returns a new context carrying the provided span
+	// context. It is used to propagate trace ancestry to manager-owned task
+	// goroutines that run on a different base context.
+	ContextWithSpanContext(ctx context.Context, sc SpanContext) context.Context
+}
+
+// SpanContext is an opaque span context used for trace propagation.
+type SpanContext interface {
+	// IsValid reports whether the span context identifies a valid span.
+	IsValid() bool
+}
+
+// Span is a minimal lifecycle span created by a Tracer.
+type Span interface {
+	// End completes the span.
+	End()
+	// RecordError attaches an error to the span.
+	RecordError(err error)
+	// SetAttributes attaches key-value pairs to the span.
+	SetAttributes(attrs map[string]any)
+}
+
+// noopSpanContext is a no-op SpanContext implementation.
+type noopSpanContext struct{}
+
+func (noopSpanContext) IsValid() bool { return false }
+
+// noopSpan is a no-op Span implementation.
+type noopSpan struct{}
+
+func (noopSpan) End()                               {}
+func (noopSpan) RecordError(err error)              {}
+func (noopSpan) SetAttributes(attrs map[string]any) {}
+
+// noopTracer is a no-op Tracer implementation.
+type noopTracer struct{}
+
+func (noopTracer) Start(ctx context.Context, spanName string, attrs map[string]any) (context.Context, Span) {
+	return ctx, noopSpan{}
+}
+
+func (noopTracer) SpanContextFromContext(ctx context.Context) SpanContext {
+	return noopSpanContext{}
+}
+
+func (noopTracer) ContextWithSpanContext(ctx context.Context, sc SpanContext) context.Context {
+	return ctx
 }
 
 // ManagerOption configures a Manager during construction.
@@ -140,6 +201,23 @@ type ManagerOption func(*Manager)
 func WithPanicPolicy(policy PanicPolicy) ManagerOption {
 	return func(m *Manager) {
 		m.panicPolicy = policy
+	}
+}
+
+// WithConfigLoader configures the config loader after construction. This is
+// useful when using the options pattern and keeps the positional configLoader
+// argument nil-safe.
+func WithConfigLoader(loader func(target interface{}) error) ManagerOption {
+	return func(m *Manager) {
+		m.configLoader = loader
+	}
+}
+
+// WithTracer injects a Tracer implementation into the Manager. If nil, a no-op
+// tracer is used so tracing remains optional for core consumers.
+func WithTracer(tracer Tracer) ManagerOption {
+	return func(m *Manager) {
+		m.tracer = tracer
 	}
 }
 
@@ -161,6 +239,11 @@ type EventBus interface {
 // Module represents a self-contained feature module that complies with Hexagonal Architecture.
 // It acts as the composition root of the feature, instantiating services and adapters,
 // and wiring them through the central registry.
+//
+// Start and Stop are optional lifecycle capabilities. A module that needs to run
+// background work during startup implements Startable; a module that owns resources
+// that must be released implements Stoppable. The manager skips modules that do not
+// implement these interfaces, so simple modules do not require no-op methods.
 type Module interface {
 	// Name returns the unique, kebab-case name of the feature module.
 	Name() string
@@ -172,49 +255,91 @@ type Module interface {
 	// Init initializes the module with the registry.
 	// This is where modules register their services, register routes, and resolve dependencies.
 	Init(ctx context.Context, reg Registry) error
+}
 
-	// Start starts any background tasks or listeners for the module.
+// Startable is an optional lifecycle capability for modules that begin background
+// work or listeners during startup. The manager calls Start after all modules have
+// been initialized successfully.
+type Startable interface {
 	Start(ctx context.Context) error
+}
 
-	// Stop gracefully shuts down the module's background tasks.
+// Stoppable is an optional lifecycle capability for modules that release resources
+// during shutdown. The manager calls Stop in reverse topological order when
+// stopping the application or rolling back a failed init/start.
+type Stoppable interface {
 	Stop(ctx context.Context) error
 }
 
-// Registry manages the collection of features, their HTTP endpoints, and cross-cutting platform components.
-// It acts as a service locator and event bus hub, preventing features from importing each other directly
-// or coupling to specific messaging architectures.
-type Registry interface {
+// ServiceRegistrar is the capability to register a service instance under a
+// unique name. Registrations are only permitted before the registry has finished
+// initialization.
+type ServiceRegistrar interface {
 	// RegisterService registers a service implementation under a unique key (e.g. "incidents.Service").
 	// Returns ErrRegistryLocked if the registry has already finished initialization.
 	RegisterService(name string, svc interface{}) error
+}
 
+// ServiceResolver is the capability to resolve a previously registered service
+// by name.
+type ServiceResolver interface {
 	// ResolveService resolves a registered service implementation by name.
 	// If the service is not found, it returns ErrServiceNotFound.
 	ResolveService(name string) (interface{}, error)
+}
 
-	// Router returns the Chi Router for registering HTTP endpoints.
-	Router() gochi.Router
+// ServiceRegistry combines service registration and resolution.
+type ServiceRegistry interface {
+	ServiceRegistrar
+	ServiceResolver
+}
 
+// EventBusProvider is the capability to access the pluggable event bus.
+type EventBusProvider interface {
 	// EventBus returns the pluggable, configured event bus abstraction.
 	EventBus() EventBus
+}
 
+// ConfigProvider is the capability to unmarshal configuration values into a
+// target structure.
+type ConfigProvider interface {
 	// GetConfig unmarshals configuration values into the target structure.
 	// This abstract config retrieval prevents features from directly reading global configurations.
 	GetConfig(target interface{}) error
+}
 
+// LoggerProvider is the capability to access the system logger.
+type LoggerProvider interface {
 	// Logger returns the system logger.
 	Logger() *slog.Logger
+}
 
-	// Tracer returns the OpenTelemetry Tracer instance configured for this manager.
-	Tracer() trace.Tracer
-
-	// Go spawns a supervised goroutine to execute background work. It propagates
-	// the OpenTelemetry trace context, creates a child span, recovers from panics
-	// according to the manager's panic policy, and returns a handle that can be
-	// used to wait for the task to finish. Tasks are cancelled and awaited during
-	// manager shutdown. Returns ErrRegistryLocked if the manager is stopping or
-	// stopped, or ErrDuplicateTask if a task with the same name already exists.
+// TaskSpawner is the capability to start a supervised background task. Tasks
+// receive a lifecycle-owned context and are cancelled during shutdown.
+type TaskSpawner interface {
+	// Go spawns a supervised goroutine to execute background work. It creates a
+	// child span when a Tracer is configured, recovers from panics according to
+	// the manager's panic policy, and returns a handle that can be used to wait
+	// for the task to finish. Tasks are cancelled and awaited during manager
+	// shutdown. Returns ErrRegistryLocked if the manager is stopping or stopped,
+	// or ErrDuplicateTask if a task with the same name already exists.
 	Go(ctx context.Context, taskName string, fn func(ctx context.Context) error) (*TaskHandle, error)
+}
+
+// Registry manages the collection of features and cross-cutting platform components.
+// It acts as a service locator and event bus hub, preventing features from importing each other directly
+// or coupling to specific messaging architectures.
+//
+// Registry is a composite of smaller capability interfaces. Modules that only
+// need a subset of these capabilities can depend on the narrower interfaces
+// (ServiceRegistry, EventBusProvider, ConfigProvider, LoggerProvider, or
+// TaskSpawner) instead of the full Registry.
+type Registry interface {
+	ServiceRegistry
+	EventBusProvider
+	ConfigProvider
+	LoggerProvider
+	TaskSpawner
 }
 
 // Manager implements the Registry interface and orchestrates the module lifecycles.
@@ -226,12 +351,11 @@ type Manager struct {
 	modules      map[string]Module
 	moduleOrder  []string
 	orderedMods  []Module
-	router       gochi.Router
 	eventBus     EventBus
 	loggerCtx    *slog.Logger
 	configLoader func(target interface{}) error
 	state        LifecycleState
-	tracer       trace.Tracer
+	tracer       Tracer
 	panicPolicy  PanicPolicy
 	tasks        map[string]*TaskHandle
 	taskCtx      context.Context
@@ -241,7 +365,7 @@ type Manager struct {
 var _ Registry = (*Manager)(nil)
 
 // NewManager creates a new instance of Manager.
-func NewManager(router gochi.Router, eb EventBus, logger *slog.Logger, configLoader func(target interface{}) error, opts ...ManagerOption) *Manager {
+func NewManager(eb EventBus, logger *slog.Logger, configLoader func(target interface{}) error, opts ...ManagerOption) *Manager {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -250,12 +374,11 @@ func NewManager(router gochi.Router, eb EventBus, logger *slog.Logger, configLoa
 		services:     make(map[string]interface{}),
 		modules:      make(map[string]Module),
 		moduleOrder:  make([]string, 0),
-		router:       router,
 		eventBus:     eb,
 		loggerCtx:    logger,
 		configLoader: configLoader,
 		state:        StateConfiguring,
-		tracer:       otel.Tracer("github.com/mediusfy/modulex"),
+		tracer:       noopTracer{},
 		panicPolicy:  PanicPolicyLog,
 		tasks:        make(map[string]*TaskHandle),
 		taskCtx:      taskCtx,
@@ -263,6 +386,12 @@ func NewManager(router gochi.Router, eb EventBus, logger *slog.Logger, configLoa
 	}
 	for _, opt := range opts {
 		opt(m)
+	}
+	if m.tracer == nil {
+		m.tracer = noopTracer{}
+	}
+	if m.configLoader == nil {
+		m.loggerCtx.Warn("no config loader configured; GetConfig will return an error until WithConfigLoader is used")
 	}
 	return m
 }
@@ -342,11 +471,6 @@ func (m *Manager) ResolveService(name string) (interface{}, error) {
 	return svc, nil
 }
 
-// Router implements Registry.
-func (m *Manager) Router() gochi.Router {
-	return m.router
-}
-
 // EventBus implements Registry.
 func (m *Manager) EventBus() EventBus {
 	return m.eventBus
@@ -355,7 +479,7 @@ func (m *Manager) EventBus() EventBus {
 // GetConfig implements Registry.
 func (m *Manager) GetConfig(target interface{}) error {
 	if m.configLoader == nil {
-		return fmt.Errorf("no config loader configured")
+		return ErrNoConfigLoader
 	}
 	return m.configLoader(target)
 }
@@ -363,11 +487,6 @@ func (m *Manager) GetConfig(target interface{}) error {
 // Logger implements Registry.
 func (m *Manager) Logger() *slog.Logger {
 	return m.loggerCtx
-}
-
-// Tracer implements Registry.
-func (m *Manager) Tracer() trace.Tracer {
-	return m.tracer
 }
 
 // State returns the current lifecycle state of the manager.
@@ -399,7 +518,8 @@ func (m *Manager) closeEventBus(ctx context.Context) error {
 }
 
 // Go implements Registry. It spawns a supervised background routine while
-// preserving OTel span ancestry and returning a handle for awaiting completion.
+// preserving trace ancestry when a Tracer is configured, and returns a handle
+// for awaiting completion.
 func (m *Manager) Go(ctx context.Context, taskName string, fn func(ctx context.Context) error) (*TaskHandle, error) {
 	m.stateMu.Lock()
 	state := m.state
@@ -433,8 +553,8 @@ func (m *Manager) Go(ctx context.Context, taskName string, fn func(ctx context.C
 	taskCtx, taskCancel := context.WithCancel(m.taskCtx)
 	m.taskMu.Unlock()
 
-	spanCtx := trace.SpanContextFromContext(ctx)
-	bgCtx := trace.ContextWithSpanContext(taskCtx, spanCtx)
+	spanCtx := m.tracer.SpanContextFromContext(ctx)
+	bgCtx := m.tracer.ContextWithSpanContext(taskCtx, spanCtx)
 
 	go func() {
 		var taskErr error
@@ -445,9 +565,7 @@ func (m *Manager) Go(ctx context.Context, taskName string, fn func(ctx context.C
 			handle.finish(taskErr)
 		}()
 
-		bgCtx, span := m.tracer.Start(bgCtx, taskName,
-			trace.WithSpanKind(trace.SpanKindInternal),
-		)
+		execCtx, span := m.tracer.Start(bgCtx, taskName, nil)
 		defer span.End()
 
 		defer func() {
@@ -465,7 +583,7 @@ func (m *Manager) Go(ctx context.Context, taskName string, fn func(ctx context.C
 			}
 		}()
 
-		taskErr = fn(bgCtx)
+		taskErr = fn(execCtx)
 	}()
 
 	return handle, nil
@@ -489,6 +607,7 @@ func (m *Manager) InitModules(ctx context.Context) error {
 	m.mu.Lock()
 	ordered, err := m.sortModules()
 	if err != nil {
+		m.orderedMods = nil
 		m.mu.Unlock()
 		if waitErr := m.waitForTasks(ctx); waitErr != nil {
 			err = errors.Join(err, waitErr)
@@ -499,9 +618,9 @@ func (m *Manager) InitModules(ctx context.Context) error {
 	m.orderedMods = ordered
 	m.mu.Unlock()
 
-	ctx, span := m.tracer.Start(ctx, "InitModules",
-		trace.WithAttributes(attribute.Int("modulex.module_count", len(ordered))),
-	)
+	ctx, span := m.tracer.Start(ctx, "InitModules", map[string]any{
+		"modulex.module_count": len(ordered),
+	})
 	defer span.End()
 
 	var initErr error
@@ -512,9 +631,9 @@ func (m *Manager) InitModules(ctx context.Context) error {
 			break
 		}
 
-		modCtx, modSpan := m.tracer.Start(ctx, fmt.Sprintf("InitModule:%s", mod.Name()),
-			trace.WithAttributes(attribute.String("modulex.module_name", mod.Name())),
-		)
+		modCtx, modSpan := m.tracer.Start(ctx, fmt.Sprintf("InitModule:%s", mod.Name()), map[string]any{
+			"modulex.module_name": mod.Name(),
+		})
 		if err := mod.Init(modCtx, m); err != nil {
 			modSpan.RecordError(err)
 			modSpan.End()
@@ -533,6 +652,9 @@ func (m *Manager) InitModules(ctx context.Context) error {
 		if rollbackErr := m.rollbackInit(ctx, ordered[:initializedCount]); rollbackErr != nil {
 			initErr = errors.Join(initErr, rollbackErr)
 		}
+		m.mu.Lock()
+		m.orderedMods = nil
+		m.mu.Unlock()
 		m.setState(StateStopped)
 		return initErr
 	}
@@ -542,13 +664,14 @@ func (m *Manager) InitModules(ctx context.Context) error {
 }
 
 // rollbackInit stops modules that were successfully initialized before a later
-// init failure. Errors from individual stops are joined together.
+// init failure. Only modules that implement Stoppable are stopped. Errors from
+// individual stops are joined together.
 func (m *Manager) rollbackInit(ctx context.Context, initialized []Module) error {
 	var errs []error
 	for i := len(initialized) - 1; i >= 0; i-- {
 		mod := initialized[i]
-		if err := mod.Stop(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("failed to stop module %q during init rollback: %w", mod.Name(), err))
+		if err := m.stopModule(ctx, mod, "init rollback"); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
@@ -573,9 +696,9 @@ func (m *Manager) StartModules(ctx context.Context) error {
 	copy(mods, m.orderedMods)
 	m.mu.RUnlock()
 
-	ctx, span := m.tracer.Start(ctx, "StartModules",
-		trace.WithAttributes(attribute.Int("modulex.module_count", len(mods))),
-	)
+	ctx, span := m.tracer.Start(ctx, "StartModules", map[string]any{
+		"modulex.module_count": len(mods),
+	})
 	defer span.End()
 
 	var startErr error
@@ -586,10 +709,10 @@ func (m *Manager) StartModules(ctx context.Context) error {
 			break
 		}
 
-		modCtx, modSpan := m.tracer.Start(ctx, fmt.Sprintf("StartModule:%s", mod.Name()),
-			trace.WithAttributes(attribute.String("modulex.module_name", mod.Name())),
-		)
-		if err := mod.Start(modCtx); err != nil {
+		modCtx, modSpan := m.tracer.Start(ctx, fmt.Sprintf("StartModule:%s", mod.Name()), map[string]any{
+			"modulex.module_name": mod.Name(),
+		})
+		if err := m.startModule(modCtx, mod); err != nil {
 			modSpan.RecordError(err)
 			modSpan.End()
 			span.RecordError(err)
@@ -616,21 +739,52 @@ func (m *Manager) StartModules(ctx context.Context) error {
 }
 
 // rollbackStart stops modules that were successfully started before a later
-// start failure. Errors from individual stops are joined together.
+// start failure. Only modules that implement Stoppable are stopped. Errors from
+// individual stops are joined together.
 func (m *Manager) rollbackStart(ctx context.Context, started []Module) error {
 	var errs []error
 	for i := len(started) - 1; i >= 0; i-- {
 		mod := started[i]
-		if err := mod.Stop(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("failed to stop module %q during start rollback: %w", mod.Name(), err))
+		if err := m.stopModule(ctx, mod, "start rollback"); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
 }
 
+// startModule invokes mod.Start if the module implements Startable. Modules that
+// do not implement Startable are skipped without error.
+func (m *Manager) startModule(ctx context.Context, mod Module) error {
+	if s, ok := mod.(Startable); ok {
+		return s.Start(ctx)
+	}
+	return nil
+}
+
+// stopModule invokes mod.Stop if the module implements Stoppable. Modules that do
+// not implement Stoppable are skipped without error. The phase string is used for
+// error messages.
+func (m *Manager) stopModule(ctx context.Context, mod Module, phase string) error {
+	if s, ok := mod.(Stoppable); ok {
+		if err := s.Stop(ctx); err != nil {
+			m.loggerCtx.Error("failed to stop module",
+				slog.String("module", mod.Name()),
+				slog.String("phase", phase),
+				slog.Any("error", err),
+			)
+			return fmt.Errorf("failed to stop module %q during %s: %w", mod.Name(), phase, err)
+		}
+	}
+	return nil
+}
+
 // waitForTasks cancels the task context and waits for all supervised tasks to
 // finish, respecting the caller's deadline. Errors from individual tasks are
 // joined together.
+//
+// After all tasks are awaited, the shared task context is recreated so the
+// manager is not left with a permanently cancelled context after a failure or
+// shutdown path. New tasks are still rejected by the lifecycle state machine.
 func (m *Manager) waitForTasks(ctx context.Context) error {
 	m.taskCancel()
 
@@ -642,31 +796,65 @@ func (m *Manager) waitForTasks(ctx context.Context) error {
 	m.taskMu.Unlock()
 
 	if len(tasks) == 0 {
+		m.resetTaskCtx()
 		return nil
 	}
 
 	m.loggerCtx.Info("waiting for supervised tasks to finish", slog.Int("task_count", len(tasks)))
 
+	g, gCtx := errgroup.WithContext(ctx)
+
+	for _, task := range tasks {
+		t := task
+		g.Go(func() error {
+			select {
+			case <-t.done:
+			case <-gCtx.Done():
+				// The caller's deadline expired. Return without waiting for the
+				// task to finish so the manager can report the timeout promptly.
+			}
+			return nil
+		})
+	}
+
+	// Wait for the errgroup to finish. Goroutines intentionally return nil so
+	// the group waits for every task even when one fails. The errgroup context
+	// is cancelled only by the caller's context deadline.
+	_ = g.Wait()
+
+	// Collect errors from tasks that completed. A non-blocking select is used
+	// because tasks that ignore cancellation may still be running after the
+	// caller's deadline expired.
+	var errs []error
 	for _, t := range tasks {
 		select {
 		case <-t.done:
-		case <-ctx.Done():
-			return fmt.Errorf("timed out waiting for tasks to finish: %w", ctx.Err())
+			if err := t.Wait(); err != nil {
+				errs = append(errs, fmt.Errorf("task %q failed: %w", t.Name(), err))
+			}
+		default:
 		}
 	}
 
-	var errs []error
-	for _, t := range tasks {
-		if err := t.Wait(); err != nil {
-			errs = append(errs, fmt.Errorf("task %q failed: %w", t.Name(), err))
-		}
+	if ctx.Err() != nil {
+		errs = append(errs, fmt.Errorf("timed out waiting for tasks to finish: %w", ctx.Err()))
+		m.resetTaskCtx()
+		return errors.Join(errs...)
 	}
 
 	m.taskMu.Lock()
 	m.tasks = make(map[string]*TaskHandle)
 	m.taskMu.Unlock()
 
+	m.resetTaskCtx()
 	return errors.Join(errs...)
+}
+
+// resetTaskCtx recreates the shared task context after a shutdown or failure.
+func (m *Manager) resetTaskCtx() {
+	m.taskMu.Lock()
+	defer m.taskMu.Unlock()
+	m.taskCtx, m.taskCancel = context.WithCancel(context.Background())
 }
 
 // StopModules cancels supervised tasks, stops registered modules in reverse
@@ -698,7 +886,7 @@ func (m *Manager) StopModules(ctx context.Context) error {
 	m.taskMu.Unlock()
 	m.stateMu.Unlock()
 
-	ctx, span := m.tracer.Start(ctx, "StopModules")
+	ctx, span := m.tracer.Start(ctx, "StopModules", nil)
 	defer span.End()
 
 	var errs []error
@@ -712,7 +900,7 @@ func (m *Manager) StopModules(ctx context.Context) error {
 		copy(mods, m.orderedMods)
 		m.mu.RUnlock()
 
-		span.SetAttributes(attribute.Int("modulex.module_count", len(mods)))
+		span.SetAttributes(map[string]any{"modulex.module_count": len(mods)})
 
 		for i := len(mods) - 1; i >= 0; i-- {
 			if err := ctx.Err(); err != nil {
@@ -720,13 +908,12 @@ func (m *Manager) StopModules(ctx context.Context) error {
 				break
 			}
 			mod := mods[i]
-			modCtx, modSpan := m.tracer.Start(ctx, fmt.Sprintf("StopModule:%s", mod.Name()),
-				trace.WithAttributes(attribute.String("modulex.module_name", mod.Name())),
-			)
-			if err := mod.Stop(modCtx); err != nil {
+			modCtx, modSpan := m.tracer.Start(ctx, fmt.Sprintf("StopModule:%s", mod.Name()), map[string]any{
+				"modulex.module_name": mod.Name(),
+			})
+			if err := m.stopModule(modCtx, mod, "stop"); err != nil {
 				modSpan.RecordError(err)
-				m.loggerCtx.Error("failed to stop module", slog.String("module", mod.Name()), slog.Any("error", err))
-				errs = append(errs, fmt.Errorf("failed to stop module %q: %w", mod.Name(), err))
+				errs = append(errs, err)
 			}
 			modSpan.End()
 		}
@@ -783,25 +970,28 @@ func (m *Manager) sortModules() ([]Module, error) {
 		state[name] = visiting
 		path = append(path, name)
 
-		defer func() {
-			path = path[:len(path)-1]
-			state[name] = visited
-		}()
-
 		for _, depName := range mod.DependsOn() {
 			depName = strings.TrimSpace(depName)
 			if depName == "" {
+				path = path[:len(path)-1]
+				state[name] = visited
 				return fmt.Errorf("%w: module %q has an empty dependency name", ErrInvalidDependencyName, name)
 			}
 			if depName == name {
+				path = path[:len(path)-1]
+				state[name] = visited
 				return fmt.Errorf("%w: %q", ErrSelfDependency, name)
 			}
 			if err := visit(depName); err != nil {
+				path = path[:len(path)-1]
+				state[name] = visited
 				return err
 			}
 		}
 
 		order = append(order, mod)
+		path = path[:len(path)-1]
+		state[name] = visited
 		return nil
 	}
 
