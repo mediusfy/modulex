@@ -21,4 +21,3 @@ type Service interface {
 // port lets consumers depend only on the contract package rather than the full
 // notification module.
 var ServiceKey = modulex.NewKey[Service]("notification.Service")
-

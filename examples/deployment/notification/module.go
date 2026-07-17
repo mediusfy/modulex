@@ -51,12 +51,6 @@ func (m *Module) Init(ctx context.Context, reg modulex.Registry) error {
 	return nil
 }
 
-// Start implements modulex.Module.
-func (m *Module) Start(context.Context) error { return nil }
-
-// Stop implements modulex.Module.
-func (m *Module) Stop(context.Context) error { return nil }
-
 // RemoteModule registers a remote HTTP client adapter as the notification
 // service. It is used in standalone deployments where the real notification
 // service runs in a separate process.
@@ -83,9 +77,3 @@ func (m *RemoteModule) Init(_ context.Context, reg modulex.Registry) error {
 	remoteClient := ports.Service(adapters.NewHTTPClient(m.baseURL, m.client))
 	return modulex.Provide(reg, ports.ServiceKey, remoteClient)
 }
-
-// Start implements modulex.Module.
-func (m *RemoteModule) Start(context.Context) error { return nil }
-
-// Stop implements modulex.Module.
-func (m *RemoteModule) Stop(context.Context) error { return nil }

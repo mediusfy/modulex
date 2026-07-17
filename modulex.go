@@ -237,6 +237,11 @@ type EventBus interface {
 // Module represents a self-contained feature module that complies with Hexagonal Architecture.
 // It acts as the composition root of the feature, instantiating services and adapters,
 // and wiring them through the central registry.
+//
+// Start and Stop are optional lifecycle capabilities. A module that needs to run
+// background work during startup implements Startable; a module that owns resources
+// that must be released implements Stoppable. The manager skips modules that do not
+// implement these interfaces, so simple modules do not require no-op methods.
 type Module interface {
 	// Name returns the unique, kebab-case name of the feature module.
 	Name() string
@@ -248,11 +253,19 @@ type Module interface {
 	// Init initializes the module with the registry.
 	// This is where modules register their services, register routes, and resolve dependencies.
 	Init(ctx context.Context, reg Registry) error
+}
 
-	// Start starts any background tasks or listeners for the module.
+// Startable is an optional lifecycle capability for modules that begin background
+// work or listeners during startup. The manager calls Start after all modules have
+// been initialized successfully.
+type Startable interface {
 	Start(ctx context.Context) error
+}
 
-	// Stop gracefully shuts down the module's background tasks.
+// Stoppable is an optional lifecycle capability for modules that release resources
+// during shutdown. The manager calls Stop in reverse topological order when
+// stopping the application or rolling back a failed init/start.
+type Stoppable interface {
 	Stop(ctx context.Context) error
 }
 
@@ -609,13 +622,14 @@ func (m *Manager) InitModules(ctx context.Context) error {
 }
 
 // rollbackInit stops modules that were successfully initialized before a later
-// init failure. Errors from individual stops are joined together.
+// init failure. Only modules that implement Stoppable are stopped. Errors from
+// individual stops are joined together.
 func (m *Manager) rollbackInit(ctx context.Context, initialized []Module) error {
 	var errs []error
 	for i := len(initialized) - 1; i >= 0; i-- {
 		mod := initialized[i]
-		if err := mod.Stop(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("failed to stop module %q during init rollback: %w", mod.Name(), err))
+		if err := m.stopModule(ctx, mod, "init rollback"); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
@@ -656,7 +670,7 @@ func (m *Manager) StartModules(ctx context.Context) error {
 		modCtx, modSpan := m.tracer.Start(ctx, fmt.Sprintf("StartModule:%s", mod.Name()), map[string]any{
 			"modulex.module_name": mod.Name(),
 		})
-		if err := mod.Start(modCtx); err != nil {
+		if err := m.startModule(modCtx, mod); err != nil {
 			modSpan.RecordError(err)
 			modSpan.End()
 			span.RecordError(err)
@@ -683,16 +697,43 @@ func (m *Manager) StartModules(ctx context.Context) error {
 }
 
 // rollbackStart stops modules that were successfully started before a later
-// start failure. Errors from individual stops are joined together.
+// start failure. Only modules that implement Stoppable are stopped. Errors from
+// individual stops are joined together.
 func (m *Manager) rollbackStart(ctx context.Context, started []Module) error {
 	var errs []error
 	for i := len(started) - 1; i >= 0; i-- {
 		mod := started[i]
-		if err := mod.Stop(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("failed to stop module %q during start rollback: %w", mod.Name(), err))
+		if err := m.stopModule(ctx, mod, "start rollback"); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// startModule invokes mod.Start if the module implements Startable. Modules that
+// do not implement Startable are skipped without error.
+func (m *Manager) startModule(ctx context.Context, mod Module) error {
+	if s, ok := mod.(Startable); ok {
+		return s.Start(ctx)
+	}
+	return nil
+}
+
+// stopModule invokes mod.Stop if the module implements Stoppable. Modules that do
+// not implement Stoppable are skipped without error. The phase string is used for
+// error messages.
+func (m *Manager) stopModule(ctx context.Context, mod Module, phase string) error {
+	if s, ok := mod.(Stoppable); ok {
+		if err := s.Stop(ctx); err != nil {
+			m.loggerCtx.Error("failed to stop module",
+				slog.String("module", mod.Name()),
+				slog.String("phase", phase),
+				slog.Any("error", err),
+			)
+			return fmt.Errorf("failed to stop module %q during %s: %w", mod.Name(), phase, err)
+		}
+	}
+	return nil
 }
 
 // waitForTasks cancels the task context and waits for all supervised tasks to
@@ -804,10 +845,9 @@ func (m *Manager) StopModules(ctx context.Context) error {
 			modCtx, modSpan := m.tracer.Start(ctx, fmt.Sprintf("StopModule:%s", mod.Name()), map[string]any{
 				"modulex.module_name": mod.Name(),
 			})
-			if err := mod.Stop(modCtx); err != nil {
+			if err := m.stopModule(modCtx, mod, "stop"); err != nil {
 				modSpan.RecordError(err)
-				m.loggerCtx.Error("failed to stop module", slog.String("module", mod.Name()), slog.Any("error", err))
-				errs = append(errs, fmt.Errorf("failed to stop module %q: %w", mod.Name(), err))
+				errs = append(errs, err)
 			}
 			modSpan.End()
 		}

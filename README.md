@@ -342,8 +342,9 @@ func (m *Module) Init(ctx context.Context, reg modulex.Registry) error {
 	return reg.RegisterService("database.Connection", m.dbConn)
 }
 
-func (m *Module) Start(ctx context.Context) error { return nil }
-func (m *Module) Stop(ctx context.Context) error  { return m.dbConn.Close() }
+// Stop is optional; implement it only when the module owns resources that must
+// be released during shutdown.
+func (m *Module) Stop(ctx context.Context) error { return m.dbConn.Close() }
 ```
 
 #### 2. Declare a Dependent Module
@@ -373,9 +374,6 @@ func (m *Module) Init(ctx context.Context, reg modulex.Registry) error {
 	m.svc = NewService(conn)
 	return reg.RegisterService("incident.Service", m.svc)
 }
-
-func (m *Module) Start(ctx context.Context) error { return nil }
-func (m *Module) Stop(ctx context.Context) error  { return nil }
 ```
 
 ---

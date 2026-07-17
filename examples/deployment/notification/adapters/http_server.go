@@ -69,4 +69,3 @@ func (s *HTTPServer) SendHandler() http.HandlerFunc {
 		}
 	}
 }
-

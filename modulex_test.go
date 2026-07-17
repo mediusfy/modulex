@@ -34,7 +34,7 @@ func (s *MockServiceImpl) DoSomething() string {
 	return "mocked"
 }
 
-// mockModuleConfig configures a mockery MockModule for use in tests.
+// mockModuleConfig configures a testModule for use in tests.
 type mockModuleConfig struct {
 	name     string
 	deps     []string
@@ -46,36 +46,75 @@ type mockModuleConfig struct {
 	onStop   func()
 }
 
-func newMockModule(t *testing.T, cfg mockModuleConfig) *mocks.MockModule {
-	mod := mocks.NewMockModule(t)
-	mod.On("Name").Return(cfg.name).Maybe()
-	mod.On("DependsOn").Return(cfg.deps).Maybe()
-	mod.On("Init", mock.Anything, mock.Anything).
-		Return(cfg.initErr).
-		Maybe().
-		Run(func(args mock.Arguments) {
-			if cfg.onInit != nil {
-				cfg.onInit(args.Get(1).(modulex.Registry))
-			}
-		})
-	mod.On("Start", mock.Anything).
-		Return(cfg.startErr).
-		Maybe().
-		Run(func(args mock.Arguments) {
-			if cfg.onStart != nil {
-				cfg.onStart()
-			}
-		})
-	mod.On("Stop", mock.Anything).
-		Return(cfg.stopErr).
-		Maybe().
-		Run(func(args mock.Arguments) {
-			if cfg.onStop != nil {
-				cfg.onStop()
-			}
-		})
-	return mod
+// testModule is a test double that implements modulex.Module and the optional
+// Startable/Stoppable lifecycle capabilities. It is used in place of mockery
+// mocks because Start and Stop are no longer part of the base Module interface.
+type testModule struct {
+	cfg mockModuleConfig
 }
+
+func newMockModule(t *testing.T, cfg mockModuleConfig) *testModule {
+	return &testModule{cfg: cfg}
+}
+
+func (m *testModule) Name() string { return m.cfg.name }
+
+func (m *testModule) DependsOn() []string { return m.cfg.deps }
+
+func (m *testModule) Init(ctx context.Context, reg modulex.Registry) error {
+	if m.cfg.onInit != nil {
+		m.cfg.onInit(reg)
+	}
+	return m.cfg.initErr
+}
+
+func (m *testModule) Start(ctx context.Context) error {
+	if m.cfg.onStart != nil {
+		m.cfg.onStart()
+	}
+	return m.cfg.startErr
+}
+
+func (m *testModule) Stop(ctx context.Context) error {
+	if m.cfg.onStop != nil {
+		m.cfg.onStop()
+	}
+	return m.cfg.stopErr
+}
+
+// initOnlyModule implements only the base Module interface. It is used to assert
+// that the manager skips Start and Stop for modules that do not opt into those
+// lifecycle capabilities.
+type initOnlyModule struct {
+	name string
+	deps []string
+}
+
+func (m *initOnlyModule) Name() string                                 { return m.name }
+func (m *initOnlyModule) DependsOn() []string                          { return m.deps }
+func (m *initOnlyModule) Init(context.Context, modulex.Registry) error { return nil }
+
+// startOnlyModule implements Module and Startable but not Stoppable.
+type startOnlyModule struct {
+	name    string
+	started bool
+}
+
+func (m *startOnlyModule) Name() string                                 { return m.name }
+func (m *startOnlyModule) DependsOn() []string                          { return nil }
+func (m *startOnlyModule) Init(context.Context, modulex.Registry) error { return nil }
+func (m *startOnlyModule) Start(context.Context) error                  { m.started = true; return nil }
+
+// stopOnlyModule implements Module and Stoppable but not Startable.
+type stopOnlyModule struct {
+	name    string
+	stopped bool
+}
+
+func (m *stopOnlyModule) Name() string                                 { return m.name }
+func (m *stopOnlyModule) DependsOn() []string                          { return nil }
+func (m *stopOnlyModule) Init(context.Context, modulex.Registry) error { return nil }
+func (m *stopOnlyModule) Stop(context.Context) error                   { m.stopped = true; return nil }
 
 // InMemoryEventBus is a fake event bus used for integration-style pub/sub
 // assertions. It is kept only where the test genuinely needs messages to be
@@ -1025,9 +1064,11 @@ func TestRollbackStopErrorsAreJoined(t *testing.T) {
 func TestStartRollbackStopErrorsAreJoined(t *testing.T) {
 	manager := newTestManager(nil)
 
+	var stopCalls []string
 	modA := newMockModule(t, mockModuleConfig{
 		name:    "module-a",
 		stopErr: errors.New("rollback stop failed"),
+		onStop:  func() { stopCalls = append(stopCalls, "module-a") },
 	})
 	modB := newMockModule(t, mockModuleConfig{
 		name:     "module-b",
@@ -1044,7 +1085,80 @@ func TestStartRollbackStopErrorsAreJoined(t *testing.T) {
 	assert.ErrorContains(t, err, "module-b start failed")
 	assert.ErrorContains(t, err, "rollback stop failed")
 	assert.Equal(t, modulex.StateStopped, manager.State())
-	modA.AssertCalled(t, "Stop", mock.Anything)
+	assert.Equal(t, []string{"module-a"}, stopCalls)
+}
+
+func TestInitOnlyModuleSkipsStartAndStop(t *testing.T) {
+	manager := newTestManager(nil)
+
+	mod := &initOnlyModule{name: "init-only"}
+	require.NoError(t, manager.RegisterModule(mod))
+	require.NoError(t, manager.InitModules(context.Background()))
+	require.NoError(t, manager.StartModules(context.Background()))
+	require.NoError(t, manager.StopModules(context.Background()))
+	assert.Equal(t, modulex.StateStopped, manager.State())
+}
+
+func TestStartOnlyModuleStartsButIsNotStopped(t *testing.T) {
+	manager := newTestManager(nil)
+
+	mod := &startOnlyModule{name: "start-only"}
+	require.NoError(t, manager.RegisterModule(mod))
+	require.NoError(t, manager.InitModules(context.Background()))
+	require.NoError(t, manager.StartModules(context.Background()))
+	require.NoError(t, manager.StopModules(context.Background()))
+	assert.True(t, mod.started)
+	assert.Equal(t, modulex.StateStopped, manager.State())
+}
+
+func TestStopOnlyModuleStopsButDoesNotStart(t *testing.T) {
+	manager := newTestManager(nil)
+
+	mod := &stopOnlyModule{name: "stop-only"}
+	require.NoError(t, manager.RegisterModule(mod))
+	require.NoError(t, manager.InitModules(context.Background()))
+	require.NoError(t, manager.StartModules(context.Background()))
+	require.NoError(t, manager.StopModules(context.Background()))
+	assert.True(t, mod.stopped)
+	assert.Equal(t, modulex.StateStopped, manager.State())
+}
+
+func TestInitRollbackSkipsModulesWithoutStoppable(t *testing.T) {
+	manager := newTestManager(nil)
+
+	initOnly := &initOnlyModule{name: "init-only"}
+	modB := newMockModule(t, mockModuleConfig{
+		name:    "module-b",
+		deps:    []string{"init-only"},
+		initErr: errors.New("module-b init failed"),
+	})
+
+	require.NoError(t, manager.RegisterModule(initOnly))
+	require.NoError(t, manager.RegisterModule(modB))
+
+	err := manager.InitModules(context.Background())
+	require.Error(t, err)
+	assert.Equal(t, modulex.StateStopped, manager.State())
+}
+
+func TestStartRollbackSkipsModulesWithoutStoppable(t *testing.T) {
+	manager := newTestManager(nil)
+
+	startOnly := &startOnlyModule{name: "start-only"}
+	modB := newMockModule(t, mockModuleConfig{
+		name:     "module-b",
+		deps:     []string{"start-only"},
+		startErr: errors.New("module-b start failed"),
+	})
+
+	require.NoError(t, manager.RegisterModule(startOnly))
+	require.NoError(t, manager.RegisterModule(modB))
+	require.NoError(t, manager.InitModules(context.Background()))
+
+	err := manager.StartModules(context.Background())
+	require.Error(t, err)
+	assert.True(t, startOnly.started)
+	assert.Equal(t, modulex.StateStopped, manager.State())
 }
 
 func TestStopModulesContextCancellation(t *testing.T) {
