@@ -127,7 +127,17 @@ not claim compile-time architectural enforcement that it does not provide.
 - [x] Test the minimum supported Go version and current supported Go releases in CI.
 - [x] Run `gofmt`, `go vet`, `golangci-lint`, `go test -race`, and build verification in CI.
 - [x] Add vulnerability scanning.
-- [ ] Add API compatibility checks.
+- [x] Add API compatibility checks.
+  - `scripts/check-api-compat.sh` (`make check-api-compat`) uses
+    `golang.org/x/exp/cmd/apidiff` to report compatible/incompatible
+    changes in the core package and each adapter sub-package since the
+    latest git tag; a `-strict` flag exits non-zero on incompatible
+    changes for future use once the project reaches v1. No-ops cleanly
+    when no tag exists yet. Wired into CI as the `api-compat` job
+    (informational for now, matching the v0 compatibility policy in
+    `COMPATIBILITY.md`). Manually verified end-to-end against a temporary
+    local tag: correctly reported `NewManager`'s breaking signature change
+    as incompatible and a new sentinel error as compatible.
 - [x] Add fuzz tests for dependency graph validation.
 - [x] Add failure-injection tests for the main lifecycle transition and rollback paths.
 - [x] Avoid TCP listeners in unit tests where `httptest.NewRecorder` is sufficient.

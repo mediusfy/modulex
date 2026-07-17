@@ -98,6 +98,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fixtures, `scripts/check-module-boundary.sh` (`make
   check-module-boundary`), and a `module-boundary` CI job that runs it
   against `examples/deployment`.
+- `scripts/check-api-compat.sh` (`make check-api-compat`), which reports
+  API compatibility since the latest git tag for the core package and each
+  adapter sub-package using `golang.org/x/exp/cmd/apidiff`, wired into CI
+  as the `api-compat` job.
 
 ### Changed
 
