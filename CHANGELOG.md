@@ -48,6 +48,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Failure-injection test asserting start rollback joins stop errors.
 - README links to compatibility, comparison, migration, support, security, and
   contributing documentation.
+- `docs/planning/lifecycle-guide.md` documenting lifecycle states,
+  transitions, rollback, shutdown, and task supervision.
 
 ### Changed
 
