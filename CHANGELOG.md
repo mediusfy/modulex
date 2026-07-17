@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   creates auto-generated releases for version tags.
 - `make vuln` target and GitHub Actions vulnerability scanning job using
   `govulncheck`.
+- Explicit `.golangci.yml` configuration and CI pin to `golangci-lint` v2.12.2.
 - Public subpackages for framework adapters: `modulex/nats`, `modulex/rabbitmq`,
   and `modulex/watermill`.
 
