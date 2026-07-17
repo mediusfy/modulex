@@ -165,16 +165,13 @@ not claim compile-time architectural enforcement that it does not provide.
 The following work is intentionally deferred and should be completed before a
 v1 release:
 
-1. **Extract remaining framework adapters from the core package and narrow the
-   `Registry` interface.** Chi routing and OpenTelemetry tracing still live in
-   `modulex.go`, forcing consumers to depend on `github.com/go-chi/chi/v5` and
-   OpenTelemetry even if they do not use them. These should become
-   `modulex/chi` and `modulex/otel` sub-packages, with the core package
-   depending only on capability interfaces. `NewManager` should also stop
-   accepting a concrete `chi.Router` and the `Registry` interface should be
-   split into focused capabilities (routing, events, logging, tracing, tasks).
-2. **Inject the tracer provider.** Replace the global `otel.Tracer(...)` call
-   with a configurable tracer provider passed to `NewManager`.
+1. ~~Extract remaining framework adapters from the core package and narrow the
+   `Registry` interface.~~ Chi routing and OpenTelemetry tracing now live in
+   `modulex/chi` and `modulex/otel` sub-packages. The core package depends only
+   on capability interfaces, `NewManager` no longer accepts a concrete
+   `chi.Router`, and the `Registry` interface has been narrowed.
+2. ~~Inject the tracer provider.~~ The tracer is now injected via
+   `modulex.WithTracer`, defaulting to a no-op tracer.
 3. ~~Add Go version matrix testing.~~ CI now tests `1.26.x` and `stable` on
    Ubuntu and macOS runners.
 4. ~~Add isolated adapter tests for NATS and RabbitMQ.~~ NATS uses an embedded

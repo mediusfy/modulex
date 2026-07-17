@@ -10,9 +10,11 @@ import (
 	modulexotel "github.com/mediusfy/modulex/otel"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	nooptrace "go.opentelemetry.io/otel/trace/noop"
 )
 
 func newTestManager() *modulex.Manager {
@@ -127,13 +129,14 @@ func TestSpanAttributesConversion(t *testing.T) {
 		"int_attr":    42,
 		"bool_attr":   true,
 		"float_attr":  3.14,
+		"uint_attr":   uint(7),
 	})
 	span.End()
 
 	spans := sr.Ended()
 	require.Len(t, spans, 1)
 	attrs := spans[0].Attributes()
-	require.Len(t, attrs, 4)
+	require.Len(t, attrs, 5)
 
 	got := make(map[string]any)
 	for _, attr := range attrs {
@@ -143,7 +146,39 @@ func TestSpanAttributesConversion(t *testing.T) {
 	assert.Equal(t, int64(42), got["int_attr"])
 	assert.Equal(t, true, got["bool_attr"])
 	assert.Equal(t, 3.14, got["float_attr"])
+	// Unsupported types fall back to a formatted string representation.
+	assert.Equal(t, "7", got["uint_attr"])
 }
+
+func TestNewTracerFallsBackToGlobalProvider(t *testing.T) {
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() { otel.SetTracerProvider(nooptrace.NewTracerProvider()) })
+
+	tracer := modulexotel.NewTracer(nil)
+	ctx := context.Background()
+	_, span := tracer.Start(ctx, "GlobalFallback", nil)
+	span.End()
+
+	spans := sr.Ended()
+	require.Len(t, spans, 1)
+	assert.Equal(t, "GlobalFallback", spans[0].Name())
+}
+
+func TestContextWithSpanContextIgnoresForeignImplementation(t *testing.T) {
+	tracer := modulexotel.NewTracer(sdktrace.NewTracerProvider())
+	ctx := context.Background()
+
+	// Pass a SpanContext implementation that is not *spanContext.
+	foreign := foreignSpanContext{}
+	got := tracer.ContextWithSpanContext(ctx, foreign)
+	assert.Equal(t, ctx, got)
+}
+
+type foreignSpanContext struct{}
+
+func (foreignSpanContext) IsValid() bool { return true }
 
 type testModule struct {
 	name string

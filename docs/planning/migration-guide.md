@@ -77,9 +77,102 @@ watermillBus := watermilladapter.NewEventBus(0, false, false)
 - This keeps the core package focused on lifecycle orchestration and avoids
   forcing optional framework dependencies on consumers that do not use them.
 
+## Migrating Chi router usage
+
+`NewManager` no longer accepts a Chi router, and `Registry.Router()` is removed.
+Applications that use Chi register the router as a typed service and modules
+resolve it in `Init`.
+
+### Before
+
+```go
+import (
+    gochi "github.com/go-chi/chi/v5"
+    "github.com/mediusfy/modulex"
+)
+
+router := gochi.NewRouter()
+mgr := modulex.NewManager(router, eb, logger, configLoader)
+
+func (m *Module) Init(ctx context.Context, reg modulex.Registry) error {
+    reg.Router().Get("/api/incidents", m.listIncidents)
+    return nil
+}
+```
+
+### After
+
+```go
+import (
+    gochi "github.com/go-chi/chi/v5"
+    "github.com/mediusfy/modulex"
+    modulexchi "github.com/mediusfy/modulex/chi"
+)
+
+router := gochi.NewRouter()
+mgr := modulex.NewManager(eb, logger, configLoader)
+if err := modulexchi.RegisterRouter(mgr, router); err != nil {
+    // handle error
+}
+
+func (m *Module) Init(ctx context.Context, reg modulex.Registry) error {
+    r, err := modulexchi.ResolveRouter(reg)
+    if err != nil {
+        return err
+    }
+    r.Get("/api/incidents", m.listIncidents)
+    return nil
+}
+```
+
+### What changed and why
+
+- The core package no longer depends on Chi, so consumers that do not serve
+  HTTP do not pull in `github.com/go-chi/chi/v5`.
+- Chi integration lives in `modulex/chi` and uses the existing typed service
+  registry for clean, type-safe wiring.
+
+## Migrating OpenTelemetry tracing
+
+The core package no longer exposes `Registry.Tracer()` or uses the global
+OpenTelemetry tracer. Tracing is opt-in via `modulex.WithTracer`.
+
+### Before
+
+```go
+import "github.com/mediusfy/modulex"
+
+mgr := modulex.NewManager(router, eb, logger, configLoader)
+// Spans were created using the global OTel tracer from Registry.Tracer().
+```
+
+### After
+
+```go
+import (
+    "github.com/mediusfy/modulex"
+    modulexotel "github.com/mediusfy/modulex/otel"
+)
+
+mgr := modulex.NewManager(eb, logger, configLoader,
+    modulex.WithTracer(modulexotel.NewTracer(tp)),
+)
+```
+
+### What changed and why
+
+- Tracing is now optional. Consumers that do not need it use the built-in
+  no-op tracer with zero extra dependencies.
+- The OpenTelemetry adapter lives in `modulex/otel` and accepts a
+  `TracerProvider`, avoiding reliance on the global tracer provider.
+
 ## General upgrade checklist
 
 1. Update imports for any moved adapters.
 2. Replace `Registry.Go` call sites with the new signature.
-3. Review task functions to return meaningful errors instead of ignoring them.
-4. Run `make test-arch` to verify race and lifecycle behavior.
+3. Replace `Registry.Router()` usage with `modulex/chi.ResolveRouter` after
+   registering the router via `modulex/chi.RegisterRouter`.
+4. Replace `Registry.Tracer()` usage with a tracer injected via
+   `modulex.WithTracer`.
+5. Review task functions to return meaningful errors instead of ignoring them.
+6. Run `make test-arch` to verify race and lifecycle behavior.

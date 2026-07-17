@@ -81,3 +81,22 @@ func TestRouterKeyTypeSafety(t *testing.T) {
 	require.NoError(t, err)
 	assert.Same(t, router, resolved)
 }
+
+func TestRegisterRouterDuplicate(t *testing.T) {
+	router := gochi.NewRouter()
+	mgr := newTestManager(nil)
+
+	require.NoError(t, modulexchi.RegisterRouter(mgr, router))
+	err := modulexchi.RegisterRouter(mgr, router)
+	assert.ErrorIs(t, err, modulex.ErrDuplicateService)
+}
+
+func TestResolveRouterTypeMismatch(t *testing.T) {
+	mgr := newTestManager(nil)
+
+	// Register a value under the same string key with the wrong concrete type.
+	require.NoError(t, mgr.RegisterService(modulexchi.RouterKey.Name(), "not-a-router"))
+
+	_, err := modulexchi.ResolveRouter(mgr)
+	assert.ErrorIs(t, err, modulex.ErrServiceTypeMismatch)
+}
