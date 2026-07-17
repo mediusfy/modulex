@@ -65,3 +65,20 @@ jobs:
       uses: golangci/golangci-lint-action@v6
       with:
         version: v1.64
+
+  vuln:
+    name: Vulnerability Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.26'
+
+    - name: Run govulncheck
+      run: make vuln

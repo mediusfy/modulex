@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dependabot configuration for weekly Go module and GitHub Actions updates.
 - GitHub Actions release workflow (`release.yml`) that builds, tests, and
   creates auto-generated releases for version tags.
+- `make vuln` target and GitHub Actions vulnerability scanning job using
+  `govulncheck`.
 - Public subpackages for framework adapters: `modulex/nats`, `modulex/rabbitmq`,
   and `modulex/watermill`.
 
