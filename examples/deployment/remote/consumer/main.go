@@ -27,8 +27,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	remoteMod, err := notification.NewRemoteModule(notificationURL, nil)
+	if err != nil {
+		logger.Error("failed to create remote notification module", slog.Any("error", err))
+		os.Exit(1)
+	}
+
 	mgr := modulex.NewManager(nil, logger, nil)
-	if err := mgr.RegisterModule(notification.NewRemoteModule(notificationURL, nil)); err != nil {
+	if err := mgr.RegisterModule(remoteMod); err != nil {
 		logger.Error("failed to register remote notification module", slog.Any("error", err))
 		os.Exit(1)
 	}

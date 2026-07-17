@@ -6,6 +6,7 @@ package notification
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/mediusfy/modulex"
@@ -61,8 +62,11 @@ type RemoteModule struct {
 
 // NewRemoteModule creates a notification module that proxies to a remote
 // service over HTTP.
-func NewRemoteModule(baseURL string, client *http.Client) *RemoteModule {
-	return &RemoteModule{baseURL: baseURL, client: client}
+func NewRemoteModule(baseURL string, client *http.Client) (*RemoteModule, error) {
+	if _, err := adapters.NewHTTPClient(baseURL, client); err != nil {
+		return nil, fmt.Errorf("invalid remote notification module: %w", err)
+	}
+	return &RemoteModule{baseURL: baseURL, client: client}, nil
 }
 
 // Name implements modulex.Module.
@@ -74,6 +78,10 @@ func (m *RemoteModule) DependsOn() []string { return nil }
 // Init implements modulex.Module. It registers the remote client adapter under
 // the same typed key the local module uses.
 func (m *RemoteModule) Init(_ context.Context, reg modulex.Registry) error {
-	remoteClient := ports.Service(adapters.NewHTTPClient(m.baseURL, m.client))
+	client, err := adapters.NewHTTPClient(m.baseURL, m.client)
+	if err != nil {
+		return fmt.Errorf("failed to create remote notification client: %w", err)
+	}
+	remoteClient := ports.Service(client)
 	return modulex.Provide(reg, ports.ServiceKey, remoteClient)
 }
