@@ -92,6 +92,45 @@ func (m *DummyModule) Stop(ctx context.Context) error {
 	return nil
 }
 
+// InMemoryEventBus acts as a mock/in-memory EventBus implementation.
+type InMemoryEventBus struct {
+	mu          sync.Mutex
+	subscribers map[string][]modulex.EventHandler
+	published   [][]byte
+}
+
+func NewInMemoryEventBus() *InMemoryEventBus {
+	return &InMemoryEventBus{
+		subscribers: make(map[string][]modulex.EventHandler),
+	}
+}
+
+func (eb *InMemoryEventBus) Publish(ctx context.Context, topic string, payload []byte) error {
+	eb.mu.Lock()
+	handlers := eb.subscribers[topic]
+	eb.published = append(eb.published, payload)
+	eb.mu.Unlock()
+
+	for _, h := range handlers {
+		_ = h(ctx, payload)
+	}
+	return nil
+}
+
+func (eb *InMemoryEventBus) Subscribe(ctx context.Context, topic string, handler modulex.EventHandler) error {
+	eb.mu.Lock()
+	defer eb.mu.Unlock()
+	eb.subscribers[topic] = append(eb.subscribers[topic], handler)
+	return nil
+}
+
+func (eb *InMemoryEventBus) Close(ctx context.Context) error {
+	eb.mu.Lock()
+	defer eb.mu.Unlock()
+	eb.subscribers = make(map[string][]modulex.EventHandler)
+	return nil
+}
+
 func TestManagerLifecycleAndWiring(t *testing.T) {
 	router := gochi.NewRouter()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -105,7 +144,8 @@ func TestManagerLifecycleAndWiring(t *testing.T) {
 		return nil
 	}
 
-	manager := modulex.NewManager(router, nil, logger, configLoader)
+	eb := NewInMemoryEventBus()
+	manager := modulex.NewManager(router, eb, logger, configLoader)
 
 	var initSeq, startSeq, stopSeq []string
 	modB := NewDummyModule("module-b", []string{"module-a"}, &initSeq, &startSeq, &stopSeq)
@@ -188,7 +228,6 @@ func TestCircularDependencyDetection(t *testing.T) {
 }
 
 func TestTracesNoGaps(t *testing.T) {
-	// 1. Set up Memory Span Exporter and configure OpenTelemetry
 	sr := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
 	otel.SetTracerProvider(tp)
@@ -203,11 +242,9 @@ func TestTracesNoGaps(t *testing.T) {
 
 	ctx := context.Background()
 
-	// 2. Run initialization
 	err := manager.InitModules(ctx)
 	require.NoError(t, err)
 
-	// 3. Assert trace spans are nested correctly with zero gaps
 	spans := sr.Ended()
 	require.Len(t, spans, 2)
 
@@ -223,7 +260,6 @@ func TestTracesNoGaps(t *testing.T) {
 	require.NotNil(t, parentSpan)
 	require.NotNil(t, childSpan)
 
-	// Assert child parent ID is exactly the parent span's ID (ensuring span continuation)
 	assert.Equal(t, parentSpan.SpanContext().SpanID(), childSpan.Parent().SpanID())
 	assert.Equal(t, parentSpan.SpanContext().TraceID(), childSpan.SpanContext().TraceID())
 }
@@ -237,16 +273,13 @@ func TestBackgroundGoTracingPropagation(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	manager := modulex.NewManager(router, nil, logger, nil)
 
-	// Start a root parent span
 	ctx, parentSpan := otel.Tracer("test").Start(context.Background(), "RootTask")
-	
+
 	var wg sync.WaitGroup
 	wg.Add(1)
 
-	// Invoke the background task via modulex Registry wrapper
 	manager.Go(ctx, "BackgroundTask", func(bgCtx context.Context) {
 		defer wg.Done()
-		// Retrieve current span context to assert
 		_, activeSpan := otel.Tracer("test").Start(bgCtx, "NestedTask")
 		activeSpan.End()
 	})
@@ -254,9 +287,8 @@ func TestBackgroundGoTracingPropagation(t *testing.T) {
 	wg.Wait()
 	parentSpan.End()
 
-	// Validate background trace lineage
 	spans := sr.Ended()
-	require.Len(t, spans, 3) // RootTask, BackgroundTask, NestedTask
+	require.Len(t, spans, 3)
 
 	var bgSpan, nestedSpan sdktrace.ReadOnlySpan
 	for _, s := range spans {
@@ -270,11 +302,29 @@ func TestBackgroundGoTracingPropagation(t *testing.T) {
 	require.NotNil(t, bgSpan)
 	require.NotNil(t, nestedSpan)
 
-	// Check Trace ID consistency across concurrent boundaries (propagated trace)
 	assert.Equal(t, parentSpan.SpanContext().TraceID(), bgSpan.SpanContext().TraceID())
 	assert.Equal(t, parentSpan.SpanContext().TraceID(), nestedSpan.SpanContext().TraceID())
 
-	// Check Parent span linkage to verify no telemetry gap
 	assert.Equal(t, parentSpan.SpanContext().SpanID(), bgSpan.Parent().SpanID())
 	assert.Equal(t, bgSpan.SpanContext().SpanID(), nestedSpan.Parent().SpanID())
+}
+
+func TestEventBusIntegration(t *testing.T) {
+	router := gochi.NewRouter()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	eb := NewInMemoryEventBus()
+
+	manager := modulex.NewManager(router, eb, logger, nil)
+
+	var received []byte
+	err := manager.EventBus().Subscribe(context.Background(), "test.topic", func(ctx context.Context, payload []byte) error {
+		received = payload
+		return nil
+	})
+	require.NoError(t, err)
+
+	err = manager.EventBus().Publish(context.Background(), "test.topic", []byte("hello"))
+	require.NoError(t, err)
+
+	assert.Equal(t, []byte("hello"), received)
 }

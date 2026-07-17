@@ -16,10 +16,83 @@ Specifically, it is designed to:
 1. **Decouple Features at Compile-Time:** Prevent direct imports of concrete service implementations or database/network adapters between different feature modules. All feature-to-feature communication is handled via resolved interface boundaries (ports).
 2. **Enforce Hexagonal Architecture Boundaries:** Provide a structured initialization registry where features register their public inbound ports and dynamically request outbound ports.
 3. **Automate Topological DAG Lifecycles:** Analyze feature dependencies at startup to construct a Directed Acyclic Graph (DAG), detect circular loops, and execute lifecycle stages (`Init`, `Start`, `Stop`) in strict topological order (and reverse order for teardown).
-4. **Provide Built-In OpenTelemetry (OTel) Tracing:** Automatically trace module initialization and startup cycles. Provide trace-safe concurrency mechanisms to ensure traces continue seamlessly in background goroutines.
-5. **Enable Flexible Deployment Topologies:**
+4. **Abstract Messaging Infrastructure (Dependency Inversion):** Introduce a generic `EventBus` interface that decouples modules from specific messaging frameworks (e.g. NATS, RabbitMQ, Kafka).
+5. **Provide Built-In OpenTelemetry (OTel) Tracing:** Automatically trace module initialization and startup cycles. Provide trace-safe concurrency mechanisms to ensure traces continue seamlessly in background goroutines.
+6. **Enable Flexible Deployment Topologies:**
    * **Monolithic Run:** Register all feature modules locally. The service registry wires interfaces directly to in-process service implementations.
    * **Distributed Run (Microservices):** Register only the target module in its own standalone binary. For other modules it depends on, the composition root registers network client adapters (HTTP/gRPC/NATS) instead, pointing to the external service.
+
+---
+
+## Pluggable Event Bus Interface
+
+To prevent modules from tying themselves directly to a specific messaging broker, Modulex exposes a generic `EventBus` abstraction.
+
+### 1. The EventBus Interface
+
+```go
+// EventHandler is a generic callback for incoming event payloads.
+type EventHandler func(ctx context.Context, payload []byte) error
+
+// EventBus abstracts the underlying message broker.
+type EventBus interface {
+	Publish(ctx context.Context, topic string, payload []byte) error
+	Subscribe(ctx context.Context, topic string, handler EventHandler) error
+	Close(ctx context.Context) error
+}
+```
+
+### 2. Built-In Adapters (Drivers)
+
+Modulex includes production-ready adapters for popular brokers. To use them:
+
+#### NATS Driver
+```go
+import "github.com/mediusfy/modulex"
+
+// Wrap a standard *nats.Conn connection
+eb := modulex.NewNATSEventBus(natsConn)
+mgr := modulex.NewManager(router, eb, logger, configLoader)
+```
+
+#### RabbitMQ Driver
+```go
+import "github.com/mediusfy/modulex"
+
+// Wrap a standard *amqp.Channel channel
+eb := modulex.NewRabbitMQEventBus(amqpChannel)
+mgr := modulex.NewManager(router, eb, logger, configLoader)
+```
+
+### 3. InMemory Event Bus (For Testing)
+
+Using the `EventBus` interface, you can write an `InMemoryEventBus` backed by simple Go channels/maps to test your business logic completely offline:
+
+```go
+type InMemoryEventBus struct {
+	mu          sync.Mutex
+	subscribers map[string][]modulex.EventHandler
+}
+
+func (eb *InMemoryEventBus) Publish(ctx context.Context, topic string, payload []byte) error {
+	eb.mu.Lock()
+	handlers := eb.subscribers[topic]
+	eb.mu.Unlock()
+	for _, h := range handlers {
+		_ = h(ctx, payload)
+	}
+	return nil
+}
+
+func (eb *InMemoryEventBus) Subscribe(ctx context.Context, topic string, handler modulex.EventHandler) error {
+	eb.mu.Lock()
+	defer eb.mu.Unlock()
+	eb.subscribers[topic] = append(eb.subscribers[topic], handler)
+	return nil
+}
+
+func (eb *InMemoryEventBus) Close(ctx context.Context) error { return nil }
+```
 
 ---
 

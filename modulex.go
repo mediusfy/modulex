@@ -8,7 +8,6 @@ import (
 	"sync"
 
 	gochi "github.com/go-chi/chi/v5"
-	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -27,6 +26,21 @@ var (
 	// ErrAlreadyInitialized is returned when InitModules is called more than once.
 	ErrAlreadyInitialized = errors.New("manager already initialized")
 )
+
+// EventHandler is a generic callback function signature for incoming events.
+type EventHandler func(ctx context.Context, payload []byte) error
+
+// EventBus abstracts the underlying message broker (NATS, Kafka, RabbitMQ, etc.).
+type EventBus interface {
+	// Publish sends a payload to a specific topic/subject.
+	Publish(ctx context.Context, topic string, payload []byte) error
+
+	// Subscribe listens to a topic and invokes the handler when an event is received.
+	Subscribe(ctx context.Context, topic string, handler EventHandler) error
+
+	// Close gracefully disconnects from the broker, shutting down active subscribers.
+	Close(ctx context.Context) error
+}
 
 // Module represents a self-contained feature module that complies with Hexagonal Architecture.
 // It acts as the composition root of the feature, instantiating services and adapters,
@@ -50,9 +64,9 @@ type Module interface {
 	Stop(ctx context.Context) error
 }
 
-// Registry manages the collection of features, their HTTP endpoints, NATS subscriptions,
-// and cross-cutting platform components. It acts as a service locator, preventing features
-// from importing each other's service/adapter implementations directly.
+// Registry manages the collection of features, their HTTP endpoints, and cross-cutting platform components.
+// It acts as a service locator and event bus hub, preventing features from importing each other directly
+// or coupling to specific messaging architectures.
 type Registry interface {
 	// RegisterService registers a service implementation under a unique key (e.g. "incidents.Service").
 	// Returns ErrRegistryLocked if the registry has already finished initialization.
@@ -65,12 +79,8 @@ type Registry interface {
 	// Router returns the Chi Router for registering HTTP endpoints.
 	Router() gochi.Router
 
-	// NATS returns the NATS connection if configured, or nil.
-	NATS() *nats.Conn
-
-	// SubscribeNATS subscribes a callback to a NATS subject.
-	// The subscription is registered and automatically cleaned up when the manager stops.
-	SubscribeNATS(subject string, cb nats.MsgHandler) (*nats.Subscription, error)
+	// EventBus returns the pluggable, configured event bus abstraction.
+	EventBus() EventBus
 
 	// GetConfig unmarshals configuration values into the target structure.
 	// This abstract config retrieval prevents features from directly reading global configurations.
@@ -95,19 +105,17 @@ type Manager struct {
 	modules      map[string]Module
 	orderedMods  []Module
 	router       gochi.Router
-	natsConn     *nats.Conn
+	eventBus     EventBus
 	loggerCtx    *slog.Logger
 	configLoader func(target interface{}) error
 	initialized  bool
 	tracer       trace.Tracer
-
-	activeSubs []*nats.Subscription
 }
 
 var _ Registry = (*Manager)(nil)
 
 // NewManager creates a new instance of Manager.
-func NewManager(router gochi.Router, natsConn *nats.Conn, logger *slog.Logger, configLoader func(target interface{}) error) *Manager {
+func NewManager(router gochi.Router, eb EventBus, logger *slog.Logger, configLoader func(target interface{}) error) *Manager {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -115,7 +123,7 @@ func NewManager(router gochi.Router, natsConn *nats.Conn, logger *slog.Logger, c
 		services:     make(map[string]interface{}),
 		modules:      make(map[string]Module),
 		router:       router,
-		natsConn:     natsConn,
+		eventBus:     eb,
 		loggerCtx:    logger,
 		configLoader: configLoader,
 		tracer:       otel.Tracer("github.com/mediusfy/modulex"),
@@ -162,25 +170,9 @@ func (m *Manager) Router() gochi.Router {
 	return m.router
 }
 
-// NATS implements Registry.
-func (m *Manager) NATS() *nats.Conn {
-	return m.natsConn
-}
-
-// SubscribeNATS implements Registry. It wraps the NATS subscription and tracks it for cleanup.
-func (m *Manager) SubscribeNATS(subject string, cb nats.MsgHandler) (*nats.Subscription, error) {
-	if m.natsConn == nil {
-		return nil, fmt.Errorf("NATS connection is not available")
-	}
-	sub, err := m.natsConn.Subscribe(subject, cb)
-	if err != nil {
-		return nil, fmt.Errorf("NATS subscription failed: %w", err)
-	}
-	m.mu.Lock()
-	m.activeSubs = append(m.activeSubs, sub)
-	m.mu.Unlock()
-	m.loggerCtx.Info("subscribed to NATS subject", slog.String("subject", subject))
-	return sub, nil
+// EventBus implements Registry.
+func (m *Manager) EventBus() EventBus {
+	return m.eventBus
 }
 
 // GetConfig implements Registry.
@@ -295,17 +287,16 @@ func (m *Manager) StartModules(ctx context.Context) error {
 	return nil
 }
 
-// StopModules stops all registered modules in reverse topological order inside trace spans and cleans up NATS subscriptions.
+// StopModules stops all registered modules in reverse topological order inside trace spans and closes the EventBus.
 func (m *Manager) StopModules(ctx context.Context) error {
 	m.mu.Lock()
-	subs := m.activeSubs
-	m.activeSubs = nil
+	eb := m.eventBus
 	m.mu.Unlock()
 
-	// Unsubscribe all active NATS subscriptions
-	for _, sub := range subs {
-		m.loggerCtx.Info("unsubscribing from NATS subject", slog.String("subject", sub.Subject))
-		_ = sub.Unsubscribe()
+	// Close the EventBus if configured to unsubscribe all drivers cleanly
+	if eb != nil {
+		m.loggerCtx.Info("closing event bus")
+		_ = eb.Close(ctx)
 	}
 
 	m.mu.RLock()

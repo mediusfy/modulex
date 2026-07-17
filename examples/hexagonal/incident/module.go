@@ -42,6 +42,14 @@ func (m *Module) Init(ctx context.Context, reg modulex.Registry) error {
 		return err
 	}
 
+	// Subscribe to incident.created events via the pluggable EventBus
+	if reg.EventBus() != nil {
+		_ = reg.EventBus().Subscribe(ctx, "incident.created", func(ctx context.Context, payload []byte) error {
+			reg.Logger().Info("EventBus: received incident created notification", slog.String("payload", string(payload)))
+			return nil
+		})
+	}
+
 	// Mount HTTP handlers via the Chi Router provided by the registry
 	reg.Router().Get("/api/incidents", func(w http.ResponseWriter, r *http.Request) {
 		list, err := m.svc.ListIncidents(r.Context())
@@ -67,6 +75,13 @@ func (m *Module) Init(ctx context.Context, reg modulex.Registry) error {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+
+		// Publish the incident created event to the abstract EventBus
+		if reg.EventBus() != nil {
+			eventPayload, _ := json.Marshal(inc)
+			_ = reg.EventBus().Publish(r.Context(), "incident.created", eventPayload)
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(inc)
