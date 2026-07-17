@@ -41,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `SUPPORT.md` documenting how to get help, report bugs, and ask questions.
 - `docs/planning/comparison-with-alternatives.md` comparing Modulex with plain
   constructor injection, Wire, Fx, and Dig.
+- `docs/planning/migration-guide.md` documenting breaking v0 changes.
 
 ### Changed
 
