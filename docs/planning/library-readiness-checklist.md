@@ -139,8 +139,8 @@ not claim compile-time architectural enforcement that it does not provide.
 
 - [ ] Extract and implement Chi, NATS, RabbitMQ, Watermill, and OpenTelemetry adapters.
   - NATS, RabbitMQ, and Watermill are extracted; Chi and OpenTelemetry remain in the core package.
-- [x] Add adapter-specific tests.
-  - Watermill has in-memory tests; NATS has embedded-server tests; RabbitMQ has skip-when-unavailable tests. Adapter-specific documentation is still pending for NATS and RabbitMQ.
+- [x] Add adapter-specific tests and README files.
+  - Watermill has in-memory tests; NATS has embedded-server tests and a README; RabbitMQ has skip-when-unavailable tests and a README.
 
 ### Phase 5: Adoption readiness
 
