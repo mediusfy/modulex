@@ -68,6 +68,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for Chi routers so the core package does not depend on Chi.
 - Monolith and remote-adapter deployment examples under `examples/deployment`
   showing how the same domain interfaces can be wired locally or remotely.
+- `golang.org/x/sync/errgroup` dependency for structured concurrent awaiting of
+  supervised background tasks during shutdown.
 - `notification.RemoteModule` example demonstrating a remote client adapter
   registered under the same typed service key as the local implementation.
 - Optional `modulex.Startable` and `modulex.Stoppable` lifecycle capability

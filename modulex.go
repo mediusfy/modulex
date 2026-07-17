@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+
+	"golang.org/x/sync/errgroup"
 )
 
 var (
@@ -760,20 +762,44 @@ func (m *Manager) waitForTasks(ctx context.Context) error {
 
 	m.loggerCtx.Info("waiting for supervised tasks to finish", slog.Int("task_count", len(tasks)))
 
+	g, gCtx := errgroup.WithContext(ctx)
+
+	for _, task := range tasks {
+		t := task
+		g.Go(func() error {
+			select {
+			case <-t.done:
+			case <-gCtx.Done():
+				// The caller's deadline expired. Return without waiting for the
+				// task to finish so the manager can report the timeout promptly.
+			}
+			return nil
+		})
+	}
+
+	// Wait for the errgroup to finish. Goroutines intentionally return nil so
+	// the group waits for every task even when one fails. The errgroup context
+	// is cancelled only by the caller's context deadline.
+	_ = g.Wait()
+
+	// Collect errors from tasks that completed. A non-blocking select is used
+	// because tasks that ignore cancellation may still be running after the
+	// caller's deadline expired.
+	var errs []error
 	for _, t := range tasks {
 		select {
 		case <-t.done:
-		case <-ctx.Done():
-			m.resetTaskCtx()
-			return fmt.Errorf("timed out waiting for tasks to finish: %w", ctx.Err())
+			if err := t.Wait(); err != nil {
+				errs = append(errs, fmt.Errorf("task %q failed: %w", t.Name(), err))
+			}
+		default:
 		}
 	}
 
-	var errs []error
-	for _, t := range tasks {
-		if err := t.Wait(); err != nil {
-			errs = append(errs, fmt.Errorf("task %q failed: %w", t.Name(), err))
-		}
+	if ctx.Err() != nil {
+		errs = append(errs, fmt.Errorf("timed out waiting for tasks to finish: %w", ctx.Err()))
+		m.resetTaskCtx()
+		return errors.Join(errs...)
 	}
 
 	m.taskMu.Lock()
