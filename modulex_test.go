@@ -6,24 +6,18 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"sync"
 	"testing"
 	"time"
 
-	gochi "github.com/go-chi/chi/v5"
 	"github.com/mediusfy/modulex"
 	"github.com/mediusfy/modulex/mocks"
 	watermilladapter "github.com/mediusfy/modulex/watermill"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
-	"go.opentelemetry.io/otel"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 type MockConfig struct {
@@ -125,13 +119,11 @@ func (eb *InMemoryEventBus) Close(ctx context.Context) error {
 }
 
 func newTestManager(eb modulex.EventBus) *modulex.Manager {
-	router := gochi.NewRouter()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return modulex.NewManager(router, eb, logger, nil)
+	return modulex.NewManager(eb, logger, nil)
 }
 
 func TestManagerLifecycleAndWiring(t *testing.T) {
-	router := gochi.NewRouter()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	configLoader := func(target interface{}) error {
@@ -146,7 +138,7 @@ func TestManagerLifecycleAndWiring(t *testing.T) {
 	mockEB := mocks.NewMockEventBus(t)
 	mockEB.On("Close", mock.Anything).Return(nil).Maybe()
 
-	manager := modulex.NewManager(router, mockEB, logger, configLoader)
+	manager := modulex.NewManager(mockEB, logger, configLoader)
 
 	var initSeq, startSeq, stopSeq []string
 	modA := newMockModule(t, mockModuleConfig{
@@ -154,10 +146,6 @@ func TestManagerLifecycleAndWiring(t *testing.T) {
 		onInit: func(reg modulex.Registry) {
 			initSeq = append(initSeq, "module-a")
 			_ = reg.RegisterService("module-a.Service", &MockServiceImpl{})
-			reg.Router().Get("/module-a", func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusOK)
-				_, _ = w.Write([]byte("module-a active"))
-			})
 		},
 		onStart: func() { startSeq = append(startSeq, "module-a") },
 		onStop:  func() { stopSeq = append(stopSeq, "module-a") },
@@ -167,10 +155,6 @@ func TestManagerLifecycleAndWiring(t *testing.T) {
 		deps: []string{"module-a"},
 		onInit: func(reg modulex.Registry) {
 			initSeq = append(initSeq, "module-b")
-			reg.Router().Get("/module-b", func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusOK)
-				_, _ = w.Write([]byte("module-b active"))
-			})
 		},
 		onStart: func() { startSeq = append(startSeq, "module-b") },
 		onStop:  func() { stopSeq = append(stopSeq, "module-b") },
@@ -201,19 +185,6 @@ func TestManagerLifecycleAndWiring(t *testing.T) {
 	err = manager.RegisterService("late.Service", &MockServiceImpl{})
 	assert.ErrorIs(t, err, modulex.ErrRegistryLocked)
 
-	// Verify HTTP Routing
-	req := httptest.NewRequest(http.MethodGet, "/module-a", nil)
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.Equal(t, "module-a active", rec.Body.String())
-
-	req = httptest.NewRequest(http.MethodGet, "/module-b", nil)
-	rec = httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.Equal(t, "module-b active", rec.Body.String())
-
 	// 2. Start modules
 	err = manager.StartModules(ctx)
 	require.NoError(t, err)
@@ -236,82 +207,6 @@ func TestCircularDependencyDetection(t *testing.T) {
 
 	err := manager.InitModules(context.Background())
 	assert.ErrorIs(t, err, modulex.ErrCircularDependency)
-}
-
-func TestTracesNoGaps(t *testing.T) {
-	sr := tracetest.NewSpanRecorder()
-	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
-	otel.SetTracerProvider(tp)
-
-	manager := newTestManager(nil)
-
-	modA := newMockModule(t, mockModuleConfig{name: "module-a"})
-	require.NoError(t, manager.RegisterModule(modA))
-
-	ctx := context.Background()
-
-	err := manager.InitModules(ctx)
-	require.NoError(t, err)
-
-	spans := sr.Ended()
-	require.Len(t, spans, 2)
-
-	var parentSpan, childSpan sdktrace.ReadOnlySpan
-	for _, s := range spans {
-		if s.Name() == "InitModules" {
-			parentSpan = s
-		} else if s.Name() == "InitModule:module-a" {
-			childSpan = s
-		}
-	}
-
-	require.NotNil(t, parentSpan)
-	require.NotNil(t, childSpan)
-
-	assert.Equal(t, parentSpan.SpanContext().SpanID(), childSpan.Parent().SpanID())
-	assert.Equal(t, parentSpan.SpanContext().TraceID(), childSpan.SpanContext().TraceID())
-}
-
-func TestBackgroundGoTracingPropagation(t *testing.T) {
-	sr := tracetest.NewSpanRecorder()
-	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
-	otel.SetTracerProvider(tp)
-
-	manager := newTestManager(nil)
-
-	ctx, parentSpan := otel.Tracer("test").Start(context.Background(), "RootTask")
-
-	handle, err := manager.Go(ctx, "BackgroundTask", func(bgCtx context.Context) error {
-		_, activeSpan := otel.Tracer("test").Start(bgCtx, "NestedTask")
-		activeSpan.End()
-		return nil
-	})
-	require.NoError(t, err)
-	require.NotNil(t, handle)
-
-	require.NoError(t, handle.Wait())
-	parentSpan.End()
-
-	spans := sr.Ended()
-	require.Len(t, spans, 3)
-
-	var bgSpan, nestedSpan sdktrace.ReadOnlySpan
-	for _, s := range spans {
-		if s.Name() == "BackgroundTask" {
-			bgSpan = s
-		} else if s.Name() == "NestedTask" {
-			nestedSpan = s
-		}
-	}
-
-	require.NotNil(t, bgSpan)
-	require.NotNil(t, nestedSpan)
-
-	assert.Equal(t, parentSpan.SpanContext().TraceID(), bgSpan.SpanContext().TraceID())
-	assert.Equal(t, parentSpan.SpanContext().TraceID(), nestedSpan.SpanContext().TraceID())
-
-	assert.Equal(t, parentSpan.SpanContext().SpanID(), bgSpan.Parent().SpanID())
-	assert.Equal(t, bgSpan.SpanContext().SpanID(), nestedSpan.Parent().SpanID())
 }
 
 func TestEventBusIntegration(t *testing.T) {
@@ -1472,9 +1367,8 @@ func TestSupervisedTasksConcurrentGo(t *testing.T) {
 }
 
 func newTestManagerWithPanicPolicy(policy modulex.PanicPolicy) *modulex.Manager {
-	router := gochi.NewRouter()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return modulex.NewManager(router, nil, logger, nil, modulex.WithPanicPolicy(policy))
+	return modulex.NewManager(nil, logger, nil, modulex.WithPanicPolicy(policy))
 }
 
 func TestSupervisedTaskLifecycleFailures(t *testing.T) {

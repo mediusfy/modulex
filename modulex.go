@@ -7,11 +7,6 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
-
-	gochi "github.com/go-chi/chi/v5"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
 )
 
 var (
@@ -140,6 +135,63 @@ func (h *TaskHandle) finish(err error) {
 	close(h.done)
 }
 
+// Tracer abstracts span creation so the core package does not depend on a
+// concrete OpenTelemetry implementation. A nil Tracer defaults to a no-op
+// implementation.
+type Tracer interface {
+	// Start creates a new span and returns a context that carries it.
+	Start(ctx context.Context, spanName string, attrs map[string]any) (context.Context, Span)
+	// SpanContextFromContext extracts the current span context from ctx.
+	SpanContextFromContext(ctx context.Context) SpanContext
+	// ContextWithSpanContext returns a new context carrying the provided span
+	// context. It is used to propagate trace ancestry to manager-owned task
+	// goroutines that run on a different base context.
+	ContextWithSpanContext(ctx context.Context, sc SpanContext) context.Context
+}
+
+// SpanContext is an opaque span context used for trace propagation.
+type SpanContext interface {
+	// IsValid reports whether the span context identifies a valid span.
+	IsValid() bool
+}
+
+// Span is a minimal lifecycle span created by a Tracer.
+type Span interface {
+	// End completes the span.
+	End()
+	// RecordError attaches an error to the span.
+	RecordError(err error)
+	// SetAttributes attaches key-value pairs to the span.
+	SetAttributes(attrs map[string]any)
+}
+
+// noopSpanContext is a no-op SpanContext implementation.
+type noopSpanContext struct{}
+
+func (noopSpanContext) IsValid() bool { return false }
+
+// noopSpan is a no-op Span implementation.
+type noopSpan struct{}
+
+func (noopSpan) End()                               {}
+func (noopSpan) RecordError(err error)              {}
+func (noopSpan) SetAttributes(attrs map[string]any) {}
+
+// noopTracer is a no-op Tracer implementation.
+type noopTracer struct{}
+
+func (noopTracer) Start(ctx context.Context, spanName string, attrs map[string]any) (context.Context, Span) {
+	return ctx, noopSpan{}
+}
+
+func (noopTracer) SpanContextFromContext(ctx context.Context) SpanContext {
+	return noopSpanContext{}
+}
+
+func (noopTracer) ContextWithSpanContext(ctx context.Context, sc SpanContext) context.Context {
+	return ctx
+}
+
 // ManagerOption configures a Manager during construction.
 type ManagerOption func(*Manager)
 
@@ -156,6 +208,14 @@ func WithPanicPolicy(policy PanicPolicy) ManagerOption {
 func WithConfigLoader(loader func(target interface{}) error) ManagerOption {
 	return func(m *Manager) {
 		m.configLoader = loader
+	}
+}
+
+// WithTracer injects a Tracer implementation into the Manager. If nil, a no-op
+// tracer is used so tracing remains optional for core consumers.
+func WithTracer(tracer Tracer) ManagerOption {
+	return func(m *Manager) {
+		m.tracer = tracer
 	}
 }
 
@@ -196,7 +256,7 @@ type Module interface {
 	Stop(ctx context.Context) error
 }
 
-// Registry manages the collection of features, their HTTP endpoints, and cross-cutting platform components.
+// Registry manages the collection of features and cross-cutting platform components.
 // It acts as a service locator and event bus hub, preventing features from importing each other directly
 // or coupling to specific messaging architectures.
 type Registry interface {
@@ -208,9 +268,6 @@ type Registry interface {
 	// If the service is not found, it returns ErrServiceNotFound.
 	ResolveService(name string) (interface{}, error)
 
-	// Router returns the Chi Router for registering HTTP endpoints.
-	Router() gochi.Router
-
 	// EventBus returns the pluggable, configured event bus abstraction.
 	EventBus() EventBus
 
@@ -221,15 +278,12 @@ type Registry interface {
 	// Logger returns the system logger.
 	Logger() *slog.Logger
 
-	// Tracer returns the OpenTelemetry Tracer instance configured for this manager.
-	Tracer() trace.Tracer
-
-	// Go spawns a supervised goroutine to execute background work. It propagates
-	// the OpenTelemetry trace context, creates a child span, recovers from panics
-	// according to the manager's panic policy, and returns a handle that can be
-	// used to wait for the task to finish. Tasks are cancelled and awaited during
-	// manager shutdown. Returns ErrRegistryLocked if the manager is stopping or
-	// stopped, or ErrDuplicateTask if a task with the same name already exists.
+	// Go spawns a supervised goroutine to execute background work. It creates a
+	// child span when a Tracer is configured, recovers from panics according to
+	// the manager's panic policy, and returns a handle that can be used to wait
+	// for the task to finish. Tasks are cancelled and awaited during manager
+	// shutdown. Returns ErrRegistryLocked if the manager is stopping or stopped,
+	// or ErrDuplicateTask if a task with the same name already exists.
 	Go(ctx context.Context, taskName string, fn func(ctx context.Context) error) (*TaskHandle, error)
 }
 
@@ -242,12 +296,11 @@ type Manager struct {
 	modules      map[string]Module
 	moduleOrder  []string
 	orderedMods  []Module
-	router       gochi.Router
 	eventBus     EventBus
 	loggerCtx    *slog.Logger
 	configLoader func(target interface{}) error
 	state        LifecycleState
-	tracer       trace.Tracer
+	tracer       Tracer
 	panicPolicy  PanicPolicy
 	tasks        map[string]*TaskHandle
 	taskCtx      context.Context
@@ -257,7 +310,7 @@ type Manager struct {
 var _ Registry = (*Manager)(nil)
 
 // NewManager creates a new instance of Manager.
-func NewManager(router gochi.Router, eb EventBus, logger *slog.Logger, configLoader func(target interface{}) error, opts ...ManagerOption) *Manager {
+func NewManager(eb EventBus, logger *slog.Logger, configLoader func(target interface{}) error, opts ...ManagerOption) *Manager {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -266,12 +319,11 @@ func NewManager(router gochi.Router, eb EventBus, logger *slog.Logger, configLoa
 		services:     make(map[string]interface{}),
 		modules:      make(map[string]Module),
 		moduleOrder:  make([]string, 0),
-		router:       router,
 		eventBus:     eb,
 		loggerCtx:    logger,
 		configLoader: configLoader,
 		state:        StateConfiguring,
-		tracer:       otel.Tracer("github.com/mediusfy/modulex"),
+		tracer:       noopTracer{},
 		panicPolicy:  PanicPolicyLog,
 		tasks:        make(map[string]*TaskHandle),
 		taskCtx:      taskCtx,
@@ -279,6 +331,9 @@ func NewManager(router gochi.Router, eb EventBus, logger *slog.Logger, configLoa
 	}
 	for _, opt := range opts {
 		opt(m)
+	}
+	if m.tracer == nil {
+		m.tracer = noopTracer{}
 	}
 	if m.configLoader == nil {
 		m.loggerCtx.Warn("no config loader configured; GetConfig will return an error until WithConfigLoader is used")
@@ -361,11 +416,6 @@ func (m *Manager) ResolveService(name string) (interface{}, error) {
 	return svc, nil
 }
 
-// Router implements Registry.
-func (m *Manager) Router() gochi.Router {
-	return m.router
-}
-
 // EventBus implements Registry.
 func (m *Manager) EventBus() EventBus {
 	return m.eventBus
@@ -382,11 +432,6 @@ func (m *Manager) GetConfig(target interface{}) error {
 // Logger implements Registry.
 func (m *Manager) Logger() *slog.Logger {
 	return m.loggerCtx
-}
-
-// Tracer implements Registry.
-func (m *Manager) Tracer() trace.Tracer {
-	return m.tracer
 }
 
 // State returns the current lifecycle state of the manager.
@@ -418,7 +463,8 @@ func (m *Manager) closeEventBus(ctx context.Context) error {
 }
 
 // Go implements Registry. It spawns a supervised background routine while
-// preserving OTel span ancestry and returning a handle for awaiting completion.
+// preserving trace ancestry when a Tracer is configured, and returns a handle
+// for awaiting completion.
 func (m *Manager) Go(ctx context.Context, taskName string, fn func(ctx context.Context) error) (*TaskHandle, error) {
 	m.stateMu.Lock()
 	state := m.state
@@ -452,8 +498,8 @@ func (m *Manager) Go(ctx context.Context, taskName string, fn func(ctx context.C
 	taskCtx, taskCancel := context.WithCancel(m.taskCtx)
 	m.taskMu.Unlock()
 
-	spanCtx := trace.SpanContextFromContext(ctx)
-	bgCtx := trace.ContextWithSpanContext(taskCtx, spanCtx)
+	spanCtx := m.tracer.SpanContextFromContext(ctx)
+	bgCtx := m.tracer.ContextWithSpanContext(taskCtx, spanCtx)
 
 	go func() {
 		var taskErr error
@@ -464,9 +510,7 @@ func (m *Manager) Go(ctx context.Context, taskName string, fn func(ctx context.C
 			handle.finish(taskErr)
 		}()
 
-		bgCtx, span := m.tracer.Start(bgCtx, taskName,
-			trace.WithSpanKind(trace.SpanKindInternal),
-		)
+		execCtx, span := m.tracer.Start(bgCtx, taskName, nil)
 		defer span.End()
 
 		defer func() {
@@ -484,7 +528,7 @@ func (m *Manager) Go(ctx context.Context, taskName string, fn func(ctx context.C
 			}
 		}()
 
-		taskErr = fn(bgCtx)
+		taskErr = fn(execCtx)
 	}()
 
 	return handle, nil
@@ -519,9 +563,9 @@ func (m *Manager) InitModules(ctx context.Context) error {
 	m.orderedMods = ordered
 	m.mu.Unlock()
 
-	ctx, span := m.tracer.Start(ctx, "InitModules",
-		trace.WithAttributes(attribute.Int("modulex.module_count", len(ordered))),
-	)
+	ctx, span := m.tracer.Start(ctx, "InitModules", map[string]any{
+		"modulex.module_count": len(ordered),
+	})
 	defer span.End()
 
 	var initErr error
@@ -532,9 +576,9 @@ func (m *Manager) InitModules(ctx context.Context) error {
 			break
 		}
 
-		modCtx, modSpan := m.tracer.Start(ctx, fmt.Sprintf("InitModule:%s", mod.Name()),
-			trace.WithAttributes(attribute.String("modulex.module_name", mod.Name())),
-		)
+		modCtx, modSpan := m.tracer.Start(ctx, fmt.Sprintf("InitModule:%s", mod.Name()), map[string]any{
+			"modulex.module_name": mod.Name(),
+		})
 		if err := mod.Init(modCtx, m); err != nil {
 			modSpan.RecordError(err)
 			modSpan.End()
@@ -596,9 +640,9 @@ func (m *Manager) StartModules(ctx context.Context) error {
 	copy(mods, m.orderedMods)
 	m.mu.RUnlock()
 
-	ctx, span := m.tracer.Start(ctx, "StartModules",
-		trace.WithAttributes(attribute.Int("modulex.module_count", len(mods))),
-	)
+	ctx, span := m.tracer.Start(ctx, "StartModules", map[string]any{
+		"modulex.module_count": len(mods),
+	})
 	defer span.End()
 
 	var startErr error
@@ -609,9 +653,9 @@ func (m *Manager) StartModules(ctx context.Context) error {
 			break
 		}
 
-		modCtx, modSpan := m.tracer.Start(ctx, fmt.Sprintf("StartModule:%s", mod.Name()),
-			trace.WithAttributes(attribute.String("modulex.module_name", mod.Name())),
-		)
+		modCtx, modSpan := m.tracer.Start(ctx, fmt.Sprintf("StartModule:%s", mod.Name()), map[string]any{
+			"modulex.module_name": mod.Name(),
+		})
 		if err := mod.Start(modCtx); err != nil {
 			modSpan.RecordError(err)
 			modSpan.End()
@@ -735,7 +779,7 @@ func (m *Manager) StopModules(ctx context.Context) error {
 	m.taskMu.Unlock()
 	m.stateMu.Unlock()
 
-	ctx, span := m.tracer.Start(ctx, "StopModules")
+	ctx, span := m.tracer.Start(ctx, "StopModules", nil)
 	defer span.End()
 
 	var errs []error
@@ -749,7 +793,7 @@ func (m *Manager) StopModules(ctx context.Context) error {
 		copy(mods, m.orderedMods)
 		m.mu.RUnlock()
 
-		span.SetAttributes(attribute.Int("modulex.module_count", len(mods)))
+		span.SetAttributes(map[string]any{"modulex.module_count": len(mods)})
 
 		for i := len(mods) - 1; i >= 0; i-- {
 			if err := ctx.Err(); err != nil {
@@ -757,9 +801,9 @@ func (m *Manager) StopModules(ctx context.Context) error {
 				break
 			}
 			mod := mods[i]
-			modCtx, modSpan := m.tracer.Start(ctx, fmt.Sprintf("StopModule:%s", mod.Name()),
-				trace.WithAttributes(attribute.String("modulex.module_name", mod.Name())),
-			)
+			modCtx, modSpan := m.tracer.Start(ctx, fmt.Sprintf("StopModule:%s", mod.Name()), map[string]any{
+				"modulex.module_name": mod.Name(),
+			})
 			if err := mod.Stop(modCtx); err != nil {
 				modSpan.RecordError(err)
 				m.loggerCtx.Error("failed to stop module", slog.String("module", mod.Name()), slog.Any("error", err))

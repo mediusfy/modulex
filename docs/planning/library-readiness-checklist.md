@@ -46,28 +46,28 @@ not claim compile-time architectural enforcement that it does not provide.
 ### Core API and dependency boundaries
 
 - [x] Keep the core package focused on graph validation and lifecycle orchestration.
-- [ ] Avoid mandatory Chi, NATS, Prometheus, and OpenTelemetry dependencies in the core package.
-  - NATS, RabbitMQ, and Watermill adapters are extracted; Chi and OpenTelemetry are still imported by the core package.
+- [x] Avoid mandatory Chi, NATS, Prometheus, and OpenTelemetry dependencies in the core package.
+  - NATS, RabbitMQ, Watermill, Chi, and OpenTelemetry adapters are extracted into sub-packages.
 - [ ] Prefer small capability interfaces over one broad `Registry` interface.
 - [ ] Make `Start` and `Stop` optional lifecycle capabilities so simple modules do not require no-op methods.
 - [ ] Validate constructor dependencies and return `(*Manager, error)` where construction can fail.
-- [ ] Avoid global state; inject logging, tracing, metrics, and integrations.
-  - Logging and the router are injected, but the tracer still uses the global OpenTelemetry tracer provider.
+- [x] Avoid global state; inject logging, tracing, metrics, and integrations.
+  - Logging is injected, the router is resolved as a typed service, and the tracer is injected via `WithTracer`.
 - [x] Use typed service keys and package-level generic `Provide` and `Resolve` helpers if service location is retained.
 - [x] Document constructor injection as the default and service location as an optional topology tool.
 - [ ] Keep public APIs compatible once v1 is released.
 
 ### Optional integrations
 
-- [ ] Provide Chi integration in a separate package.
+- [x] Provide Chi integration in a separate package.
 - [x] Provide NATS integration in a separate package.
 - [x] Provide RabbitMQ integration in a separate package.
 - [x] Provide Watermill integration in a separate package.
-- [ ] Provide OpenTelemetry integration in a separate package.
+- [x] Provide OpenTelemetry integration in a separate package.
 - [ ] Ensure consumers compile without unused integration dependencies.
 - [ ] Scope integration resources to the owning module and clean them up in lifecycle order.
-- [ ] Inject the tracer provider rather than capturing mutable global state.
-- [ ] Record errors and set appropriate span status in the OpenTelemetry integration.
+- [x] Inject the tracer provider rather than capturing mutable global state.
+- [x] Record errors and set appropriate span status in the OpenTelemetry integration.
 - [x] Add isolated integration tests for each adapter.
   - Watermill has in-memory tests; NATS uses an embedded test server; RabbitMQ uses a skip-when-unavailable test against a live broker.
 
