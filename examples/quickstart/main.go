@@ -20,10 +20,8 @@ var loggerKey = modulex.NewKey[LoggerService]("quickstart.Logger")
 // LoggerModule registers a shared logger service.
 type LoggerModule struct{}
 
-func (m *LoggerModule) Name() string                    { return "logger" }
-func (m *LoggerModule) DependsOn() []string             { return nil }
-func (m *LoggerModule) Start(ctx context.Context) error { return nil }
-func (m *LoggerModule) Stop(ctx context.Context) error  { return nil }
+func (m *LoggerModule) Name() string        { return "logger" }
+func (m *LoggerModule) DependsOn() []string { return nil }
 func (m *LoggerModule) Init(ctx context.Context, reg modulex.Registry) error {
 	return modulex.Provide(reg, loggerKey, LoggerService{})
 }
@@ -39,7 +37,6 @@ func (m *GreeterModule) Start(ctx context.Context) error {
 	m.logger.Log("greeter started")
 	return nil
 }
-func (m *GreeterModule) Stop(ctx context.Context) error { return nil }
 func (m *GreeterModule) Init(ctx context.Context, reg modulex.Registry) error {
 	logger, err := modulex.Resolve(reg, loggerKey)
 	if err != nil {

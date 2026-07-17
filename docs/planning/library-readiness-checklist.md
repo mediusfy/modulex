@@ -49,7 +49,7 @@ not claim compile-time architectural enforcement that it does not provide.
 - [x] Avoid mandatory Chi, NATS, Prometheus, and OpenTelemetry dependencies in the core package.
   - NATS, RabbitMQ, Watermill, Chi, and OpenTelemetry adapters are extracted into sub-packages.
 - [ ] Prefer small capability interfaces over one broad `Registry` interface.
-- [ ] Make `Start` and `Stop` optional lifecycle capabilities so simple modules do not require no-op methods.
+- [x] Make `Start` and `Stop` optional lifecycle capabilities so simple modules do not require no-op methods.
 - [ ] Validate constructor dependencies and return `(*Manager, error)` where construction can fail.
 - [x] Avoid global state; inject logging, tracing, metrics, and integrations.
   - Logging is injected, the router is resolved as a typed service, and the tracer is injected via `WithTracer`.
@@ -86,7 +86,8 @@ not claim compile-time architectural enforcement that it does not provide.
 - [x] Show both direct constructor injection and typed registry wiring.
 - [x] Provide monolith and remote-adapter examples using the same domain interfaces.
 - [x] Keep HTTP handlers thin and avoid raw internal error disclosure.
-- [ ] Use typed context keys where context values are necessary.
+- [x] Use typed context keys where context values are necessary.
+  - The codebase does not store values in `context.Context`, so typed context keys are not required.
 - [x] Add an honest comparison with plain constructor injection, Wire, Fx, and Dig.
 - [x] Add a migration guide for each breaking v0 API change.
 - [x] Add `CONTRIBUTING.md`, `SECURITY.md`, `CHANGELOG.md`, and a compatibility policy.

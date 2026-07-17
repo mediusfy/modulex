@@ -91,10 +91,10 @@ func TestNotificationModuleWithoutRouter(t *testing.T) {
 }
 
 type sendRecorder struct {
-	svc          ports.Service
-	called       bool
-	lastMessage  string
-	lastContext  context.Context
+	svc         ports.Service
+	called      bool
+	lastMessage string
+	lastContext context.Context
 }
 
 func (r *sendRecorder) Send(ctx context.Context, message string) error {

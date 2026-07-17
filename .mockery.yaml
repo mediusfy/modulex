@@ -17,3 +17,9 @@ packages:
       Registry:
         config:
           structname: MockRegistry
+      Startable:
+        config:
+          structname: MockStartable
+      Stoppable:
+        config:
+          structname: MockStoppable
