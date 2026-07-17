@@ -24,9 +24,6 @@ var (
 	// ErrRegistryLocked is returned when a module attempts to register a service after registry initialization has completed.
 	ErrRegistryLocked = errors.New("registry is locked: cannot register services after initialization")
 
-	// ErrAlreadyInitialized is returned when InitModules is called more than once.
-	ErrAlreadyInitialized = errors.New("manager already initialized")
-
 	// ErrModuleNil is returned when a nil module is passed to RegisterModule.
 	ErrModuleNil = errors.New("module must not be nil")
 
@@ -50,7 +47,44 @@ var (
 
 	// ErrInvalidServiceName is returned when a service is registered with an empty or whitespace-only key.
 	ErrInvalidServiceName = errors.New("service name must not be empty")
+
+	// ErrInvalidLifecycleState is returned when a lifecycle operation is requested while the manager is in an incompatible state.
+	ErrInvalidLifecycleState = errors.New("invalid lifecycle state")
 )
+
+// LifecycleState represents the current phase of the Manager's lifecycle.
+type LifecycleState int
+
+const (
+	StateConfiguring LifecycleState = iota
+	StateInitializing
+	StateInitialized
+	StateStarting
+	StateRunning
+	StateStopping
+	StateStopped
+)
+
+func (s LifecycleState) String() string {
+	switch s {
+	case StateConfiguring:
+		return "configuring"
+	case StateInitializing:
+		return "initializing"
+	case StateInitialized:
+		return "initialized"
+	case StateStarting:
+		return "starting"
+	case StateRunning:
+		return "running"
+	case StateStopping:
+		return "stopping"
+	case StateStopped:
+		return "stopped"
+	default:
+		return "unknown"
+	}
+}
 
 // EventHandler is a generic callback function signature for incoming events.
 type EventHandler func(ctx context.Context, payload []byte) error
@@ -126,6 +160,7 @@ type Registry interface {
 // Manager implements the Registry interface and orchestrates the module lifecycles.
 type Manager struct {
 	mu           sync.RWMutex
+	stateMu      sync.Mutex
 	services     map[string]interface{}
 	modules      map[string]Module
 	moduleOrder  []string
@@ -134,8 +169,7 @@ type Manager struct {
 	eventBus     EventBus
 	loggerCtx    *slog.Logger
 	configLoader func(target interface{}) error
-	initialized  bool
-	initializing bool
+	state        LifecycleState
 	tracer       trace.Tracer
 }
 
@@ -154,6 +188,7 @@ func NewManager(router gochi.Router, eb EventBus, logger *slog.Logger, configLoa
 		eventBus:     eb,
 		loggerCtx:    logger,
 		configLoader: configLoader,
+		state:        StateConfiguring,
 		tracer:       otel.Tracer("github.com/mediusfy/modulex"),
 	}
 }
@@ -166,12 +201,16 @@ func NewManager(router gochi.Router, eb EventBus, logger *slog.Logger, configLoa
 // already started. Independent modules preserve their registration order as
 // the deterministic tie-break during topological sorting.
 func (m *Manager) RegisterModule(mod Module) error {
+	m.stateMu.Lock()
+	if m.state != StateConfiguring {
+		m.stateMu.Unlock()
+		return fmt.Errorf("%w: cannot register module while in %q state", ErrRegistryLocked, m.state)
+	}
+	m.stateMu.Unlock()
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if m.initialized || m.initializing {
-		return ErrRegistryLocked
-	}
 	if mod == nil {
 		return ErrModuleNil
 	}
@@ -192,12 +231,15 @@ func (m *Manager) RegisterModule(mod Module) error {
 // RegisterService implements Registry. It registers a service instance to the service locator.
 // Registration is only permitted before InitModules has completed.
 func (m *Manager) RegisterService(name string, svc interface{}) error {
+	m.stateMu.Lock()
+	if m.state != StateConfiguring && m.state != StateInitializing {
+		m.stateMu.Unlock()
+		return fmt.Errorf("%w: cannot register service while in %q state", ErrRegistryLocked, m.state)
+	}
+	m.stateMu.Unlock()
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
-
-	if m.initialized {
-		return ErrRegistryLocked
-	}
 
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -252,6 +294,34 @@ func (m *Manager) Tracer() trace.Tracer {
 	return m.tracer
 }
 
+// State returns the current lifecycle state of the manager.
+func (m *Manager) State() LifecycleState {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	return m.state
+}
+
+func (m *Manager) setState(s LifecycleState) {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	m.state = s
+}
+
+func (m *Manager) closeEventBus(ctx context.Context) error {
+	m.mu.Lock()
+	eb := m.eventBus
+	m.mu.Unlock()
+
+	if eb == nil {
+		return nil
+	}
+	m.loggerCtx.Info("closing event bus")
+	if err := eb.Close(ctx); err != nil {
+		return fmt.Errorf("failed to close event bus: %w", err)
+	}
+	return nil
+}
+
 // Go implements Registry. It spawns a background routine while preserving OTel span ancestry.
 func (m *Manager) Go(ctx context.Context, taskName string, fn func(ctx context.Context)) {
 	spanCtx := trace.SpanContextFromContext(ctx)
@@ -280,21 +350,23 @@ func (m *Manager) Go(ctx context.Context, taskName string, fn func(ctx context.C
 
 // InitModules sorts the modules topologically based on dependencies,
 // then initializes them sequentially in dependency order inside trace spans.
+//
+// If a module fails to initialize, all previously initialized modules are
+// stopped in reverse order and the manager moves to the stopped state.
 func (m *Manager) InitModules(ctx context.Context) error {
-	m.mu.Lock()
-	if m.initialized {
-		m.mu.Unlock()
-		return ErrAlreadyInitialized
+	m.stateMu.Lock()
+	if m.state != StateConfiguring {
+		m.stateMu.Unlock()
+		return fmt.Errorf("%w: InitModules called in %q state", ErrInvalidLifecycleState, m.state)
 	}
-	if m.initializing {
-		m.mu.Unlock()
-		return ErrRegistryLocked
-	}
-	m.initializing = true
+	m.state = StateInitializing
+	m.stateMu.Unlock()
 
+	m.mu.Lock()
 	ordered, err := m.sortModules()
 	if err != nil {
 		m.mu.Unlock()
+		m.setState(StateStopped)
 		return err
 	}
 	m.orderedMods = ordered
@@ -305,7 +377,14 @@ func (m *Manager) InitModules(ctx context.Context) error {
 	)
 	defer span.End()
 
+	var initErr error
+	initializedCount := 0
 	for _, mod := range ordered {
+		if err := ctx.Err(); err != nil {
+			initErr = fmt.Errorf("init cancelled: %w", err)
+			break
+		}
+
 		modCtx, modSpan := m.tracer.Start(ctx, fmt.Sprintf("InitModule:%s", mod.Name()),
 			trace.WithAttributes(attribute.String("modulex.module_name", mod.Name())),
 		)
@@ -313,19 +392,51 @@ func (m *Manager) InitModules(ctx context.Context) error {
 			modSpan.RecordError(err)
 			modSpan.End()
 			span.RecordError(err)
-			return fmt.Errorf("failed to init module %q: %w", mod.Name(), err)
+			initErr = fmt.Errorf("failed to init module %q: %w", mod.Name(), err)
+			break
 		}
 		modSpan.End()
+		initializedCount++
 	}
 
-	m.mu.Lock()
-	m.initialized = true
-	m.mu.Unlock()
+	if initErr != nil {
+		if rollbackErr := m.rollbackInit(ctx, ordered[:initializedCount]); rollbackErr != nil {
+			initErr = errors.Join(initErr, rollbackErr)
+		}
+		m.setState(StateStopped)
+		return initErr
+	}
+
+	m.setState(StateInitialized)
 	return nil
 }
 
+// rollbackInit stops modules that were successfully initialized before a later
+// init failure. Errors from individual stops are joined together.
+func (m *Manager) rollbackInit(ctx context.Context, initialized []Module) error {
+	var errs []error
+	for i := len(initialized) - 1; i >= 0; i-- {
+		mod := initialized[i]
+		if err := mod.Stop(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("failed to stop module %q during init rollback: %w", mod.Name(), err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // StartModules starts all registered modules in topological dependency order inside trace spans.
+//
+// If a module fails to start, all previously started modules are stopped in
+// reverse order and the manager moves to the stopped state.
 func (m *Manager) StartModules(ctx context.Context) error {
+	m.stateMu.Lock()
+	if m.state != StateInitialized {
+		m.stateMu.Unlock()
+		return fmt.Errorf("%w: StartModules called in %q state", ErrInvalidLifecycleState, m.state)
+	}
+	m.state = StateStarting
+	m.stateMu.Unlock()
+
 	m.mu.RLock()
 	mods := make([]Module, len(m.orderedMods))
 	copy(mods, m.orderedMods)
@@ -336,7 +447,14 @@ func (m *Manager) StartModules(ctx context.Context) error {
 	)
 	defer span.End()
 
+	var startErr error
+	startedCount := 0
 	for _, mod := range mods {
+		if err := ctx.Err(); err != nil {
+			startErr = fmt.Errorf("start cancelled: %w", err)
+			break
+		}
+
 		modCtx, modSpan := m.tracer.Start(ctx, fmt.Sprintf("StartModule:%s", mod.Name()),
 			trace.WithAttributes(attribute.String("modulex.module_name", mod.Name())),
 		)
@@ -344,24 +462,60 @@ func (m *Manager) StartModules(ctx context.Context) error {
 			modSpan.RecordError(err)
 			modSpan.End()
 			span.RecordError(err)
-			return fmt.Errorf("failed to start module %q: %w", mod.Name(), err)
+			startErr = fmt.Errorf("failed to start module %q: %w", mod.Name(), err)
+			break
 		}
 		modSpan.End()
+		startedCount++
 	}
+
+	if startErr != nil {
+		if rollbackErr := m.rollbackStart(ctx, mods[:startedCount]); rollbackErr != nil {
+			startErr = errors.Join(startErr, rollbackErr)
+		}
+		m.setState(StateStopped)
+		return startErr
+	}
+
+	m.setState(StateRunning)
 	return nil
 }
 
-// StopModules stops all registered modules in reverse topological order inside trace spans and closes the EventBus.
-func (m *Manager) StopModules(ctx context.Context) error {
-	m.mu.Lock()
-	eb := m.eventBus
-	m.mu.Unlock()
-
-	// Close the EventBus if configured to unsubscribe all drivers cleanly
-	if eb != nil {
-		m.loggerCtx.Info("closing event bus")
-		_ = eb.Close(ctx)
+// rollbackStart stops modules that were successfully started before a later
+// start failure. Errors from individual stops are joined together.
+func (m *Manager) rollbackStart(ctx context.Context, started []Module) error {
+	var errs []error
+	for i := len(started) - 1; i >= 0; i-- {
+		mod := started[i]
+		if err := mod.Stop(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("failed to stop module %q during start rollback: %w", mod.Name(), err))
+		}
 	}
+	return errors.Join(errs...)
+}
+
+// StopModules stops all registered modules in reverse topological order inside trace spans and closes the EventBus.
+//
+// StopModules is idempotent: calling it multiple times returns nil without
+// re-executing shutdown logic. It is context-aware and joins all shutdown
+// errors so that no failure is silently dropped.
+func (m *Manager) StopModules(ctx context.Context) error {
+	m.stateMu.Lock()
+	switch m.state {
+	case StateStopped, StateStopping:
+		m.stateMu.Unlock()
+		return nil
+	case StateConfiguring, StateInitialized:
+		m.state = StateStopped
+		m.stateMu.Unlock()
+		return m.closeEventBus(ctx)
+	case StateRunning:
+		m.state = StateStopping
+	default:
+		m.stateMu.Unlock()
+		return fmt.Errorf("%w: StopModules called in %q state", ErrInvalidLifecycleState, m.state)
+	}
+	m.stateMu.Unlock()
 
 	m.mu.RLock()
 	mods := make([]Module, len(m.orderedMods))
@@ -373,8 +527,12 @@ func (m *Manager) StopModules(ctx context.Context) error {
 	)
 	defer span.End()
 
-	var firstErr error
+	var errs []error
 	for i := len(mods) - 1; i >= 0; i-- {
+		if err := ctx.Err(); err != nil {
+			errs = append(errs, fmt.Errorf("stop cancelled: %w", err))
+			break
+		}
 		mod := mods[i]
 		modCtx, modSpan := m.tracer.Start(ctx, fmt.Sprintf("StopModule:%s", mod.Name()),
 			trace.WithAttributes(attribute.String("modulex.module_name", mod.Name())),
@@ -382,17 +540,17 @@ func (m *Manager) StopModules(ctx context.Context) error {
 		if err := mod.Stop(modCtx); err != nil {
 			modSpan.RecordError(err)
 			m.loggerCtx.Error("failed to stop module", slog.String("module", mod.Name()), slog.Any("error", err))
-			if firstErr == nil {
-				firstErr = err
-			}
+			errs = append(errs, fmt.Errorf("failed to stop module %q: %w", mod.Name(), err))
 		}
 		modSpan.End()
 	}
 
-	if firstErr != nil {
-		span.RecordError(firstErr)
+	if err := m.closeEventBus(ctx); err != nil {
+		errs = append(errs, err)
 	}
-	return firstErr
+
+	m.setState(StateStopped)
+	return errors.Join(errs...)
 }
 
 // sortModules performs a topological sort on registered modules.
