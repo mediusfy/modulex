@@ -20,6 +20,11 @@ type EventBus struct {
 }
 
 // NewEventBus instantiates the NATS event bus driver.
+//
+// The EventBus does not take ownership of conn: the caller creates and closes
+// the underlying *nats.Conn, typically after modulex.Manager.StopModules has
+// closed the EventBus. This lets a single connection be shared across
+// multiple concerns outside the module lifecycle if desired.
 func NewEventBus(conn *nats.Conn) *EventBus {
 	return &EventBus{conn: conn}
 }
@@ -69,7 +74,9 @@ func messageContext(base context.Context, msg *nats.Msg) context.Context {
 	return otel.GetTextMapPropagator().Extract(base, propagation.HeaderCarrier(msg.Header))
 }
 
-// Close implements modulex.EventBus. It unsubscribes all registered NATS subscriptions.
+// Close implements modulex.EventBus. It unsubscribes all registered NATS
+// subscriptions but does not close the underlying *nats.Conn, which the
+// caller owns.
 func (n *EventBus) Close(ctx context.Context) error {
 	n.subsMu.Lock()
 	defer n.subsMu.Unlock()

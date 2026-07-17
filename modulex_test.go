@@ -1067,6 +1067,64 @@ func TestStopModulesAggregatesErrors(t *testing.T) {
 	assert.Equal(t, modulex.StateStopped, manager.State())
 }
 
+// orderTrackingEventBus wraps InMemoryEventBus to record when Close is
+// called, so shutdown-order tests can assert that the EventBus (a resource
+// owned by the registry, not by any single module) is closed only after
+// every module has finished stopping.
+type orderTrackingEventBus struct {
+	*InMemoryEventBus
+	mu    *sync.Mutex
+	order *[]string
+}
+
+func (eb *orderTrackingEventBus) Close(ctx context.Context) error {
+	eb.mu.Lock()
+	*eb.order = append(*eb.order, "eventbus")
+	eb.mu.Unlock()
+	return eb.InMemoryEventBus.Close(ctx)
+}
+
+// TestEventBusClosedAfterAllModulesStop verifies that StopModules cleans up
+// the shared EventBus only after every module in reverse topological order
+// has stopped, so a module's Stop can still safely use the EventBus.
+func TestEventBusClosedAfterAllModulesStop(t *testing.T) {
+	var mu sync.Mutex
+	var order []string
+
+	eb := &orderTrackingEventBus{InMemoryEventBus: NewInMemoryEventBus(), mu: &mu, order: &order}
+	manager := newTestManager(eb)
+
+	modA := newMockModule(t, mockModuleConfig{
+		name: "module-a",
+		onStop: func() {
+			mu.Lock()
+			order = append(order, "module-a")
+			mu.Unlock()
+		},
+	})
+	modB := newMockModule(t, mockModuleConfig{
+		name: "module-b",
+		deps: []string{"module-a"},
+		onStop: func() {
+			mu.Lock()
+			order = append(order, "module-b")
+			mu.Unlock()
+		},
+	})
+
+	require.NoError(t, manager.RegisterModule(modA))
+	require.NoError(t, manager.RegisterModule(modB))
+	require.NoError(t, manager.InitModules(context.Background()))
+	require.NoError(t, manager.StartModules(context.Background()))
+	require.NoError(t, manager.StopModules(context.Background()))
+
+	mu.Lock()
+	defer mu.Unlock()
+	// module-b started after module-a (dependency order) so it stops first;
+	// the event bus is a shared resource and must close last.
+	assert.Equal(t, []string{"module-b", "module-a", "eventbus"}, order)
+}
+
 func TestInitContextCancellation(t *testing.T) {
 	manager := newTestManager(nil)
 

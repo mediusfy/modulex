@@ -84,6 +84,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `scripts/check-consumer-boundary.sh` and a `make check-consumer-boundary`
   target that fail CI if any integration adapter dependency (chi, nats,
   rabbitmq, watermill, otel) leaks into a core-only consumer's build graph.
+- `TestEventBusClosedAfterAllModulesStop` proving `StopModules` closes the
+  shared `EventBus` only after every module has stopped.
+- Explicit doc comments and tests on the `nats` and `rabbitmq` adapters
+  clarifying that `Close` does not close the caller-owned connection/channel,
+  and documentation in `docs/planning/lifecycle-guide.md` describing which
+  integration resources the manager owns versus the caller.
 
 ### Changed
 
