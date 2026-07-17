@@ -202,22 +202,17 @@ func TestManagerLifecycleAndWiring(t *testing.T) {
 	assert.ErrorIs(t, err, modulex.ErrRegistryLocked)
 
 	// Verify HTTP Routing
-	ts := httptest.NewServer(router)
-	defer ts.Close()
+	req := httptest.NewRequest(http.MethodGet, "/module-a", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "module-a active", rec.Body.String())
 
-	resp, err := http.Get(ts.URL + "/module-a")
-	require.NoError(t, err)
-	body, _ := io.ReadAll(resp.Body)
-	_ = resp.Body.Close()
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Equal(t, "module-a active", string(body))
-
-	resp, err = http.Get(ts.URL + "/module-b")
-	require.NoError(t, err)
-	body, _ = io.ReadAll(resp.Body)
-	_ = resp.Body.Close()
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Equal(t, "module-b active", string(body))
+	req = httptest.NewRequest(http.MethodGet, "/module-b", nil)
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "module-b active", rec.Body.String())
 
 	// 2. Start modules
 	err = manager.StartModules(ctx)
