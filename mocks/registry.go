@@ -21,6 +21,14 @@ type MockRegistry struct {
 	mock.Mock
 }
 
+type MockRegistry_Expecter struct {
+	mock *mock.Mock
+}
+
+func (_m *MockRegistry) EXPECT() *MockRegistry_Expecter {
+	return &MockRegistry_Expecter{mock: &_m.Mock}
+}
+
 // EventBus provides a mock function with no fields
 func (_m *MockRegistry) EventBus() modulex.EventBus {
 	ret := _m.Called()
@@ -41,6 +49,33 @@ func (_m *MockRegistry) EventBus() modulex.EventBus {
 	return r0
 }
 
+// MockRegistry_EventBus_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'EventBus'
+type MockRegistry_EventBus_Call struct {
+	*mock.Call
+}
+
+// EventBus is a helper method to define mock.On call
+func (_e *MockRegistry_Expecter) EventBus() *MockRegistry_EventBus_Call {
+	return &MockRegistry_EventBus_Call{Call: _e.mock.On("EventBus")}
+}
+
+func (_c *MockRegistry_EventBus_Call) Run(run func()) *MockRegistry_EventBus_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run()
+	})
+	return _c
+}
+
+func (_c *MockRegistry_EventBus_Call) Return(_a0 modulex.EventBus) *MockRegistry_EventBus_Call {
+	_c.Call.Return(_a0)
+	return _c
+}
+
+func (_c *MockRegistry_EventBus_Call) RunAndReturn(run func() modulex.EventBus) *MockRegistry_EventBus_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // GetConfig provides a mock function with given fields: target
 func (_m *MockRegistry) GetConfig(target interface{}) error {
 	ret := _m.Called(target)
@@ -59,9 +94,92 @@ func (_m *MockRegistry) GetConfig(target interface{}) error {
 	return r0
 }
 
+// MockRegistry_GetConfig_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'GetConfig'
+type MockRegistry_GetConfig_Call struct {
+	*mock.Call
+}
+
+// GetConfig is a helper method to define mock.On call
+//   - target interface{}
+func (_e *MockRegistry_Expecter) GetConfig(target interface{}) *MockRegistry_GetConfig_Call {
+	return &MockRegistry_GetConfig_Call{Call: _e.mock.On("GetConfig", target)}
+}
+
+func (_c *MockRegistry_GetConfig_Call) Run(run func(target interface{})) *MockRegistry_GetConfig_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(interface{}))
+	})
+	return _c
+}
+
+func (_c *MockRegistry_GetConfig_Call) Return(_a0 error) *MockRegistry_GetConfig_Call {
+	_c.Call.Return(_a0)
+	return _c
+}
+
+func (_c *MockRegistry_GetConfig_Call) RunAndReturn(run func(interface{}) error) *MockRegistry_GetConfig_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // Go provides a mock function with given fields: ctx, taskName, fn
-func (_m *MockRegistry) Go(ctx context.Context, taskName string, fn func(context.Context)) {
-	_m.Called(ctx, taskName, fn)
+func (_m *MockRegistry) Go(ctx context.Context, taskName string, fn func(context.Context) error) (*modulex.TaskHandle, error) {
+	ret := _m.Called(ctx, taskName, fn)
+
+	if len(ret) == 0 {
+		panic("no return value specified for Go")
+	}
+
+	var r0 *modulex.TaskHandle
+	var r1 error
+	if rf, ok := ret.Get(0).(func(context.Context, string, func(context.Context) error) (*modulex.TaskHandle, error)); ok {
+		return rf(ctx, taskName, fn)
+	}
+	if rf, ok := ret.Get(0).(func(context.Context, string, func(context.Context) error) *modulex.TaskHandle); ok {
+		r0 = rf(ctx, taskName, fn)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(*modulex.TaskHandle)
+		}
+	}
+
+	if rf, ok := ret.Get(1).(func(context.Context, string, func(context.Context) error) error); ok {
+		r1 = rf(ctx, taskName, fn)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// MockRegistry_Go_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Go'
+type MockRegistry_Go_Call struct {
+	*mock.Call
+}
+
+// Go is a helper method to define mock.On call
+//   - ctx context.Context
+//   - taskName string
+//   - fn func(context.Context) error
+func (_e *MockRegistry_Expecter) Go(ctx interface{}, taskName interface{}, fn interface{}) *MockRegistry_Go_Call {
+	return &MockRegistry_Go_Call{Call: _e.mock.On("Go", ctx, taskName, fn)}
+}
+
+func (_c *MockRegistry_Go_Call) Run(run func(ctx context.Context, taskName string, fn func(context.Context) error)) *MockRegistry_Go_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(context.Context), args[1].(string), args[2].(func(context.Context) error))
+	})
+	return _c
+}
+
+func (_c *MockRegistry_Go_Call) Return(_a0 *modulex.TaskHandle, _a1 error) *MockRegistry_Go_Call {
+	_c.Call.Return(_a0, _a1)
+	return _c
+}
+
+func (_c *MockRegistry_Go_Call) RunAndReturn(run func(context.Context, string, func(context.Context) error) (*modulex.TaskHandle, error)) *MockRegistry_Go_Call {
+	_c.Call.Return(run)
+	return _c
 }
 
 // Logger provides a mock function with no fields
@@ -84,6 +202,33 @@ func (_m *MockRegistry) Logger() *slog.Logger {
 	return r0
 }
 
+// MockRegistry_Logger_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Logger'
+type MockRegistry_Logger_Call struct {
+	*mock.Call
+}
+
+// Logger is a helper method to define mock.On call
+func (_e *MockRegistry_Expecter) Logger() *MockRegistry_Logger_Call {
+	return &MockRegistry_Logger_Call{Call: _e.mock.On("Logger")}
+}
+
+func (_c *MockRegistry_Logger_Call) Run(run func()) *MockRegistry_Logger_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run()
+	})
+	return _c
+}
+
+func (_c *MockRegistry_Logger_Call) Return(_a0 *slog.Logger) *MockRegistry_Logger_Call {
+	_c.Call.Return(_a0)
+	return _c
+}
+
+func (_c *MockRegistry_Logger_Call) RunAndReturn(run func() *slog.Logger) *MockRegistry_Logger_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // RegisterService provides a mock function with given fields: name, svc
 func (_m *MockRegistry) RegisterService(name string, svc interface{}) error {
 	ret := _m.Called(name, svc)
@@ -100,6 +245,35 @@ func (_m *MockRegistry) RegisterService(name string, svc interface{}) error {
 	}
 
 	return r0
+}
+
+// MockRegistry_RegisterService_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'RegisterService'
+type MockRegistry_RegisterService_Call struct {
+	*mock.Call
+}
+
+// RegisterService is a helper method to define mock.On call
+//   - name string
+//   - svc interface{}
+func (_e *MockRegistry_Expecter) RegisterService(name interface{}, svc interface{}) *MockRegistry_RegisterService_Call {
+	return &MockRegistry_RegisterService_Call{Call: _e.mock.On("RegisterService", name, svc)}
+}
+
+func (_c *MockRegistry_RegisterService_Call) Run(run func(name string, svc interface{})) *MockRegistry_RegisterService_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(string), args[1].(interface{}))
+	})
+	return _c
+}
+
+func (_c *MockRegistry_RegisterService_Call) Return(_a0 error) *MockRegistry_RegisterService_Call {
+	_c.Call.Return(_a0)
+	return _c
+}
+
+func (_c *MockRegistry_RegisterService_Call) RunAndReturn(run func(string, interface{}) error) *MockRegistry_RegisterService_Call {
+	_c.Call.Return(run)
+	return _c
 }
 
 // ResolveService provides a mock function with given fields: name
@@ -132,6 +306,34 @@ func (_m *MockRegistry) ResolveService(name string) (interface{}, error) {
 	return r0, r1
 }
 
+// MockRegistry_ResolveService_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'ResolveService'
+type MockRegistry_ResolveService_Call struct {
+	*mock.Call
+}
+
+// ResolveService is a helper method to define mock.On call
+//   - name string
+func (_e *MockRegistry_Expecter) ResolveService(name interface{}) *MockRegistry_ResolveService_Call {
+	return &MockRegistry_ResolveService_Call{Call: _e.mock.On("ResolveService", name)}
+}
+
+func (_c *MockRegistry_ResolveService_Call) Run(run func(name string)) *MockRegistry_ResolveService_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(string))
+	})
+	return _c
+}
+
+func (_c *MockRegistry_ResolveService_Call) Return(_a0 interface{}, _a1 error) *MockRegistry_ResolveService_Call {
+	_c.Call.Return(_a0, _a1)
+	return _c
+}
+
+func (_c *MockRegistry_ResolveService_Call) RunAndReturn(run func(string) (interface{}, error)) *MockRegistry_ResolveService_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // Router provides a mock function with no fields
 func (_m *MockRegistry) Router() chi.Router {
 	ret := _m.Called()
@@ -152,6 +354,33 @@ func (_m *MockRegistry) Router() chi.Router {
 	return r0
 }
 
+// MockRegistry_Router_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Router'
+type MockRegistry_Router_Call struct {
+	*mock.Call
+}
+
+// Router is a helper method to define mock.On call
+func (_e *MockRegistry_Expecter) Router() *MockRegistry_Router_Call {
+	return &MockRegistry_Router_Call{Call: _e.mock.On("Router")}
+}
+
+func (_c *MockRegistry_Router_Call) Run(run func()) *MockRegistry_Router_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run()
+	})
+	return _c
+}
+
+func (_c *MockRegistry_Router_Call) Return(_a0 chi.Router) *MockRegistry_Router_Call {
+	_c.Call.Return(_a0)
+	return _c
+}
+
+func (_c *MockRegistry_Router_Call) RunAndReturn(run func() chi.Router) *MockRegistry_Router_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // Tracer provides a mock function with no fields
 func (_m *MockRegistry) Tracer() trace.Tracer {
 	ret := _m.Called()
@@ -170,6 +399,33 @@ func (_m *MockRegistry) Tracer() trace.Tracer {
 	}
 
 	return r0
+}
+
+// MockRegistry_Tracer_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Tracer'
+type MockRegistry_Tracer_Call struct {
+	*mock.Call
+}
+
+// Tracer is a helper method to define mock.On call
+func (_e *MockRegistry_Expecter) Tracer() *MockRegistry_Tracer_Call {
+	return &MockRegistry_Tracer_Call{Call: _e.mock.On("Tracer")}
+}
+
+func (_c *MockRegistry_Tracer_Call) Run(run func()) *MockRegistry_Tracer_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run()
+	})
+	return _c
+}
+
+func (_c *MockRegistry_Tracer_Call) Return(_a0 trace.Tracer) *MockRegistry_Tracer_Call {
+	_c.Call.Return(_a0)
+	return _c
+}
+
+func (_c *MockRegistry_Tracer_Call) RunAndReturn(run func() trace.Tracer) *MockRegistry_Tracer_Call {
+	_c.Call.Return(run)
+	return _c
 }
 
 // NewMockRegistry creates a new instance of MockRegistry. It also registers a testing interface on the mock and a cleanup function to assert the mocks expectations.

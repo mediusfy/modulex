@@ -14,6 +14,14 @@ type MockEventBus struct {
 	mock.Mock
 }
 
+type MockEventBus_Expecter struct {
+	mock *mock.Mock
+}
+
+func (_m *MockEventBus) EXPECT() *MockEventBus_Expecter {
+	return &MockEventBus_Expecter{mock: &_m.Mock}
+}
+
 // Close provides a mock function with given fields: ctx
 func (_m *MockEventBus) Close(ctx context.Context) error {
 	ret := _m.Called(ctx)
@@ -30,6 +38,34 @@ func (_m *MockEventBus) Close(ctx context.Context) error {
 	}
 
 	return r0
+}
+
+// MockEventBus_Close_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Close'
+type MockEventBus_Close_Call struct {
+	*mock.Call
+}
+
+// Close is a helper method to define mock.On call
+//   - ctx context.Context
+func (_e *MockEventBus_Expecter) Close(ctx interface{}) *MockEventBus_Close_Call {
+	return &MockEventBus_Close_Call{Call: _e.mock.On("Close", ctx)}
+}
+
+func (_c *MockEventBus_Close_Call) Run(run func(ctx context.Context)) *MockEventBus_Close_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(context.Context))
+	})
+	return _c
+}
+
+func (_c *MockEventBus_Close_Call) Return(_a0 error) *MockEventBus_Close_Call {
+	_c.Call.Return(_a0)
+	return _c
+}
+
+func (_c *MockEventBus_Close_Call) RunAndReturn(run func(context.Context) error) *MockEventBus_Close_Call {
+	_c.Call.Return(run)
+	return _c
 }
 
 // Publish provides a mock function with given fields: ctx, topic, payload
@@ -50,6 +86,36 @@ func (_m *MockEventBus) Publish(ctx context.Context, topic string, payload []byt
 	return r0
 }
 
+// MockEventBus_Publish_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Publish'
+type MockEventBus_Publish_Call struct {
+	*mock.Call
+}
+
+// Publish is a helper method to define mock.On call
+//   - ctx context.Context
+//   - topic string
+//   - payload []byte
+func (_e *MockEventBus_Expecter) Publish(ctx interface{}, topic interface{}, payload interface{}) *MockEventBus_Publish_Call {
+	return &MockEventBus_Publish_Call{Call: _e.mock.On("Publish", ctx, topic, payload)}
+}
+
+func (_c *MockEventBus_Publish_Call) Run(run func(ctx context.Context, topic string, payload []byte)) *MockEventBus_Publish_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(context.Context), args[1].(string), args[2].([]byte))
+	})
+	return _c
+}
+
+func (_c *MockEventBus_Publish_Call) Return(_a0 error) *MockEventBus_Publish_Call {
+	_c.Call.Return(_a0)
+	return _c
+}
+
+func (_c *MockEventBus_Publish_Call) RunAndReturn(run func(context.Context, string, []byte) error) *MockEventBus_Publish_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // Subscribe provides a mock function with given fields: ctx, topic, handler
 func (_m *MockEventBus) Subscribe(ctx context.Context, topic string, handler modulex.EventHandler) error {
 	ret := _m.Called(ctx, topic, handler)
@@ -66,6 +132,36 @@ func (_m *MockEventBus) Subscribe(ctx context.Context, topic string, handler mod
 	}
 
 	return r0
+}
+
+// MockEventBus_Subscribe_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Subscribe'
+type MockEventBus_Subscribe_Call struct {
+	*mock.Call
+}
+
+// Subscribe is a helper method to define mock.On call
+//   - ctx context.Context
+//   - topic string
+//   - handler modulex.EventHandler
+func (_e *MockEventBus_Expecter) Subscribe(ctx interface{}, topic interface{}, handler interface{}) *MockEventBus_Subscribe_Call {
+	return &MockEventBus_Subscribe_Call{Call: _e.mock.On("Subscribe", ctx, topic, handler)}
+}
+
+func (_c *MockEventBus_Subscribe_Call) Run(run func(ctx context.Context, topic string, handler modulex.EventHandler)) *MockEventBus_Subscribe_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(context.Context), args[1].(string), args[2].(modulex.EventHandler))
+	})
+	return _c
+}
+
+func (_c *MockEventBus_Subscribe_Call) Return(_a0 error) *MockEventBus_Subscribe_Call {
+	_c.Call.Return(_a0)
+	return _c
+}
+
+func (_c *MockEventBus_Subscribe_Call) RunAndReturn(run func(context.Context, string, modulex.EventHandler) error) *MockEventBus_Subscribe_Call {
+	_c.Call.Return(run)
+	return _c
 }
 
 // NewMockEventBus creates a new instance of MockEventBus. It also registers a testing interface on the mock and a cleanup function to assert the mocks expectations.

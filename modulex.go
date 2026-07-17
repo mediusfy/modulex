@@ -36,6 +36,12 @@ var (
 	// ErrDuplicateService is returned when RegisterService is called with a service key that is already registered.
 	ErrDuplicateService = errors.New("service already registered")
 
+	// ErrDuplicateTask is returned when Go is called with a task name that is already in use.
+	ErrDuplicateTask = errors.New("task already exists")
+
+	// ErrInvalidTaskName is returned when Go is called with an empty or whitespace-only task name.
+	ErrInvalidTaskName = errors.New("task name must not be empty")
+
 	// ErrDependencyNotFound is returned when a module depends on a module that has not been registered.
 	ErrDependencyNotFound = errors.New("module dependency not found")
 
@@ -83,6 +89,54 @@ func (s LifecycleState) String() string {
 		return "stopped"
 	default:
 		return "unknown"
+	}
+}
+
+// PanicPolicy controls how the manager reacts to a panic in a supervised task.
+type PanicPolicy int
+
+const (
+	// PanicPolicyLog recovers from the panic, records it as a task error, and logs it.
+	PanicPolicyLog PanicPolicy = iota
+
+	// PanicPolicyPropagate allows the panic to crash the application.
+	PanicPolicyPropagate
+)
+
+// TaskHandle identifies a supervised background task started by Manager.Go.
+// Callers can use it to wait for completion or inspect the final error.
+type TaskHandle struct {
+	name string
+	done chan struct{}
+	mu   sync.Mutex
+	err  error
+}
+
+// Name returns the task name.
+func (h *TaskHandle) Name() string { return h.name }
+
+// Wait blocks until the task finishes and returns its final error.
+func (h *TaskHandle) Wait() error {
+	<-h.done
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.err
+}
+
+func (h *TaskHandle) finish(err error) {
+	h.mu.Lock()
+	h.err = err
+	h.mu.Unlock()
+	close(h.done)
+}
+
+// ManagerOption configures a Manager during construction.
+type ManagerOption func(*Manager)
+
+// WithPanicPolicy sets the panic policy for supervised background tasks.
+func WithPanicPolicy(policy PanicPolicy) ManagerOption {
+	return func(m *Manager) {
+		m.panicPolicy = policy
 	}
 }
 
@@ -151,16 +205,20 @@ type Registry interface {
 	// Tracer returns the OpenTelemetry Tracer instance configured for this manager.
 	Tracer() trace.Tracer
 
-	// Go spawns a new goroutine to execute background work, automatically propagating
-	// the context's OpenTelemetry trace context and creating a child span for the task.
-	// It also includes panic recovery to prevent the application from crashing.
-	Go(ctx context.Context, taskName string, fn func(ctx context.Context))
+	// Go spawns a supervised goroutine to execute background work. It propagates
+	// the OpenTelemetry trace context, creates a child span, recovers from panics
+	// according to the manager's panic policy, and returns a handle that can be
+	// used to wait for the task to finish. Tasks are cancelled and awaited during
+	// manager shutdown. Returns ErrRegistryLocked if the manager is stopping or
+	// stopped, or ErrDuplicateTask if a task with the same name already exists.
+	Go(ctx context.Context, taskName string, fn func(ctx context.Context) error) (*TaskHandle, error)
 }
 
 // Manager implements the Registry interface and orchestrates the module lifecycles.
 type Manager struct {
 	mu           sync.RWMutex
 	stateMu      sync.Mutex
+	taskMu       sync.Mutex
 	services     map[string]interface{}
 	modules      map[string]Module
 	moduleOrder  []string
@@ -171,16 +229,21 @@ type Manager struct {
 	configLoader func(target interface{}) error
 	state        LifecycleState
 	tracer       trace.Tracer
+	panicPolicy  PanicPolicy
+	tasks        map[string]*TaskHandle
+	taskCtx      context.Context
+	taskCancel   context.CancelFunc
 }
 
 var _ Registry = (*Manager)(nil)
 
 // NewManager creates a new instance of Manager.
-func NewManager(router gochi.Router, eb EventBus, logger *slog.Logger, configLoader func(target interface{}) error) *Manager {
+func NewManager(router gochi.Router, eb EventBus, logger *slog.Logger, configLoader func(target interface{}) error, opts ...ManagerOption) *Manager {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Manager{
+	taskCtx, taskCancel := context.WithCancel(context.Background())
+	m := &Manager{
 		services:     make(map[string]interface{}),
 		modules:      make(map[string]Module),
 		moduleOrder:  make([]string, 0),
@@ -190,7 +253,15 @@ func NewManager(router gochi.Router, eb EventBus, logger *slog.Logger, configLoa
 		configLoader: configLoader,
 		state:        StateConfiguring,
 		tracer:       otel.Tracer("github.com/mediusfy/modulex"),
+		panicPolicy:  PanicPolicyLog,
+		tasks:        make(map[string]*TaskHandle),
+		taskCtx:      taskCtx,
+		taskCancel:   taskCancel,
 	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
 }
 
 // RegisterModule registers a feature module in the manager.
@@ -202,9 +273,10 @@ func NewManager(router gochi.Router, eb EventBus, logger *slog.Logger, configLoa
 // the deterministic tie-break during topological sorting.
 func (m *Manager) RegisterModule(mod Module) error {
 	m.stateMu.Lock()
-	if m.state != StateConfiguring {
+	state := m.state
+	if state != StateConfiguring {
 		m.stateMu.Unlock()
-		return fmt.Errorf("%w: cannot register module while in %q state", ErrRegistryLocked, m.state)
+		return fmt.Errorf("%w: cannot register module while in %q state", ErrRegistryLocked, state)
 	}
 	m.stateMu.Unlock()
 
@@ -232,9 +304,10 @@ func (m *Manager) RegisterModule(mod Module) error {
 // Registration is only permitted before InitModules has completed.
 func (m *Manager) RegisterService(name string, svc interface{}) error {
 	m.stateMu.Lock()
-	if m.state != StateConfiguring && m.state != StateInitializing {
+	state := m.state
+	if state != StateConfiguring && state != StateInitializing {
 		m.stateMu.Unlock()
-		return fmt.Errorf("%w: cannot register service while in %q state", ErrRegistryLocked, m.state)
+		return fmt.Errorf("%w: cannot register service while in %q state", ErrRegistryLocked, state)
 	}
 	m.stateMu.Unlock()
 
@@ -322,12 +395,54 @@ func (m *Manager) closeEventBus(ctx context.Context) error {
 	return nil
 }
 
-// Go implements Registry. It spawns a background routine while preserving OTel span ancestry.
-func (m *Manager) Go(ctx context.Context, taskName string, fn func(ctx context.Context)) {
+// Go implements Registry. It spawns a supervised background routine while
+// preserving OTel span ancestry and returning a handle for awaiting completion.
+func (m *Manager) Go(ctx context.Context, taskName string, fn func(ctx context.Context) error) (*TaskHandle, error) {
+	m.stateMu.Lock()
+	state := m.state
+	if state == StateStopping || state == StateStopped {
+		m.stateMu.Unlock()
+		return nil, fmt.Errorf("%w: cannot start task %q while in %q state", ErrRegistryLocked, taskName, state)
+	}
+	m.stateMu.Unlock()
+
+	taskName = strings.TrimSpace(taskName)
+	if taskName == "" {
+		return nil, fmt.Errorf("%w", ErrInvalidTaskName)
+	}
+	if fn == nil {
+		return nil, fmt.Errorf("task function must not be nil")
+	}
+
+	m.taskMu.Lock()
+	if m.taskCtx.Err() != nil {
+		m.taskMu.Unlock()
+		return nil, fmt.Errorf("%w: cannot start task %q while shutting down", ErrRegistryLocked, taskName)
+	}
+	if _, exists := m.tasks[taskName]; exists {
+		m.taskMu.Unlock()
+		return nil, fmt.Errorf("%w: task %q", ErrDuplicateTask, taskName)
+	}
+
+	handle := &TaskHandle{name: taskName, done: make(chan struct{})}
+	m.tasks[taskName] = handle
+
+	taskCtx, taskCancel := context.WithCancel(m.taskCtx)
+	m.taskMu.Unlock()
+
 	spanCtx := trace.SpanContextFromContext(ctx)
-	bgCtx := trace.ContextWithSpanContext(context.Background(), spanCtx)
+	bgCtx := trace.ContextWithSpanContext(taskCtx, spanCtx)
 
 	go func() {
+		var taskErr error
+		defer func() {
+			m.taskMu.Lock()
+			delete(m.tasks, taskName)
+			m.taskMu.Unlock()
+			taskCancel()
+			handle.finish(taskErr)
+		}()
+
 		bgCtx, span := m.tracer.Start(bgCtx, taskName,
 			trace.WithSpanKind(trace.SpanKindInternal),
 		)
@@ -341,11 +456,17 @@ func (m *Manager) Go(ctx context.Context, taskName string, fn func(ctx context.C
 					slog.String("task", taskName),
 					slog.Any("panic", r),
 				)
+				taskErr = err
+				if m.panicPolicy == PanicPolicyPropagate {
+					panic(r)
+				}
 			}
 		}()
 
-		fn(bgCtx)
+		taskErr = fn(bgCtx)
 	}()
+
+	return handle, nil
 }
 
 // InitModules sorts the modules topologically based on dependencies,
@@ -355,9 +476,10 @@ func (m *Manager) Go(ctx context.Context, taskName string, fn func(ctx context.C
 // stopped in reverse order and the manager moves to the stopped state.
 func (m *Manager) InitModules(ctx context.Context) error {
 	m.stateMu.Lock()
-	if m.state != StateConfiguring {
+	state := m.state
+	if state != StateConfiguring {
 		m.stateMu.Unlock()
-		return fmt.Errorf("%w: InitModules called in %q state", ErrInvalidLifecycleState, m.state)
+		return fmt.Errorf("%w: InitModules called in %q state", ErrInvalidLifecycleState, state)
 	}
 	m.state = StateInitializing
 	m.stateMu.Unlock()
@@ -366,6 +488,9 @@ func (m *Manager) InitModules(ctx context.Context) error {
 	ordered, err := m.sortModules()
 	if err != nil {
 		m.mu.Unlock()
+		if waitErr := m.waitForTasks(ctx); waitErr != nil {
+			err = errors.Join(err, waitErr)
+		}
 		m.setState(StateStopped)
 		return err
 	}
@@ -400,6 +525,9 @@ func (m *Manager) InitModules(ctx context.Context) error {
 	}
 
 	if initErr != nil {
+		if waitErr := m.waitForTasks(ctx); waitErr != nil {
+			initErr = errors.Join(initErr, waitErr)
+		}
 		if rollbackErr := m.rollbackInit(ctx, ordered[:initializedCount]); rollbackErr != nil {
 			initErr = errors.Join(initErr, rollbackErr)
 		}
@@ -430,9 +558,10 @@ func (m *Manager) rollbackInit(ctx context.Context, initialized []Module) error 
 // reverse order and the manager moves to the stopped state.
 func (m *Manager) StartModules(ctx context.Context) error {
 	m.stateMu.Lock()
-	if m.state != StateInitialized {
+	state := m.state
+	if state != StateInitialized {
 		m.stateMu.Unlock()
-		return fmt.Errorf("%w: StartModules called in %q state", ErrInvalidLifecycleState, m.state)
+		return fmt.Errorf("%w: StartModules called in %q state", ErrInvalidLifecycleState, state)
 	}
 	m.state = StateStarting
 	m.stateMu.Unlock()
@@ -470,6 +599,9 @@ func (m *Manager) StartModules(ctx context.Context) error {
 	}
 
 	if startErr != nil {
+		if waitErr := m.waitForTasks(ctx); waitErr != nil {
+			startErr = errors.Join(startErr, waitErr)
+		}
 		if rollbackErr := m.rollbackStart(ctx, mods[:startedCount]); rollbackErr != nil {
 			startErr = errors.Join(startErr, rollbackErr)
 		}
@@ -494,55 +626,103 @@ func (m *Manager) rollbackStart(ctx context.Context, started []Module) error {
 	return errors.Join(errs...)
 }
 
-// StopModules stops all registered modules in reverse topological order inside trace spans and closes the EventBus.
+// waitForTasks cancels the task context and waits for all supervised tasks to
+// finish, respecting the caller's deadline. Errors from individual tasks are
+// joined together.
+func (m *Manager) waitForTasks(ctx context.Context) error {
+	m.taskCancel()
+
+	m.taskMu.Lock()
+	tasks := make([]*TaskHandle, 0, len(m.tasks))
+	for _, t := range m.tasks {
+		tasks = append(tasks, t)
+	}
+	m.taskMu.Unlock()
+
+	if len(tasks) == 0 {
+		return nil
+	}
+
+	m.loggerCtx.Info("waiting for supervised tasks to finish", slog.Int("task_count", len(tasks)))
+
+	for _, t := range tasks {
+		select {
+		case <-t.done:
+		case <-ctx.Done():
+			return fmt.Errorf("timed out waiting for tasks to finish: %w", ctx.Err())
+		}
+	}
+
+	var errs []error
+	for _, t := range tasks {
+		if err := t.Wait(); err != nil {
+			errs = append(errs, fmt.Errorf("task %q failed: %w", t.Name(), err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// StopModules cancels supervised tasks, stops registered modules in reverse
+// topological order when they were running, and closes the EventBus.
 //
 // StopModules is idempotent: calling it multiple times returns nil without
 // re-executing shutdown logic. It is context-aware and joins all shutdown
 // errors so that no failure is silently dropped.
 func (m *Manager) StopModules(ctx context.Context) error {
 	m.stateMu.Lock()
-	switch m.state {
+	state := m.state
+	switch state {
 	case StateStopped, StateStopping:
 		m.stateMu.Unlock()
 		return nil
-	case StateConfiguring, StateInitialized:
-		m.state = StateStopped
-		m.stateMu.Unlock()
-		return m.closeEventBus(ctx)
-	case StateRunning:
-		m.state = StateStopping
+	case StateConfiguring, StateInitialized, StateRunning:
+		// proceed with shutdown
 	default:
 		m.stateMu.Unlock()
-		return fmt.Errorf("%w: StopModules called in %q state", ErrInvalidLifecycleState, m.state)
+		return fmt.Errorf("%w: StopModules called in %q state", ErrInvalidLifecycleState, state)
 	}
+	origState := state
+	m.state = StateStopping
+	// Cancel the task context while we still hold stateMu so that new Go calls
+	// are rejected and existing tasks receive cancellation before we release the
+	// shutdown gate.
+	m.taskMu.Lock()
+	m.taskCancel()
+	m.taskMu.Unlock()
 	m.stateMu.Unlock()
 
-	m.mu.RLock()
-	mods := make([]Module, len(m.orderedMods))
-	copy(mods, m.orderedMods)
-	m.mu.RUnlock()
-
-	ctx, span := m.tracer.Start(ctx, "StopModules",
-		trace.WithAttributes(attribute.Int("modulex.module_count", len(mods))),
-	)
+	ctx, span := m.tracer.Start(ctx, "StopModules")
 	defer span.End()
 
 	var errs []error
-	for i := len(mods) - 1; i >= 0; i-- {
-		if err := ctx.Err(); err != nil {
-			errs = append(errs, fmt.Errorf("stop cancelled: %w", err))
-			break
+	if err := m.waitForTasks(ctx); err != nil {
+		errs = append(errs, err)
+	}
+
+	if origState == StateRunning {
+		m.mu.RLock()
+		mods := make([]Module, len(m.orderedMods))
+		copy(mods, m.orderedMods)
+		m.mu.RUnlock()
+
+		span.SetAttributes(attribute.Int("modulex.module_count", len(mods)))
+
+		for i := len(mods) - 1; i >= 0; i-- {
+			if err := ctx.Err(); err != nil {
+				errs = append(errs, fmt.Errorf("stop cancelled: %w", err))
+				break
+			}
+			mod := mods[i]
+			modCtx, modSpan := m.tracer.Start(ctx, fmt.Sprintf("StopModule:%s", mod.Name()),
+				trace.WithAttributes(attribute.String("modulex.module_name", mod.Name())),
+			)
+			if err := mod.Stop(modCtx); err != nil {
+				modSpan.RecordError(err)
+				m.loggerCtx.Error("failed to stop module", slog.String("module", mod.Name()), slog.Any("error", err))
+				errs = append(errs, fmt.Errorf("failed to stop module %q: %w", mod.Name(), err))
+			}
+			modSpan.End()
 		}
-		mod := mods[i]
-		modCtx, modSpan := m.tracer.Start(ctx, fmt.Sprintf("StopModule:%s", mod.Name()),
-			trace.WithAttributes(attribute.String("modulex.module_name", mod.Name())),
-		)
-		if err := mod.Stop(modCtx); err != nil {
-			modSpan.RecordError(err)
-			m.loggerCtx.Error("failed to stop module", slog.String("module", mod.Name()), slog.Any("error", err))
-			errs = append(errs, fmt.Errorf("failed to stop module %q: %w", mod.Name(), err))
-		}
-		modSpan.End()
 	}
 
 	if err := m.closeEventBus(ctx); err != nil {

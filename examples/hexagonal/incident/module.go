@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/mediusfy/modulex"
 	"github.com/mediusfy/modulex/examples/hexagonal/incident/adapters"
@@ -15,6 +16,7 @@ import (
 // Module acts as the composition root for the incident business feature.
 type Module struct {
 	svc ports.Service
+	reg modulex.Registry
 }
 
 // NewModule instantiates the module.
@@ -34,6 +36,8 @@ func (m *Module) DependsOn() []string {
 
 // Init implements modulex.Module. It wires repositories, services, registers service locator ports, and routes.
 func (m *Module) Init(ctx context.Context, reg modulex.Registry) error {
+	m.reg = reg
+
 	repo := adapters.NewInMemoryRepository()
 	m.svc = service.New(repo)
 
@@ -92,11 +96,25 @@ func (m *Module) Init(ctx context.Context, reg modulex.Registry) error {
 
 // Start implements modulex.Module.
 func (m *Module) Start(ctx context.Context) error {
-	reg, _ := ctx.Value("slog").(*slog.Logger)
-	if reg != nil {
-		reg.Info("incident module background worker started")
+	if m.reg == nil {
+		return nil
 	}
-	return nil
+
+	m.reg.Logger().Info("incident module background worker started")
+
+	_, err := m.reg.Go(ctx, "incident.heartbeat", func(bgCtx context.Context) error {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-bgCtx.Done():
+				return nil
+			case <-ticker.C:
+				m.reg.Logger().Info("incident module heartbeat")
+			}
+		}
+	})
+	return err
 }
 
 // Stop implements modulex.Module.
