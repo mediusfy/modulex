@@ -23,3 +23,24 @@ packages:
       Stoppable:
         config:
           structname: MockStoppable
+      ServiceRegistry:
+        config:
+          structname: MockServiceRegistry
+      ServiceRegistrar:
+        config:
+          structname: MockServiceRegistrar
+      ServiceResolver:
+        config:
+          structname: MockServiceResolver
+      EventBusProvider:
+        config:
+          structname: MockEventBusProvider
+      ConfigProvider:
+        config:
+          structname: MockConfigProvider
+      LoggerProvider:
+        config:
+          structname: MockLoggerProvider
+      TaskSpawner:
+        config:
+          structname: MockTaskSpawner

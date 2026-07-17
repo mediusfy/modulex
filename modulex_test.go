@@ -235,6 +235,21 @@ func TestManagerLifecycleAndWiring(t *testing.T) {
 	assert.Equal(t, []string{"module-b", "module-a"}, stopSeq)
 }
 
+func TestManagerImplementsCapabilityInterfaces(t *testing.T) {
+	manager := newTestManager(nil)
+
+	// Compile-time assertions that Manager implements the narrower capability
+	// interfaces as well as the full Registry composite.
+	var _ modulex.ServiceRegistrar = manager
+	var _ modulex.ServiceResolver = manager
+	var _ modulex.ServiceRegistry = manager
+	var _ modulex.EventBusProvider = manager
+	var _ modulex.ConfigProvider = manager
+	var _ modulex.LoggerProvider = manager
+	var _ modulex.TaskSpawner = manager
+	var _ modulex.Registry = manager
+}
+
 func TestCircularDependencyDetection(t *testing.T) {
 	manager := newTestManager(nil)
 
