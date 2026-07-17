@@ -64,6 +64,15 @@ eb := modulex.NewRabbitMQEventBus(amqpChannel)
 mgr := modulex.NewManager(router, eb, logger, configLoader)
 ```
 
+#### Watermill Driver
+```go
+import "github.com/mediusfy/modulex"
+
+// Initialize Watermill in-memory (Go Channel)
+eb := modulex.NewWatermillEventBus(100, false, false)
+mgr := modulex.NewManager(router, eb, logger, configLoader)
+```
+
 ### 3. InMemory Event Bus (For Testing)
 
 Using the `EventBus` interface, you can write an `InMemoryEventBus` backed by simple Go channels/maps to test your business logic completely offline:

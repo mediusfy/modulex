@@ -328,3 +328,29 @@ func TestEventBusIntegration(t *testing.T) {
 
 	assert.Equal(t, []byte("hello"), received)
 }
+
+func TestWatermillEventBusIntegration(t *testing.T) {
+	router := gochi.NewRouter()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	eb := modulex.NewWatermillEventBus(10, false, false)
+	defer eb.Close(context.Background())
+
+	manager := modulex.NewManager(router, eb, logger, nil)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	var received []byte
+	err := manager.EventBus().Subscribe(context.Background(), "watermill.topic", func(ctx context.Context, payload []byte) error {
+		received = payload
+		wg.Done()
+		return nil
+	})
+	require.NoError(t, err)
+
+	err = manager.EventBus().Publish(context.Background(), "watermill.topic", []byte("watermill-data"))
+	require.NoError(t, err)
+
+	wg.Wait()
+	assert.Equal(t, []byte("watermill-data"), received)
+}

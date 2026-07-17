@@ -23,8 +23,11 @@ func main() {
 		return nil
 	}
 
+	// Initialize Watermill in-memory (Go Channel)
+	watermillBus := modulex.NewWatermillEventBus(100, false, false)
+
 	// Create manager
-	mgr := modulex.NewManager(router, nil, logger, configLoader)
+	mgr := modulex.NewManager(router, watermillBus, logger, configLoader)
 
 	// Register our business module
 	mgr.RegisterModule(incident.NewModule())
