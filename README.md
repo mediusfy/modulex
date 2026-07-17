@@ -315,6 +315,46 @@ func (m *Module) Stop(ctx context.Context) error  { return nil }
 
 ---
 
+## Typed Service Wiring
+
+String-based service keys require unchecked type assertions. Modulex provides
+compile-time typed keys and generic helpers:
+
+```go
+package ports
+
+import "github.com/mediusfy/modulex"
+
+type Service interface { /* ... */ }
+
+var ServiceKey = modulex.NewKey[Service]("incident.Service")
+```
+
+```go
+func (m *Module) Init(ctx context.Context, reg modulex.Registry) error {
+    m.svc = service.New(repo)
+    return modulex.Provide(reg, ports.ServiceKey, m.svc)
+}
+```
+
+```go
+func (m *OtherModule) Init(ctx context.Context, reg modulex.Registry) error {
+    svc, err := modulex.Resolve(reg, ports.ServiceKey)
+    if err != nil {
+        return err
+    }
+    // svc is already typed as ports.Service
+    m.incidentSvc = svc
+    return nil
+}
+```
+
+`Provide` and `Resolve` wrap the underlying string-keyed registry and return
+`ErrServiceTypeMismatch` when the registered value does not match the key's
+compile-time type.
+
+---
+
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
