@@ -1,9 +1,3 @@
-// Package chi provides Chi router integration for Modulex.
-//
-// Instead of forcing every Modulex consumer to depend on Chi, the core
-// modulex.Registry no longer exposes a Router method. Applications that use
-// Chi register the router as a typed service and modules that need it resolve
-// the service by its key.
 package chi
 
 import (

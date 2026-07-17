@@ -113,7 +113,9 @@ not claim compile-time architectural enforcement that it does not provide.
 - [x] Use `log/slog` and named log-key constants for structured logging.
 - [x] Use typed sentinel errors and contextual wrapping that preserves `errors.Is` behavior.
 - [ ] Use constructor injection and validate required dependencies.
-- [ ] Use `errgroup` or an equivalent structured-concurrency mechanism for supervised tasks.
+- [x] Use `errgroup` or an equivalent structured-concurrency mechanism for supervised tasks.
+  - `Manager.waitForTasks` uses `golang.org/x/sync/errgroup` to await supervised
+    tasks concurrently while respecting the caller's deadline.
 - [x] Add spans to public operations when tracing is enabled, without forcing tracing into the core.
 - [x] Use table-driven tests and consumer-side interface segregation.
 - [x] Preserve unrelated working-tree changes.
