@@ -30,7 +30,10 @@ func main() {
 	mgr := modulex.NewManager(router, watermillBus, logger, configLoader)
 
 	// Register our business module
-	mgr.RegisterModule(incident.NewModule())
+	if err := mgr.RegisterModule(incident.NewModule()); err != nil {
+		logger.Error("failed to register module", slog.Any("error", err))
+		os.Exit(1)
+	}
 
 	// Boot process
 	ctx, cancel := context.WithCancel(context.Background())

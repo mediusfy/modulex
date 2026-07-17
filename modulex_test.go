@@ -3,6 +3,7 @@ package modulex_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -64,7 +65,9 @@ func (m *DummyModule) DependsOn() []string {
 
 func (m *DummyModule) Init(ctx context.Context, reg modulex.Registry) error {
 	m.initCalled = true
-	*m.initSequence = append(*m.initSequence, m.name)
+	if m.initSequence != nil {
+		*m.initSequence = append(*m.initSequence, m.name)
+	}
 
 	// Register a service for others to consume
 	if m.name == "module-a" {
@@ -82,13 +85,17 @@ func (m *DummyModule) Init(ctx context.Context, reg modulex.Registry) error {
 
 func (m *DummyModule) Start(ctx context.Context) error {
 	m.startCalled = true
-	*m.startSequence = append(*m.startSequence, m.name)
+	if m.startSequence != nil {
+		*m.startSequence = append(*m.startSequence, m.name)
+	}
 	return nil
 }
 
 func (m *DummyModule) Stop(ctx context.Context) error {
 	m.stopCalled = true
-	*m.stopSequence = append(*m.stopSequence, m.name)
+	if m.stopSequence != nil {
+		*m.stopSequence = append(*m.stopSequence, m.name)
+	}
 	return nil
 }
 
@@ -151,8 +158,8 @@ func TestManagerLifecycleAndWiring(t *testing.T) {
 	modB := NewDummyModule("module-b", []string{"module-a"}, &initSeq, &startSeq, &stopSeq)
 	modA := NewDummyModule("module-a", nil, &initSeq, &startSeq, &stopSeq)
 
-	manager.RegisterModule(modB)
-	manager.RegisterModule(modA)
+	require.NoError(t, manager.RegisterModule(modB))
+	require.NoError(t, manager.RegisterModule(modA))
 
 	// 1. Initialize modules
 	ctx := context.Background()
@@ -185,14 +192,14 @@ func TestManagerLifecycleAndWiring(t *testing.T) {
 	resp, err := http.Get(ts.URL + "/module-a")
 	require.NoError(t, err)
 	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, "module-a active", string(body))
 
 	resp, err = http.Get(ts.URL + "/module-b")
 	require.NoError(t, err)
 	body, _ = io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, "module-b active", string(body))
 
@@ -220,8 +227,8 @@ func TestCircularDependencyDetection(t *testing.T) {
 	modA := NewDummyModule("module-a", []string{"module-b"}, &initSeq, &startSeq, &stopSeq)
 	modB := NewDummyModule("module-b", []string{"module-a"}, &initSeq, &startSeq, &stopSeq)
 
-	manager.RegisterModule(modA)
-	manager.RegisterModule(modB)
+	require.NoError(t, manager.RegisterModule(modA))
+	require.NoError(t, manager.RegisterModule(modB))
 
 	err := manager.InitModules(context.Background())
 	assert.ErrorIs(t, err, modulex.ErrCircularDependency)
@@ -238,7 +245,7 @@ func TestTracesNoGaps(t *testing.T) {
 
 	var initSeq, startSeq, stopSeq []string
 	modA := NewDummyModule("module-a", nil, &initSeq, &startSeq, &stopSeq)
-	manager.RegisterModule(modA)
+	require.NoError(t, manager.RegisterModule(modA))
 
 	ctx := context.Background()
 
@@ -333,7 +340,7 @@ func TestWatermillEventBusIntegration(t *testing.T) {
 	router := gochi.NewRouter()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	eb := modulex.NewWatermillEventBus(10, false, false)
-	defer eb.Close(context.Background())
+	defer func() { _ = eb.Close(context.Background()) }()
 
 	manager := modulex.NewManager(router, eb, logger, nil)
 
@@ -353,4 +360,350 @@ func TestWatermillEventBusIntegration(t *testing.T) {
 
 	wg.Wait()
 	assert.Equal(t, []byte("watermill-data"), received)
+}
+
+func TestRegisterModuleValidation(t *testing.T) {
+	router := gochi.NewRouter()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	t.Run("nil module", func(t *testing.T) {
+		manager := modulex.NewManager(router, nil, logger, nil)
+		err := manager.RegisterModule(nil)
+		assert.ErrorIs(t, err, modulex.ErrModuleNil)
+	})
+
+	t.Run("empty module name", func(t *testing.T) {
+		manager := modulex.NewManager(router, nil, logger, nil)
+		mod := NewDummyModule("", nil, nil, nil, nil)
+		err := manager.RegisterModule(mod)
+		assert.ErrorIs(t, err, modulex.ErrInvalidModuleName)
+	})
+
+	t.Run("whitespace module name", func(t *testing.T) {
+		manager := modulex.NewManager(router, nil, logger, nil)
+		mod := NewDummyModule("   ", nil, nil, nil, nil)
+		err := manager.RegisterModule(mod)
+		assert.ErrorIs(t, err, modulex.ErrInvalidModuleName)
+	})
+
+	t.Run("duplicate module name", func(t *testing.T) {
+		manager := modulex.NewManager(router, nil, logger, nil)
+		mod := NewDummyModule("module-a", nil, nil, nil, nil)
+		require.NoError(t, manager.RegisterModule(mod))
+
+		err := manager.RegisterModule(NewDummyModule("module-a", nil, nil, nil, nil))
+		assert.ErrorIs(t, err, modulex.ErrDuplicateModule)
+	})
+
+	t.Run("module registration after init", func(t *testing.T) {
+		manager := modulex.NewManager(router, nil, logger, nil)
+		mod := NewDummyModule("module-a", nil, nil, nil, nil)
+		require.NoError(t, manager.RegisterModule(mod))
+		require.NoError(t, manager.InitModules(context.Background()))
+
+		err := manager.RegisterModule(NewDummyModule("module-b", nil, nil, nil, nil))
+		assert.ErrorIs(t, err, modulex.ErrRegistryLocked)
+	})
+
+	t.Run("module registration during init", func(t *testing.T) {
+		manager := modulex.NewManager(router, nil, logger, nil)
+		blocking := make(chan struct{})
+		resume := make(chan struct{})
+
+		modA := &blockingModule{
+			name:   "module-a",
+			block:  blocking,
+			resume: resume,
+		}
+		require.NoError(t, manager.RegisterModule(modA))
+
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = manager.InitModules(context.Background())
+		}()
+
+		<-blocking // wait until InitModules is inside module A's Init
+		err := manager.RegisterModule(NewDummyModule("module-b", nil, nil, nil, nil))
+		assert.ErrorIs(t, err, modulex.ErrRegistryLocked)
+
+		close(resume)
+		wg.Wait()
+	})
+}
+
+type blockingModule struct {
+	name   string
+	block  chan struct{}
+	resume chan struct{}
+}
+
+func (m *blockingModule) Name() string        { return m.name }
+func (m *blockingModule) DependsOn() []string { return nil }
+func (m *blockingModule) Init(ctx context.Context, reg modulex.Registry) error {
+	close(m.block)
+	<-m.resume
+	return nil
+}
+func (m *blockingModule) Start(ctx context.Context) error { return nil }
+func (m *blockingModule) Stop(ctx context.Context) error  { return nil }
+
+func TestRegisterServiceValidation(t *testing.T) {
+	router := gochi.NewRouter()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	t.Run("empty service name", func(t *testing.T) {
+		manager := modulex.NewManager(router, nil, logger, nil)
+		err := manager.RegisterService("", &MockServiceImpl{})
+		assert.ErrorIs(t, err, modulex.ErrInvalidServiceName)
+	})
+
+	t.Run("duplicate service key", func(t *testing.T) {
+		manager := modulex.NewManager(router, nil, logger, nil)
+		require.NoError(t, manager.RegisterService("svc", &MockServiceImpl{}))
+
+		err := manager.RegisterService("svc", &MockServiceImpl{})
+		assert.ErrorIs(t, err, modulex.ErrDuplicateService)
+	})
+
+	t.Run("whitespace service name", func(t *testing.T) {
+		manager := modulex.NewManager(router, nil, logger, nil)
+		err := manager.RegisterService("   ", &MockServiceImpl{})
+		assert.ErrorIs(t, err, modulex.ErrInvalidServiceName)
+	})
+}
+
+func TestSelfDependencyDetection(t *testing.T) {
+	router := gochi.NewRouter()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	manager := modulex.NewManager(router, nil, logger, nil)
+
+	var initSeq, startSeq, stopSeq []string
+	modA := NewDummyModule("module-a", []string{"module-a"}, &initSeq, &startSeq, &stopSeq)
+	require.NoError(t, manager.RegisterModule(modA))
+
+	err := manager.InitModules(context.Background())
+	assert.ErrorIs(t, err, modulex.ErrSelfDependency)
+}
+
+func TestUnknownDependencyDetection(t *testing.T) {
+	router := gochi.NewRouter()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	manager := modulex.NewManager(router, nil, logger, nil)
+
+	var initSeq, startSeq, stopSeq []string
+	modA := NewDummyModule("module-a", []string{"missing-module"}, &initSeq, &startSeq, &stopSeq)
+	require.NoError(t, manager.RegisterModule(modA))
+
+	err := manager.InitModules(context.Background())
+	assert.ErrorIs(t, err, modulex.ErrDependencyNotFound)
+	assert.ErrorContains(t, err, "missing-module")
+}
+
+func TestCircularDependencyReportsPath(t *testing.T) {
+	router := gochi.NewRouter()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	manager := modulex.NewManager(router, nil, logger, nil)
+
+	var initSeq, startSeq, stopSeq []string
+	modA := NewDummyModule("module-a", []string{"module-b"}, &initSeq, &startSeq, &stopSeq)
+	modB := NewDummyModule("module-b", []string{"module-c"}, &initSeq, &startSeq, &stopSeq)
+	modC := NewDummyModule("module-c", []string{"module-a"}, &initSeq, &startSeq, &stopSeq)
+
+	require.NoError(t, manager.RegisterModule(modA))
+	require.NoError(t, manager.RegisterModule(modB))
+	require.NoError(t, manager.RegisterModule(modC))
+
+	err := manager.InitModules(context.Background())
+	require.ErrorIs(t, err, modulex.ErrCircularDependency)
+	assert.ErrorContains(t, err, "module-a")
+	assert.ErrorContains(t, err, "module-b")
+	assert.ErrorContains(t, err, "module-c")
+}
+
+func TestRegistrationOrderTieBreak(t *testing.T) {
+	router := gochi.NewRouter()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	manager := modulex.NewManager(router, nil, logger, nil)
+
+	var initSeq, startSeq, stopSeq []string
+	modA := NewDummyModule("module-a", nil, &initSeq, &startSeq, &stopSeq)
+	modB := NewDummyModule("module-b", nil, &initSeq, &startSeq, &stopSeq)
+	modC := NewDummyModule("module-c", nil, &initSeq, &startSeq, &stopSeq)
+
+	// Register in a specific order; independent modules should initialize in that order.
+	require.NoError(t, manager.RegisterModule(modC))
+	require.NoError(t, manager.RegisterModule(modA))
+	require.NoError(t, manager.RegisterModule(modB))
+
+	require.NoError(t, manager.InitModules(context.Background()))
+	assert.Equal(t, []string{"module-c", "module-a", "module-b"}, initSeq)
+}
+
+func TestDependencyOrderOverridesRegistrationOrder(t *testing.T) {
+	router := gochi.NewRouter()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	manager := modulex.NewManager(router, nil, logger, nil)
+
+	var initSeq, startSeq, stopSeq []string
+	modA := NewDummyModule("module-a", nil, &initSeq, &startSeq, &stopSeq)
+	modB := NewDummyModule("module-b", []string{"module-a"}, &initSeq, &startSeq, &stopSeq)
+
+	// Register dependent module first.
+	require.NoError(t, manager.RegisterModule(modB))
+	require.NoError(t, manager.RegisterModule(modA))
+
+	require.NoError(t, manager.InitModules(context.Background()))
+	assert.Equal(t, []string{"module-a", "module-b"}, initSeq)
+}
+
+func TestGraphValidationTable(t *testing.T) {
+	tests := []struct {
+		name    string
+		modules []struct {
+			name string
+			deps []string
+		}
+		wantErr   error
+		wantOrder []string
+	}{
+		{
+			name: "simple chain",
+			modules: []struct {
+				name string
+				deps []string
+			}{
+				{name: "a", deps: nil},
+				{name: "b", deps: []string{"a"}},
+				{name: "c", deps: []string{"b"}},
+			},
+			wantErr:   nil,
+			wantOrder: []string{"a", "b", "c"},
+		},
+		{
+			name: "self dependency",
+			modules: []struct {
+				name string
+				deps []string
+			}{
+				{name: "a", deps: []string{"a"}},
+			},
+			wantErr: modulex.ErrSelfDependency,
+		},
+		{
+			name: "missing dependency",
+			modules: []struct {
+				name string
+				deps []string
+			}{
+				{name: "a", deps: []string{"missing"}},
+			},
+			wantErr: modulex.ErrDependencyNotFound,
+		},
+		{
+			name: "empty dependency name",
+			modules: []struct {
+				name string
+				deps []string
+			}{
+				{name: "a", deps: []string{""}},
+			},
+			wantErr: modulex.ErrInvalidDependencyName,
+		},
+		{
+			name: "whitespace dependency name",
+			modules: []struct {
+				name string
+				deps []string
+			}{
+				{name: "a", deps: []string{"   "}},
+			},
+			wantErr: modulex.ErrInvalidDependencyName,
+		},
+		{
+			name: "two node cycle",
+			modules: []struct {
+				name string
+				deps []string
+			}{
+				{name: "a", deps: []string{"b"}},
+				{name: "b", deps: []string{"a"}},
+			},
+			wantErr: modulex.ErrCircularDependency,
+		},
+		{
+			name: "three node cycle",
+			modules: []struct {
+				name string
+				deps []string
+			}{
+				{name: "a", deps: []string{"b"}},
+				{name: "b", deps: []string{"c"}},
+				{name: "c", deps: []string{"a"}},
+			},
+			wantErr: modulex.ErrCircularDependency,
+		},
+		{
+			name: "diamond",
+			modules: []struct {
+				name string
+				deps []string
+			}{
+				{name: "a", deps: nil},
+				{name: "b", deps: []string{"a"}},
+				{name: "c", deps: []string{"a"}},
+				{name: "d", deps: []string{"b", "c"}},
+			},
+			wantErr:   nil,
+			wantOrder: []string{"a", "b", "c", "d"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			router := gochi.NewRouter()
+			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+			manager := modulex.NewManager(router, nil, logger, nil)
+
+			var order []string
+			for _, m := range tt.modules {
+				mod := NewDummyModule(m.name, m.deps, &order, &order, &order)
+				require.NoError(t, manager.RegisterModule(mod))
+			}
+
+			err := manager.InitModules(context.Background())
+			if tt.wantErr == nil {
+				require.NoError(t, err)
+				assert.Equal(t, tt.wantOrder, order)
+			} else {
+				assert.ErrorIs(t, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestConcurrentRegistration(t *testing.T) {
+	router := gochi.NewRouter()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	manager := modulex.NewManager(router, nil, logger, nil)
+
+	const n = 100
+	var wg sync.WaitGroup
+	wg.Add(n)
+
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			name := fmt.Sprintf("module-%d", i)
+			mod := NewDummyModule(name, nil, nil, nil, nil)
+			require.NoError(t, manager.RegisterModule(mod))
+		}(i)
+	}
+
+	wg.Wait()
+
+	// Initializing with many independent modules should succeed and preserve registration order.
+	err := manager.InitModules(context.Background())
+	require.NoError(t, err)
 }
