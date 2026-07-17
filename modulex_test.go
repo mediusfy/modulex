@@ -17,6 +17,7 @@ import (
 	gochi "github.com/go-chi/chi/v5"
 	"github.com/mediusfy/modulex"
 	"github.com/mediusfy/modulex/mocks"
+	watermilladapter "github.com/mediusfy/modulex/watermill"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -335,7 +336,7 @@ func TestEventBusIntegration(t *testing.T) {
 }
 
 func TestWatermillEventBusIntegration(t *testing.T) {
-	eb := modulex.NewWatermillEventBus(10, false, false)
+	eb := watermilladapter.NewEventBus(10, false, false)
 	defer func() { _ = eb.Close(context.Background()) }()
 
 	manager := newTestManager(eb)

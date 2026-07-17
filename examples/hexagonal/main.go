@@ -12,6 +12,7 @@ import (
 	gochi "github.com/go-chi/chi/v5"
 	"github.com/mediusfy/modulex"
 	"github.com/mediusfy/modulex/examples/hexagonal/incident"
+	watermilladapter "github.com/mediusfy/modulex/watermill"
 )
 
 func main() {
@@ -24,7 +25,7 @@ func main() {
 	}
 
 	// Initialize Watermill in-memory (Go Channel)
-	watermillBus := modulex.NewWatermillEventBus(100, false, false)
+	watermillBus := watermilladapter.NewEventBus(100, false, false)
 
 	// Create manager
 	mgr := modulex.NewManager(router, watermillBus, logger, configLoader)

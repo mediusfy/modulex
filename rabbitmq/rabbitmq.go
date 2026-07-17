@@ -1,26 +1,29 @@
-package modulex
+// Package rabbitmq provides a Modulex EventBus adapter backed by RabbitMQ.
+package rabbitmq
 
 import (
 	"context"
 	"sync"
 
 	amqp "github.com/rabbitmq/amqp091-go"
+
+	"github.com/mediusfy/modulex"
 )
 
-// RabbitMQEventBus implements EventBus by wrapping a RabbitMQ channel.
-type RabbitMQEventBus struct {
+// EventBus implements modulex.EventBus by wrapping a RabbitMQ channel.
+type EventBus struct {
 	ch      *amqp.Channel
 	mu      sync.Mutex
 	cancels []func() // tracks consumer cancellation contexts
 }
 
-// NewRabbitMQEventBus instantiates the RabbitMQ event bus driver.
-func NewRabbitMQEventBus(ch *amqp.Channel) *RabbitMQEventBus {
-	return &RabbitMQEventBus{ch: ch}
+// NewEventBus instantiates the RabbitMQ event bus driver.
+func NewEventBus(ch *amqp.Channel) *EventBus {
+	return &EventBus{ch: ch}
 }
 
-// Publish implements EventBus.
-func (r *RabbitMQEventBus) Publish(ctx context.Context, topic string, payload []byte) error {
+// Publish implements modulex.EventBus.
+func (r *EventBus) Publish(ctx context.Context, topic string, payload []byte) error {
 	return r.ch.PublishWithContext(ctx,
 		"",    // exchange
 		topic, // routing key
@@ -33,8 +36,8 @@ func (r *RabbitMQEventBus) Publish(ctx context.Context, topic string, payload []
 	)
 }
 
-// Subscribe implements EventBus. It consumes messages from the queue in a background routine.
-func (r *RabbitMQEventBus) Subscribe(ctx context.Context, topic string, handler EventHandler) error {
+// Subscribe implements modulex.EventBus. It consumes messages from the queue in a background routine.
+func (r *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.EventHandler) error {
 	msgs, err := r.ch.Consume(
 		topic, // queue
 		"",    // consumer name
@@ -71,8 +74,8 @@ func (r *RabbitMQEventBus) Subscribe(ctx context.Context, topic string, handler 
 	return nil
 }
 
-// Close implements EventBus. It cancels all active queue consumers.
-func (r *RabbitMQEventBus) Close(ctx context.Context) error {
+// Close implements modulex.EventBus. It cancels all active queue consumers.
+func (r *EventBus) Close(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, cancel := range r.cancels {

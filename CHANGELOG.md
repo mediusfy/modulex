@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   returns a handle, and awaits tasks during shutdown.
 - `CONTRIBUTING.md`, `SECURITY.md`, and this changelog.
 - `make test-arch` target for race-detector tests.
+- Public subpackages for framework adapters: `modulex/nats`, `modulex/rabbitmq`,
+  and `modulex/watermill`.
 
 ### Changed
 
@@ -28,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a supervised heartbeat task.
 - README expanded with typed wiring documentation, non-goals, and an honest
   comparison with plain constructor injection.
+- **BREAKING:** NATS, RabbitMQ, and Watermill event-bus constructors moved from
+  the root package to `modulex/nats`, `modulex/rabbitmq`, and `modulex/watermill`.
+  Adapter type names are now `EventBus` and constructors are `NewEventBus` in
+  each subpackage.
 
 ## [0.0.0] - 2026-07-17
 

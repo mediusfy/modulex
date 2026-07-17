@@ -1,4 +1,6 @@
-package modulex
+// Package watermill provides a Modulex EventBus adapter backed by Watermill's
+// in-memory GoChannel PubSub.
+package watermill
 
 import (
 	"context"
@@ -8,10 +10,12 @@ import (
 	"github.com/ThreeDotsLabs/watermill"
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/ThreeDotsLabs/watermill/pubsub/gochannel"
+
+	"github.com/mediusfy/modulex"
 )
 
-// WatermillEventBus implements the generic EventBus interface using Watermill's GoChannel.
-type WatermillEventBus struct {
+// EventBus implements modulex.EventBus using Watermill's GoChannel.
+type EventBus struct {
 	pubSub *gochannel.GoChannel
 	logger watermill.LoggerAdapter
 
@@ -19,8 +23,8 @@ type WatermillEventBus struct {
 	cancelFunc []context.CancelFunc
 }
 
-// NewWatermillEventBus creates a configured in-memory GoChannel PubSub.
-func NewWatermillEventBus(bufferSize int64, persistent bool, debug bool) *WatermillEventBus {
+// NewEventBus creates a configured in-memory GoChannel PubSub.
+func NewEventBus(bufferSize int64, persistent bool, debug bool) *EventBus {
 	logger := watermill.NewStdLogger(debug, debug)
 
 	pubSub := gochannel.NewGoChannel(
@@ -31,14 +35,14 @@ func NewWatermillEventBus(bufferSize int64, persistent bool, debug bool) *Waterm
 		logger,
 	)
 
-	return &WatermillEventBus{
+	return &EventBus{
 		pubSub: pubSub,
 		logger: logger,
 	}
 }
 
 // Publish generates a Watermill-compatible message, propagates context/spans, and sends it.
-func (w *WatermillEventBus) Publish(ctx context.Context, topic string, payload []byte) error {
+func (w *EventBus) Publish(ctx context.Context, topic string, payload []byte) error {
 	// Generate a unique Watermill UUID for tracing/deduplication
 	msg := message.NewMessage(watermill.NewUUID(), payload)
 
@@ -52,7 +56,7 @@ func (w *WatermillEventBus) Publish(ctx context.Context, topic string, payload [
 }
 
 // Subscribe listens to a topic and handles messages in the background, maintaining span continuity.
-func (w *WatermillEventBus) Subscribe(ctx context.Context, topic string, handler EventHandler) error {
+func (w *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.EventHandler) error {
 	// Subscribe returns a read-only channel of messages
 	messages, err := w.pubSub.Subscribe(ctx, topic)
 	if err != nil {
@@ -94,7 +98,7 @@ func (w *WatermillEventBus) Subscribe(ctx context.Context, topic string, handler
 }
 
 // Close gracefully stops the underlying GoChannel.
-func (w *WatermillEventBus) Close(ctx context.Context) error {
+func (w *EventBus) Close(ctx context.Context) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 

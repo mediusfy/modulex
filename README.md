@@ -70,28 +70,28 @@ tests.
 
 #### NATS Driver
 ```go
-import "github.com/mediusfy/modulex"
+import "github.com/mediusfy/modulex/nats"
 
 // Wrap a standard *nats.Conn connection
-eb := modulex.NewNATSEventBus(natsConn)
+eb := nats.NewEventBus(natsConn)
 mgr := modulex.NewManager(router, eb, logger, configLoader)
 ```
 
 #### RabbitMQ Driver
 ```go
-import "github.com/mediusfy/modulex"
+import "github.com/mediusfy/modulex/rabbitmq"
 
 // Wrap a standard *amqp.Channel channel
-eb := modulex.NewRabbitMQEventBus(amqpChannel)
+eb := rabbitmq.NewEventBus(amqpChannel)
 mgr := modulex.NewManager(router, eb, logger, configLoader)
 ```
 
 #### Watermill Driver
 ```go
-import "github.com/mediusfy/modulex"
+import watermilladapter "github.com/mediusfy/modulex/watermill"
 
 // Initialize Watermill in-memory (Go Channel)
-eb := modulex.NewWatermillEventBus(100, false, false)
+eb := watermilladapter.NewEventBus(100, false, false)
 mgr := modulex.NewManager(router, eb, logger, configLoader)
 ```
 
