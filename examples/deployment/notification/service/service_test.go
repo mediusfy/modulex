@@ -25,3 +25,9 @@ func TestNotificationServiceSendEmptyMessage(t *testing.T) {
 	err := svc.Send(context.Background(), "")
 	assert.ErrorIs(t, err, service.ErrEmptyMessage)
 }
+
+func TestNotificationServiceNilLogger(t *testing.T) {
+	svc := service.New(nil)
+	assert.NotNil(t, svc)
+	assert.NoError(t, svc.Send(context.Background(), "nil-logger"))
+}

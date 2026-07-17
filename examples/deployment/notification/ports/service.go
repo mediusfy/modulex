@@ -4,7 +4,11 @@
 // details.
 package ports
 
-import "context"
+import (
+	"context"
+
+	"github.com/mediusfy/modulex"
+)
 
 // Service is the primary inbound port for sending notifications.
 type Service interface {
@@ -12,3 +16,9 @@ type Service interface {
 	// in-process service or a remote client adapter.
 	Send(ctx context.Context, message string) error
 }
+
+// ServiceKey is the typed registry key for Service. Keeping the key with the
+// port lets consumers depend only on the contract package rather than the full
+// notification module.
+var ServiceKey = modulex.NewKey[Service]("notification.Service")
+

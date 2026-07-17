@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 
 	"github.com/mediusfy/modulex/examples/deployment/notification/ports"
@@ -44,6 +45,7 @@ func (c *HTTPClient) Send(ctx context.Context, message string) error {
 		return fmt.Errorf("notification request failed: %w", err)
 	}
 	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode != http.StatusAccepted {
 		return fmt.Errorf("notification service returned %d", resp.StatusCode)

@@ -64,7 +64,9 @@ func (s *HTTPServer) SendHandler() http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
-		_ = json.NewEncoder(w).Encode(SendResponse{Status: "accepted"})
+		if err := json.NewEncoder(w).Encode(SendResponse{Status: "accepted"}); err != nil {
+			s.logger.Warn("failed to encode response", slog.Any("error", err))
+		}
 	}
 }
 

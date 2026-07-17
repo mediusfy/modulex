@@ -7,7 +7,6 @@ import (
 	"context"
 
 	"github.com/mediusfy/modulex"
-	"github.com/mediusfy/modulex/examples/deployment/notification"
 	"github.com/mediusfy/modulex/examples/deployment/notification/ports"
 )
 
@@ -29,7 +28,7 @@ func (m *Module) DependsOn() []string { return []string{"notification"} }
 
 // Init implements modulex.Module. It resolves the notification service port.
 func (m *Module) Init(ctx context.Context, reg modulex.Registry) error {
-	svc, err := modulex.Resolve(reg, notification.ServiceKey)
+	svc, err := modulex.Resolve(reg, ports.ServiceKey)
 	if err != nil {
 		return err
 	}
