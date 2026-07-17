@@ -2,7 +2,10 @@
 
 ## Status
 
-Proposed
+Implemented. All five milestones are complete; see
+`docs/planning/library-readiness-checklist.md` for the detailed acceptance
+record. [v0.1.0](https://github.com/mediusfy/modulex/releases/tag/v0.1.0) is
+the first tagged release of this plan.
 
 ## Context
 
