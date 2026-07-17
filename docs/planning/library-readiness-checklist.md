@@ -85,7 +85,7 @@ not claim compile-time architectural enforcement that it does not provide.
 - [x] Add package examples rendered by pkg.go.dev.
 - [x] Show both direct constructor injection and typed registry wiring.
 - [x] Provide monolith and remote-adapter examples using the same domain interfaces.
-- [ ] Keep HTTP handlers thin and avoid raw internal error disclosure.
+- [x] Keep HTTP handlers thin and avoid raw internal error disclosure.
 - [ ] Use typed context keys where context values are necessary.
 - [x] Add an honest comparison with plain constructor injection, Wire, Fx, and Dig.
 - [x] Add a migration guide for each breaking v0 API change.

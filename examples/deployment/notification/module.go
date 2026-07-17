@@ -6,7 +6,6 @@ package notification
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"net/http"
 
 	"github.com/mediusfy/modulex"
@@ -16,20 +15,12 @@ import (
 	"github.com/mediusfy/modulex/examples/deployment/notification/service"
 )
 
-// ServiceKey is the typed registry key for ports.Service.
-var ServiceKey = modulex.NewKey[ports.Service]("notification.Service")
-
 // Module wires the notification service and HTTP handlers.
-type Module struct {
-	logger *slog.Logger
-}
+type Module struct{}
 
 // NewModule creates a notification module.
-func NewModule(logger *slog.Logger) *Module {
-	if logger == nil {
-		logger = slog.Default()
-	}
-	return &Module{logger: logger}
+func NewModule() *Module {
+	return &Module{}
 }
 
 // Name implements modulex.Module.
@@ -42,7 +33,7 @@ func (m *Module) DependsOn() []string { return nil }
 // if a Chi router is available, mounts the HTTP endpoint.
 func (m *Module) Init(ctx context.Context, reg modulex.Registry) error {
 	svc := ports.Service(service.New(reg.Logger()))
-	if err := modulex.Provide(reg, ServiceKey, svc); err != nil {
+	if err := modulex.Provide(reg, ports.ServiceKey, svc); err != nil {
 		return err
 	}
 
@@ -88,9 +79,9 @@ func (m *RemoteModule) DependsOn() []string { return nil }
 
 // Init implements modulex.Module. It registers the remote client adapter under
 // the same typed key the local module uses.
-func (m *RemoteModule) Init(ctx context.Context, reg modulex.Registry) error {
+func (m *RemoteModule) Init(_ context.Context, reg modulex.Registry) error {
 	remoteClient := ports.Service(adapters.NewHTTPClient(m.baseURL, m.client))
-	return modulex.Provide(reg, ServiceKey, remoteClient)
+	return modulex.Provide(reg, ports.ServiceKey, remoteClient)
 }
 
 // Start implements modulex.Module.

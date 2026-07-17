@@ -440,14 +440,18 @@ See [`examples/deployment`](./examples/deployment):
 - [`examples/deployment/monolith`](./examples/deployment/monolith/main.go) registers
   the notification module and a consumer module in the same process. The consumer
   resolves the local service implementation via typed key.
-- [`examples/deployment/remote`](./examples/deployment/remote/main.go) runs the
-  consumer in a separate process. A `notification.RemoteModule` registers an
-  HTTP client adapter under the same typed key, so the consumer module does not
-  change.
+- [`examples/deployment/remote`](./examples/deployment/remote) runs the notification
+  service and the consumer as two separate processes. The consumer binary registers
+  a `notification.RemoteModule` that provides an HTTP client adapter under the same
+  typed key, so the consumer module itself does not change.
 
 ```bash
+# Monolith
 go run ./examples/deployment/monolith
-go run ./examples/deployment/remote
+
+# Remote (two processes)
+go run ./examples/deployment/remote/notification-server
+NOTIFICATION_URL=http://localhost:8080 go run ./examples/deployment/remote/consumer
 ```
 
 ---

@@ -30,9 +30,26 @@ func TestHTTPServerSendHandler(t *testing.T) {
 	server.SendHandler()(rec, req)
 
 	assert.Equal(t, http.StatusAccepted, rec.Code)
+	assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
 	var resp adapters.SendResponse
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	assert.Equal(t, "accepted", resp.Status)
+}
+
+func TestHTTPServerSendHandlerNilLogger(t *testing.T) {
+	svc := service.New(nil)
+	server := adapters.NewHTTPServer(svc, nil)
+
+	body, err := json.Marshal(adapters.SendRequest{Message: "hello"})
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodPost, "/notify", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	server.SendHandler()(rec, req)
+
+	assert.Equal(t, http.StatusAccepted, rec.Code)
 }
 
 func TestHTTPServerSendHandlerEmptyMessage(t *testing.T) {
