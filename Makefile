@@ -1,4 +1,4 @@
-.PHONY: deps test test-arch fmt lint build help
+.PHONY: deps test test-arch fmt lint build vuln help
 
 help:
 	@echo "Available targets:"
@@ -8,6 +8,7 @@ help:
 	@echo "  fmt       - Format Go code using gofmt"
 	@echo "  lint      - Run golangci-lint if installed"
 	@echo "  build     - Compile packages and examples"
+	@echo "  vuln      - Run govulncheck vulnerability scan"
 
 deps:
 	go mod download
@@ -30,3 +31,6 @@ lint:
 
 build:
 	go build ./...
+
+vuln:
+	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
