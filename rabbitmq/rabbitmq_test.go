@@ -76,16 +76,6 @@ func TestEventBus_PublishSubscribe(t *testing.T) {
 			defer cancel()
 
 			queue := fmt.Sprintf("test.queue.%d", time.Now().UnixNano())
-			_, err := ch.QueueDeclare(
-				queue, // name
-				false, // durable
-				true,  // autoDelete
-				false, // exclusive
-				false, // noWait
-				nil,   // args
-			)
-			require.NoError(t, err)
-
 			received := make(chan []byte, len(tt.payloads))
 			require.NoError(t, eb.Subscribe(ctx, queue, func(_ context.Context, data []byte) error {
 				received <- data
@@ -117,9 +107,6 @@ func TestEventBus_Close(t *testing.T) {
 	defer cancel()
 
 	queue := fmt.Sprintf("test.queue.%d", time.Now().UnixNano())
-	_, err := ch.QueueDeclare(queue, false, true, false, false, nil)
-	require.NoError(t, err)
-
 	require.NoError(t, eb.Subscribe(ctx, queue, func(context.Context, []byte) error {
 		return nil
 	}))

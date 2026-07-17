@@ -3,6 +3,7 @@ package rabbitmq
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -14,7 +15,7 @@ import (
 type EventBus struct {
 	ch      *amqp.Channel
 	mu      sync.Mutex
-	cancels []func() // tracks consumer cancellation contexts
+	cancels []context.CancelFunc // tracks consumer cancellation contexts
 }
 
 // NewEventBus instantiates the RabbitMQ event bus driver.
@@ -23,10 +24,15 @@ func NewEventBus(ch *amqp.Channel) *EventBus {
 }
 
 // Publish implements modulex.EventBus.
+//
+// Publishing uses the RabbitMQ default exchange (""), where the routing key is
+// interpreted as the target queue name. Therefore the topic parameter is the
+// queue to which the message is delivered. For routed exchanges, use a
+// broker-specific publisher instead of this adapter.
 func (r *EventBus) Publish(ctx context.Context, topic string, payload []byte) error {
 	return r.ch.PublishWithContext(ctx,
-		"",    // exchange
-		topic, // routing key
+		"",    // default exchange
+		topic, // routing key == queue name on the default exchange
 		false, // mandatory
 		false, // immediate
 		amqp.Publishing{
@@ -36,8 +42,22 @@ func (r *EventBus) Publish(ctx context.Context, topic string, payload []byte) er
 	)
 }
 
-// Subscribe implements modulex.EventBus. It consumes messages from the queue in a background routine.
+// Subscribe implements modulex.EventBus. It declares the target queue and then
+// consumes messages from it in a background routine. The queue is declared as
+// durable and non-exclusive so the adapter works out of the box. If the caller
+// cancels the supplied context, the consumer goroutine exits.
 func (r *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.EventHandler) error {
+	if _, err := r.ch.QueueDeclare(
+		topic, // name
+		true,  // durable
+		false, // autoDelete
+		false, // exclusive
+		false, // noWait
+		nil,   // args
+	); err != nil {
+		return fmt.Errorf("failed to declare queue %q: %w", topic, err)
+	}
+
 	msgs, err := r.ch.Consume(
 		topic, // queue
 		"",    // consumer name
@@ -48,16 +68,17 @@ func (r *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 		nil,   // args
 	)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to consume queue %q: %w", topic, err)
 	}
 
-	subCtx, cancel := context.WithCancel(context.Background())
+	subCtx, cancel := context.WithCancel(ctx)
 	r.mu.Lock()
 	r.cancels = append(r.cancels, cancel)
 	r.mu.Unlock()
 
 	// Spin up consumer loop
 	go func() {
+		defer cancel()
 		for {
 			select {
 			case <-subCtx.Done():
