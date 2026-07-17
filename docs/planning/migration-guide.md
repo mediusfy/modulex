@@ -110,7 +110,10 @@ import (
 )
 
 router := gochi.NewRouter()
-mgr := modulex.NewManager(eb, logger, configLoader)
+mgr, err := modulex.NewManager(eb, logger, configLoader)
+if err != nil {
+    // handle error
+}
 if err := modulexchi.RegisterRouter(mgr, router); err != nil {
     // handle error
 }
@@ -154,9 +157,12 @@ import (
     modulexotel "github.com/mediusfy/modulex/otel"
 )
 
-mgr := modulex.NewManager(eb, logger, configLoader,
+mgr, err := modulex.NewManager(eb, logger, configLoader,
     modulex.WithTracer(modulexotel.NewTracer(tp)),
 )
+if err != nil {
+    // handle error
+}
 ```
 
 ### What changed and why
@@ -217,6 +223,35 @@ func (m *MyModule) Stop(ctx context.Context) error {
 - Lifecycle capabilities are explicit: `modulex.Startable` for startup work and
   `modulex.Stoppable` for shutdown cleanup.
 - The manager skips modules that do not implement these interfaces.
+
+## Migrating to the error-returning `NewManager` constructor
+
+`NewManager` now returns `(*Manager, error)` instead of `*Manager`.
+Construction fails if `WithPanicPolicy` is given a value outside the defined
+`PanicPolicy` enum. A `nil` event bus is still accepted and defaults to a
+no-op implementation, so passing `nil` for local development remains valid.
+
+### Before
+
+```go
+mgr := modulex.NewManager(eb, logger, configLoader)
+```
+
+### After
+
+```go
+mgr, err := modulex.NewManager(eb, logger, configLoader)
+if err != nil {
+    // handle error
+}
+```
+
+### What changed and why
+
+- Construction can now fail fast on invalid configuration instead of storing
+  it silently and surfacing confusing behavior later.
+- This is a breaking signature change; all call sites must be updated to
+  handle the returned error.
 
 ## General upgrade checklist
 

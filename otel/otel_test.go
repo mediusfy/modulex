@@ -19,7 +19,11 @@ import (
 
 func newTestManager() *modulex.Manager {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return modulex.NewManager(nil, logger, nil)
+	mgr, err := modulex.NewManager(nil, logger, nil)
+	if err != nil {
+		panic(err)
+	}
+	return mgr
 }
 
 func TestTracesNoGaps(t *testing.T) {

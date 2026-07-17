@@ -50,7 +50,10 @@ Invalid transitions return `ErrInvalidLifecycleState`.
 ### Example
 
 ```go
-manager := modulex.NewManager(eb, logger, nil)
+manager, err := modulex.NewManager(eb, logger, nil)
+if err != nil {
+    return err
+}
 
 if err := manager.RegisterModule(modA); err != nil {
     return err

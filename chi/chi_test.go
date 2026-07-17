@@ -35,7 +35,11 @@ func (m *chiModule) Init(_ context.Context, reg modulex.Registry) error {
 
 func newTestManager(eb modulex.EventBus) *modulex.Manager {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return modulex.NewManager(eb, logger, nil)
+	mgr, err := modulex.NewManager(eb, logger, nil)
+	if err != nil {
+		panic(err)
+	}
+	return mgr
 }
 
 func TestChiRouterRegistrationAndResolution(t *testing.T) {

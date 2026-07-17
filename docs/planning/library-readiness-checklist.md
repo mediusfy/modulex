@@ -53,7 +53,10 @@ not claim compile-time architectural enforcement that it does not provide.
     `ConfigProvider`, `LoggerProvider`, and `TaskSpawner`. The smaller
     interfaces are available for modules that do not need the full registry.
 - [x] Make `Start` and `Stop` optional lifecycle capabilities so simple modules do not require no-op methods.
-- [ ] Validate constructor dependencies and return `(*Manager, error)` where construction can fail.
+- [x] Validate constructor dependencies and return `(*Manager, error)` where construction can fail.
+  - `NewManager` returns `(*Manager, error)`; construction fails with
+    `ErrInvalidPanicPolicy` on an invalid `WithPanicPolicy` value. A `nil`
+    event bus defaults to a no-op implementation rather than failing.
 - [x] Avoid global state; inject logging, tracing, metrics, and integrations.
   - Logging is injected, the router is resolved as a typed service, and the tracer is injected via `WithTracer`.
 - [x] Use typed service keys and package-level generic `Provide` and `Resolve` helpers if service location is retained.
@@ -115,7 +118,7 @@ not claim compile-time architectural enforcement that it does not provide.
 - [x] Follow `AGENTS.md` and `CODING_STANDARDS.md` for all implementation work.
 - [x] Use `log/slog` and named log-key constants for structured logging.
 - [x] Use typed sentinel errors and contextual wrapping that preserves `errors.Is` behavior.
-- [ ] Use constructor injection and validate required dependencies.
+- [x] Use constructor injection and validate required dependencies.
 - [x] Use `errgroup` or an equivalent structured-concurrency mechanism for supervised tasks.
   - `Manager.waitForTasks` uses `golang.org/x/sync/errgroup` to await supervised
     tasks concurrently while respecting the caller's deadline.

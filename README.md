@@ -76,7 +76,10 @@ import "github.com/mediusfy/modulex/nats"
 
 // Wrap a standard *nats.Conn connection
 eb := nats.NewEventBus(natsConn)
-mgr := modulex.NewManager(eb, logger, configLoader)
+mgr, err := modulex.NewManager(eb, logger, configLoader)
+if err != nil {
+    // handle error
+}
 ```
 
 #### RabbitMQ Driver
@@ -85,7 +88,10 @@ import "github.com/mediusfy/modulex/rabbitmq"
 
 // Wrap a standard *amqp.Channel channel
 eb := rabbitmq.NewEventBus(amqpChannel)
-mgr := modulex.NewManager(eb, logger, configLoader)
+mgr, err := modulex.NewManager(eb, logger, configLoader)
+if err != nil {
+    // handle error
+}
 ```
 
 #### Watermill Driver
@@ -94,7 +100,10 @@ import watermilladapter "github.com/mediusfy/modulex/watermill"
 
 // Initialize Watermill in-memory (Go Channel)
 eb := watermilladapter.NewEventBus(100, false, false)
-mgr := modulex.NewManager(eb, logger, configLoader)
+mgr, err := modulex.NewManager(eb, logger, configLoader)
+if err != nil {
+    // handle error
+}
 ```
 
 #### Chi Router Integration
@@ -105,7 +114,10 @@ import (
 )
 
 router := gochi.NewRouter()
-mgr := modulex.NewManager(eb, logger, configLoader)
+mgr, err := modulex.NewManager(eb, logger, configLoader)
+if err != nil {
+    // handle error
+}
 if err := modulexchi.RegisterRouter(mgr, router); err != nil {
     // handle error
 }
@@ -168,9 +180,12 @@ import modulexotel "github.com/mediusfy/modulex/otel"
 sr := tracetest.NewSpanRecorder()
 tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
 
-mgr := modulex.NewManager(eb, logger, configLoader,
+mgr, err := modulex.NewManager(eb, logger, configLoader,
     modulex.WithTracer(modulexotel.NewTracer(tp)),
 )
+if err != nil {
+    // handle error
+}
 ```
 
 ### Preventing Telemetry Gaps
@@ -208,13 +223,14 @@ func TestTracesNoGaps(t *testing.T) {
 	sr := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
 
-	manager := modulex.NewManager(nil, logger, nil,
+	manager, err := modulex.NewManager(nil, logger, nil,
 	    modulex.WithTracer(modulexotel.NewTracer(tp)),
 	)
+	require.NoError(t, err)
 	manager.RegisterModule(&myModule{})
 
 	// Initialize
-	err := manager.InitModules(context.Background())
+	err = manager.InitModules(context.Background())
 	require.NoError(t, err)
 
 	// Fetch captured spans and verify parent-child lineage
