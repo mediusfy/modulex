@@ -102,6 +102,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   API compatibility since the latest git tag for the core package and each
   adapter sub-package using `golang.org/x/exp/cmd/apidiff`, wired into CI
   as the `api-compat` job.
+- `scripts/check-changelog.sh` (`make check-changelog`), which fails a pull
+  request that touches non-exempt files without updating `CHANGELOG.md`
+  (dependency-bump-only and `.github/**`-only changes, and any
+  `dependabot[bot]` PR, are exempt), wired into CI as the `changelog` job.
 
 ### Changed
 

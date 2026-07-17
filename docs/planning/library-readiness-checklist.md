@@ -143,7 +143,14 @@ not claim compile-time architectural enforcement that it does not provide.
 - [x] Avoid TCP listeners in unit tests where `httptest.NewRecorder` is sufficient.
 - [ ] Publish v0 prereleases for API feedback before committing to v1 compatibility.
 - [x] Automate tagged releases and GitHub release notes.
-- [ ] Maintain `CHANGELOG.md` automatically or enforce updates in CI.
+- [x] Maintain `CHANGELOG.md` automatically or enforce updates in CI.
+  - `scripts/check-changelog.sh` (`make check-changelog`) fails a PR whose
+    diff against the base branch touches non-exempt files without also
+    updating `CHANGELOG.md`. Exempt: `.github/**` and a lone `go.mod`/
+    `go.sum` bump (so the dependency-bump PRs this project already merges
+    without changelog entries keep working), and any PR authored by
+    `dependabot[bot]`. Wired into CI as the `changelog` job, gated to
+    `pull_request` events only.
 - [x] Enable OpenSSF Scorecard or an equivalent supply-chain health check.
 
 ## Coding constraints

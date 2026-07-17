@@ -1,4 +1,4 @@
-.PHONY: deps test test-arch fmt lint build vuln check-consumer-boundary check-module-boundary check-api-compat help
+.PHONY: deps test test-arch fmt lint build vuln check-consumer-boundary check-module-boundary check-api-compat check-changelog help
 
 help:
 	@echo "Available targets:"
@@ -12,6 +12,7 @@ help:
 	@echo "  check-consumer-boundary - Verify core package has no adapter deps"
 	@echo "  check-module-boundary   - Run the optional modboundary analyzer on examples/deployment"
 	@echo "  check-api-compat        - Report API changes since the latest git tag"
+	@echo "  check-changelog         - Verify CHANGELOG.md is updated when required (PR diff vs origin/main)"
 
 deps:
 	go mod download
@@ -46,3 +47,6 @@ check-module-boundary:
 
 check-api-compat:
 	./scripts/check-api-compat.sh
+
+check-changelog:
+	./scripts/check-changelog.sh
