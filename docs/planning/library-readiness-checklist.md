@@ -46,28 +46,28 @@ not claim compile-time architectural enforcement that it does not provide.
 ### Core API and dependency boundaries
 
 - [x] Keep the core package focused on graph validation and lifecycle orchestration.
-- [ ] Avoid mandatory Chi, NATS, Prometheus, and OpenTelemetry dependencies in the core package.
-  - NATS, RabbitMQ, and Watermill adapters are extracted; Chi and OpenTelemetry are still imported by the core package.
+- [x] Avoid mandatory Chi, NATS, Prometheus, and OpenTelemetry dependencies in the core package.
+  - NATS, RabbitMQ, Watermill, Chi, and OpenTelemetry adapters are extracted into sub-packages.
 - [ ] Prefer small capability interfaces over one broad `Registry` interface.
 - [ ] Make `Start` and `Stop` optional lifecycle capabilities so simple modules do not require no-op methods.
 - [ ] Validate constructor dependencies and return `(*Manager, error)` where construction can fail.
-- [ ] Avoid global state; inject logging, tracing, metrics, and integrations.
-  - Logging and the router are injected, but the tracer still uses the global OpenTelemetry tracer provider.
+- [x] Avoid global state; inject logging, tracing, metrics, and integrations.
+  - Logging is injected, the router is resolved as a typed service, and the tracer is injected via `WithTracer`.
 - [x] Use typed service keys and package-level generic `Provide` and `Resolve` helpers if service location is retained.
 - [x] Document constructor injection as the default and service location as an optional topology tool.
 - [ ] Keep public APIs compatible once v1 is released.
 
 ### Optional integrations
 
-- [ ] Provide Chi integration in a separate package.
+- [x] Provide Chi integration in a separate package.
 - [x] Provide NATS integration in a separate package.
 - [x] Provide RabbitMQ integration in a separate package.
 - [x] Provide Watermill integration in a separate package.
-- [ ] Provide OpenTelemetry integration in a separate package.
+- [x] Provide OpenTelemetry integration in a separate package.
 - [ ] Ensure consumers compile without unused integration dependencies.
 - [ ] Scope integration resources to the owning module and clean them up in lifecycle order.
-- [ ] Inject the tracer provider rather than capturing mutable global state.
-- [ ] Record errors and set appropriate span status in the OpenTelemetry integration.
+- [x] Inject the tracer provider rather than capturing mutable global state.
+- [x] Record errors and set appropriate span status in the OpenTelemetry integration.
 - [x] Add isolated integration tests for each adapter.
   - Watermill has in-memory tests; NATS uses an embedded test server; RabbitMQ uses a skip-when-unavailable test against a live broker.
 
@@ -165,16 +165,13 @@ not claim compile-time architectural enforcement that it does not provide.
 The following work is intentionally deferred and should be completed before a
 v1 release:
 
-1. **Extract remaining framework adapters from the core package and narrow the
-   `Registry` interface.** Chi routing and OpenTelemetry tracing still live in
-   `modulex.go`, forcing consumers to depend on `github.com/go-chi/chi/v5` and
-   OpenTelemetry even if they do not use them. These should become
-   `modulex/chi` and `modulex/otel` sub-packages, with the core package
-   depending only on capability interfaces. `NewManager` should also stop
-   accepting a concrete `chi.Router` and the `Registry` interface should be
-   split into focused capabilities (routing, events, logging, tracing, tasks).
-2. **Inject the tracer provider.** Replace the global `otel.Tracer(...)` call
-   with a configurable tracer provider passed to `NewManager`.
+1. ~~Extract remaining framework adapters from the core package and narrow the
+   `Registry` interface.~~ Chi routing and OpenTelemetry tracing now live in
+   `modulex/chi` and `modulex/otel` sub-packages. The core package depends only
+   on capability interfaces, `NewManager` no longer accepts a concrete
+   `chi.Router`, and the `Registry` interface has been narrowed.
+2. ~~Inject the tracer provider.~~ The tracer is now injected via
+   `modulex.WithTracer`, defaulting to a no-op tracer.
 3. ~~Add Go version matrix testing.~~ CI now tests `1.26.x` and `stable` on
    Ubuntu and macOS runners.
 4. ~~Add isolated adapter tests for NATS and RabbitMQ.~~ NATS uses an embedded

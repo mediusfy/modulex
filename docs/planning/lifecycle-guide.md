@@ -44,7 +44,7 @@ Invalid transitions return `ErrInvalidLifecycleState`.
 ### Example
 
 ```go
-manager := modulex.NewManager(router, eb, logger, nil)
+manager := modulex.NewManager(eb, logger, nil)
 
 if err := manager.RegisterModule(modA); err != nil {
     return err

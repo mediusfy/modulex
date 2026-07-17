@@ -30,7 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `govulncheck`.
 - Explicit `.golangci.yml` configuration and CI pin to `golangci-lint` v2.12.2.
 - Public subpackages for framework adapters: `modulex/nats`, `modulex/rabbitmq`,
-  and `modulex/watermill`.
+  `modulex/watermill`, `modulex/chi`, and `modulex/otel`.
 - GitHub issue templates (bug report and feature request) and pull request
   template.
 - README CI status badge.
@@ -60,12 +60,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tasks, panic policies, and task error handling.
 - `docs/planning/error-handling-guide.md` documenting sentinel errors,
   lifecycle errors, rollback errors, and task errors.
+- Pluggable `modulex.Tracer` interface with a built-in no-op implementation.
+- `WithTracer` manager option to inject a custom tracer implementation.
+- `modulex/otel` package adapting an OpenTelemetry `TracerProvider` to
+  `modulex.Tracer`, including span status and error recording.
+- `modulex/chi` package providing typed service-key registration and resolution
+  for Chi routers so the core package does not depend on Chi.
 
 ### Changed
 
 - **BREAKING:** `Registry.Go` signature changed from
   `Go(ctx, name, func(ctx context.Context))` to
   `Go(ctx, name, func(ctx context.Context) error) (*TaskHandle, error)`.
+- **BREAKING:** `NewManager` no longer accepts a Chi router. Applications that
+  use Chi register the router via `modulex/chi.RegisterRouter` and modules
+  resolve it via `modulex/chi.ResolveRouter`.
+- **BREAKING:** `Registry.Router()` and `Registry.Tracer()` are removed. The
+  router is resolved as a typed service and the tracer is injected via
+  `WithTracer`.
 - Incident example updated to register its service via a typed key and to start
   a supervised heartbeat task.
 - README expanded with typed wiring documentation, non-goals, and an honest

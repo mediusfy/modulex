@@ -79,7 +79,7 @@ records them as task errors, and continues shutdown. You can configure the
 behavior with a panic policy when constructing the manager:
 
 ```go
-manager := modulex.NewManager(router, eb, logger, nil,
+manager := modulex.NewManager(eb, logger, nil,
     modulex.WithPanicPolicy(modulex.PanicPolicyPropagate),
 )
 ```

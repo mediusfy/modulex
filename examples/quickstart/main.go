@@ -7,8 +7,6 @@ import (
 	"io"
 	"log/slog"
 
-	gochi "github.com/go-chi/chi/v5"
-
 	"github.com/mediusfy/modulex"
 )
 
@@ -52,9 +50,8 @@ func (m *GreeterModule) Init(ctx context.Context, reg modulex.Registry) error {
 }
 
 func main() {
-	router := gochi.NewRouter()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	manager := modulex.NewManager(router, nil, logger, nil)
+	manager := modulex.NewManager(nil, logger, nil)
 
 	if err := manager.RegisterModule(&LoggerModule{}); err != nil {
 		panic(err)

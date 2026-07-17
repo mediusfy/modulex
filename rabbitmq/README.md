@@ -24,7 +24,7 @@ if err != nil {
 defer ch.Close()
 
 eb := rabbitadapter.NewEventBus(ch)
-manager := modulex.NewManager(router, eb, logger, nil)
+manager := modulex.NewManager(eb, logger, nil)
 ```
 
 ## Behavior

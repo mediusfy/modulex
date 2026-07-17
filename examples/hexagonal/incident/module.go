@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mediusfy/modulex"
+	modulexchi "github.com/mediusfy/modulex/chi"
 	"github.com/mediusfy/modulex/examples/hexagonal/incident/adapters"
 	"github.com/mediusfy/modulex/examples/hexagonal/incident/ports"
 	"github.com/mediusfy/modulex/examples/hexagonal/incident/service"
@@ -54,8 +55,13 @@ func (m *Module) Init(ctx context.Context, reg modulex.Registry) error {
 		})
 	}
 
-	// Mount HTTP handlers via the Chi Router provided by the registry
-	reg.Router().Get("/api/incidents", func(w http.ResponseWriter, r *http.Request) {
+	// Mount HTTP handlers via the Chi Router registered as a typed service.
+	router, err := modulexchi.ResolveRouter(reg)
+	if err != nil {
+		return err
+	}
+
+	router.Get("/api/incidents", func(w http.ResponseWriter, r *http.Request) {
 		list, err := m.svc.ListIncidents(r.Context())
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -65,7 +71,7 @@ func (m *Module) Init(ctx context.Context, reg modulex.Registry) error {
 		_ = json.NewEncoder(w).Encode(list)
 	})
 
-	reg.Router().Post("/api/incidents", func(w http.ResponseWriter, r *http.Request) {
+	router.Post("/api/incidents", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Title    string `json:"title"`
 			Severity string `json:"severity"`
