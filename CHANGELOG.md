@@ -39,6 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Table-driven tests for the Watermill `EventBus` adapter.
 - Library readiness checklist under `docs/planning/library-readiness-checklist.md`.
 - `SUPPORT.md` documenting how to get help, report bugs, and ask questions.
+- `docs/planning/comparison-with-alternatives.md` comparing Modulex with plain
+  constructor injection, Wire, Fx, and Dig.
 
 ### Changed
 
