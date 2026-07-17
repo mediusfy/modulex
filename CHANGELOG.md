@@ -42,6 +42,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `docs/planning/comparison-with-alternatives.md` comparing Modulex with plain
   constructor injection, Wire, Fx, and Dig.
 - `docs/planning/migration-guide.md` documenting breaking v0 changes.
+- Go version matrix in CI (`1.26.x` and `stable`) for Ubuntu and macOS runners.
+- `.github/CODEOWNERS` for default review routing.
+- Fuzz test for dependency graph validation (`FuzzGraphValidation`).
+- Failure-injection test asserting start rollback joins stop errors.
+- README links to compatibility, comparison, migration, support, security, and
+  contributing documentation.
 
 ### Changed
 
