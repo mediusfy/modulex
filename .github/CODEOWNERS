@@ -1,0 +1,12 @@
+# Default owners for everything in the repository.
+# Ensure @mediusfy/modulex-maintainers exists and has repository access before
+# relying on this file for review/branch-protection routing.
+* @mediusfy/modulex-maintainers
+
+# CI/release engineering changes.
+.github/workflows/ @mediusfy/modulex-maintainers
+Makefile @mediusfy/modulex-maintainers
+.golangci.yml @mediusfy/modulex-maintainers
+
+# Security-sensitive files.
+SECURITY.md @mediusfy/modulex-maintainers
