@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Marked the library readiness checklist's "publish v0 prereleases" items
+  complete, referencing the [v0.1.0](https://github.com/mediusfy/modulex/releases/tag/v0.1.0)
+  release.
+
 ## [0.1.0] - 2026-07-18
 
 Initial v0 prerelease.

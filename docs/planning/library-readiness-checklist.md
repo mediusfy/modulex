@@ -141,7 +141,9 @@ not claim compile-time architectural enforcement that it does not provide.
 - [x] Add fuzz tests for dependency graph validation.
 - [x] Add failure-injection tests for the main lifecycle transition and rollback paths.
 - [x] Avoid TCP listeners in unit tests where `httptest.NewRecorder` is sufficient.
-- [ ] Publish v0 prereleases for API feedback before committing to v1 compatibility.
+- [x] Publish v0 prereleases for API feedback before committing to v1 compatibility.
+  - [v0.1.0](https://github.com/mediusfy/modulex/releases/tag/v0.1.0) is
+    tagged and released via the automated `release.yml` workflow.
 - [x] Automate tagged releases and GitHub release notes.
 - [x] Maintain `CHANGELOG.md` automatically or enforce updates in CI.
   - `scripts/check-changelog.sh` (`make check-changelog`) fails a PR whose
@@ -199,7 +201,11 @@ not claim compile-time architectural enforcement that it does not provide.
 - [x] Rewrite claims and examples around the stable product position.
 - [x] Add community, compatibility, security, and release documentation.
   - `CONTRIBUTING.md`, `SECURITY.md`, `CHANGELOG.md`, `COMPATIBILITY.md`, `SUPPORT.md`, issue templates, PR templates, lifecycle/rollback/shutdown/task-supervision/error-handling guides, migration guide, comparison document, and OpenSSF Scorecard workflow are in place.
-- [ ] Publish and validate v0 prereleases with external example applications.
+- [x] Publish and validate v0 prereleases with external example applications.
+  - [v0.1.0](https://github.com/mediusfy/modulex/releases/tag/v0.1.0) is
+    released; `examples/external-consumer` (a genuinely separate module,
+    `make check-consumer-boundary`) validates it as an external consumer
+    would import it.
 
 ## Required verification before completion
 
@@ -236,5 +242,7 @@ v1 release:
 6. ~~Add migration guides and detailed documentation.~~ Lifecycle, rollback,
    shutdown, task supervision, and error-handling guides are in place, along
    with a comparison document and migration guide.
-7. **Publish v0 prereleases.** Tag and release v0 versions to gather API
+7. ~~Publish v0 prereleases.~~
+   [v0.1.0](https://github.com/mediusfy/modulex/releases/tag/v0.1.0) is
+   tagged and released; further v0.x releases will continue to gather API
    feedback before committing to v1 compatibility.
