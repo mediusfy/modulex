@@ -16,9 +16,71 @@ Specifically, it is designed to:
 1. **Decouple Features at Compile-Time:** Prevent direct imports of concrete service implementations or database/network adapters between different feature modules. All feature-to-feature communication is handled via resolved interface boundaries (ports).
 2. **Enforce Hexagonal Architecture Boundaries:** Provide a structured initialization registry where features register their public inbound ports and dynamically request outbound ports.
 3. **Automate Topological DAG Lifecycles:** Analyze feature dependencies at startup to construct a Directed Acyclic Graph (DAG), detect circular loops, and execute lifecycle stages (`Init`, `Start`, `Stop`) in strict topological order (and reverse order for teardown).
-4. **Enable Flexible Deployment Topologies:**
+4. **Provide Built-In OpenTelemetry (OTel) Tracing:** Automatically trace module initialization and startup cycles. Provide trace-safe concurrency mechanisms to ensure traces continue seamlessly in background goroutines.
+5. **Enable Flexible Deployment Topologies:**
    * **Monolithic Run:** Register all feature modules locally. The service registry wires interfaces directly to in-process service implementations.
    * **Distributed Run (Microservices):** Register only the target module in its own standalone binary. For other modules it depends on, the composition root registers network client adapters (HTTP/gRPC/NATS) instead, pointing to the external service.
+
+---
+
+## Telemetry and Context Propagation
+
+Modulex comes with native support for OpenTelemetry tracing to monitor the startup sequences and execution paths of your modules.
+
+### Preventing Telemetry Gaps
+
+In Go, starting a background task using `go func()` breaks context propagation, leading to detached, orphaned spans (telemetry gaps). 
+To prevent this, the `Registry` provides a `Go` helper that handles trace context propagation and panic safety automatically:
+
+```go
+// Inside a module's Start method:
+func (m *Module) Start(ctx context.Context) error {
+    m.registry.Go(ctx, "invoices.ProcessQueue", func(bgCtx context.Context) {
+        // bgCtx carries the parent span context from the caller.
+        // Spans created here are correctly linked, preventing telemetry gaps.
+        _, span := m.registry.Tracer().Start(bgCtx, "ProcessNextInvoice")
+        defer span.End()
+
+        // Do background work safely...
+    })
+    return nil
+}
+```
+
+### Verifying Spans (Asserting No Gaps)
+
+To guarantee that your tracing pipeline is intact and that no developers are introducing gaps in spans, you can write unit tests using the OTel `tracetest` package to verify parent-child relations:
+
+```go
+func TestTracesNoGaps(t *testing.T) {
+	// Set up memory span exporter
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	otel.SetTracerProvider(tp)
+
+	manager := modulex.NewManager(router, nil, logger, nil)
+	manager.RegisterModule(&myModule{})
+
+	// Initialize
+	err := manager.InitModules(context.Background())
+	require.NoError(t, err)
+
+	// Fetch captured spans and verify parent-child lineage
+	spans := sr.Ended()
+	var parentSpan, childSpan sdktrace.ReadOnlySpan
+	for _, s := range spans {
+		if s.Name() == "InitModules" {
+			parentSpan = s
+		} else if s.Name() == "InitModule:my-module" {
+			childSpan = s
+		}
+	}
+
+	// Verify child span points directly to parent, ensuring no orphaned spans/gaps
+	assert.Equal(t, parentSpan.SpanContext().SpanID(), childSpan.Parent().SpanID())
+	assert.Equal(t, parentSpan.SpanContext().TraceID(), childSpan.SpanContext().TraceID())
+}
+```
 
 ---
 
