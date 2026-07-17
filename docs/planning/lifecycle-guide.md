@@ -101,6 +101,15 @@ Modules that were never reached are not started and are not stopped.
    reverse topological order.
 3. Close the configured `EventBus`.
 
+The `EventBus` is closed last so that a module's `Stop` can still publish or
+rely on the bus while it runs. The manager only owns and closes the
+`EventBus` itself — the `nats` and `rabbitmq` adapters wrap a caller-supplied
+connection or channel and leave it open after `Close`, since the caller
+created it and may share it outside the module lifecycle. The `watermill`
+adapter is the exception: it creates its own in-memory `GoChannel` and shuts
+it down in `Close`. Modules that create their own resources should release
+them in `Stop`, implementing `modulex.Stoppable`.
+
 ### Idempotency
 
 `StopModules` is idempotent. Calling it multiple times returns `nil` after the

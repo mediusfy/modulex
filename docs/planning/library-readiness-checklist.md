@@ -77,7 +77,13 @@ not claim compile-time architectural enforcement that it does not provide.
     and fails if any adapter dependency (chi, nats, rabbitmq, watermill,
     otel) appears in its compiled dependency graph. Wired into CI as the
     `consumer-boundary` job.
-- [ ] Scope integration resources to the owning module and clean them up in lifecycle order.
+- [x] Scope integration resources to the owning module and clean them up in lifecycle order.
+  - `StopModules` already closes the shared `EventBus` last, after every
+    module's `Stop`; `TestEventBusClosedAfterAllModulesStop` proves the
+    order. The `nats` and `rabbitmq` adapters wrap a caller-owned
+    connection/channel and explicitly document (and test) that `Close`
+    does not close it; `watermill` owns and closes its in-memory
+    `GoChannel`, which its existing test already proves.
 - [x] Inject the tracer provider rather than capturing mutable global state.
 - [x] Record errors and set appropriate span status in the OpenTelemetry integration.
 - [x] Add isolated integration tests for each adapter.

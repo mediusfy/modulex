@@ -24,6 +24,10 @@ type EventBus struct {
 }
 
 // NewEventBus creates a configured in-memory GoChannel PubSub.
+//
+// Unlike the nats and rabbitmq adapters, the EventBus owns the underlying
+// GoChannel PubSub it creates: Close shuts it down. There is no separate
+// connection for the caller to manage.
 func NewEventBus(bufferSize int64, persistent bool, debug bool) *EventBus {
 	logger := watermill.NewStdLogger(debug, debug)
 

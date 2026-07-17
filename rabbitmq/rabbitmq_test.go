@@ -112,6 +112,11 @@ func TestEventBus_Close(t *testing.T) {
 	}))
 
 	require.NoError(t, eb.Close(ctx))
+
+	// EventBus does not own the channel: Close must not close it. A
+	// subsequent operation on the same channel should still succeed.
+	_, err := ch.QueueDeclare(queue, true, false, false, false, nil)
+	assert.NoError(t, err, "EventBus.Close must not close the caller-owned channel")
 }
 
 func TestEventBus_ImplementsInterface(t *testing.T) {

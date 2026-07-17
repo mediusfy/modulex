@@ -122,6 +122,9 @@ func TestEventBus_CloseUnsubscribes(t *testing.T) {
 
 	require.NoError(t, eb.Close(ctx))
 
+	// EventBus does not own the connection: Close must not close it.
+	assert.False(t, conn.IsClosed(), "EventBus.Close must not close the caller-owned connection")
+
 	// After Close, the previous handler should no longer be invoked.
 	receivedAfter := make(chan []byte, 1)
 	eb2 := natsadapter.NewEventBus(conn)

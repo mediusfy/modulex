@@ -19,6 +19,12 @@ type EventBus struct {
 }
 
 // NewEventBus instantiates the RabbitMQ event bus driver.
+//
+// The EventBus does not take ownership of ch: the caller creates and closes
+// the underlying *amqp.Channel (and its connection), typically after
+// modulex.Manager.StopModules has closed the EventBus. This lets a single
+// channel or connection be shared across multiple concerns outside the
+// module lifecycle if desired.
 func NewEventBus(ch *amqp.Channel) *EventBus {
 	return &EventBus{ch: ch}
 }
@@ -95,7 +101,9 @@ func (r *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 	return nil
 }
 
-// Close implements modulex.EventBus. It cancels all active queue consumers.
+// Close implements modulex.EventBus. It cancels all active queue consumers
+// but does not close the underlying *amqp.Channel or its connection, which
+// the caller owns.
 func (r *EventBus) Close(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
