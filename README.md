@@ -4,36 +4,94 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/mediusfy/modulex)](https://goreportcard.com/report/github.com/mediusfy/modulex)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**Modulex** is a lightweight, thread-safe, dependency-aware module registry and service locator for building linear, decoupled Go applications. It is specifically designed to facilitate the development of **Modular Monoliths** that can be easily split into **Microservices** (standalone binaries) in the future without changing the core business logic.
+**Modulex** is an industry-standard Go library designed to orchestrate and enforce architectural boundaries in Go applications. 
 
 ---
 
-## Key Features
+## What this Repository is Designed to Do
 
-* **Hexagonal Architecture Isolation:** Decouple features by resolving service boundaries dynamically at runtime using interfaces, eliminating compile-time dependency entanglements.
-* **Topological Lifecycle Sort (DAG):** Modules specify their dependencies using `DependsOn() []string`. Modulex constructs a Directed Acyclic Graph (DAG), validates circular dependencies, and boots modules in topological order.
-* **Reverse Graceful Shutdown:** Automatically tears down resources and stops active worker threads in the strict **reverse** order of their initialization.
-* **NATS Subscription Autoclean:** Wraps and manages NATS subscriptions, guaranteeing automatic message route unsubscription before modules begin stopping.
-* **State Locking Protection:** Enforces immutability by locking the registry after boot. Any post-initialization service registration returns an error, preventing concurrency races and runtime configuration drift.
+Modulex is built to solve a critical architectural challenge: **how to build a modular monorepo application that can be run as a single monolithic process today, yet easily compile and deploy individual features as independent, standalone binaries in the future—without modifying core business logic.**
+
+Specifically, it is designed to:
+1. **Decouple Features at Compile-Time:** Prevent direct imports of concrete service implementations or database/network adapters between different feature modules. All feature-to-feature communication is handled via resolved interface boundaries (ports).
+2. **Enforce Hexagonal Architecture Boundaries:** Provide a structured initialization registry where features register their public inbound ports and dynamically request outbound ports.
+3. **Automate Topological DAG Lifecycles:** Analyze feature dependencies at startup to construct a Directed Acyclic Graph (DAG), detect circular loops, and execute lifecycle stages (`Init`, `Start`, `Stop`) in strict topological order (and reverse order for teardown).
+4. **Enable Flexible Deployment Topologies:**
+   * **Monolithic Run:** Register all feature modules locally. The service registry wires interfaces directly to in-process service implementations.
+   * **Distributed Run (Microservices):** Register only the target module in its own standalone binary. For other modules it depends on, the composition root registers network client adapters (HTTP/gRPC/NATS) instead, pointing to the external service.
+
+---
+
+## Architectural Decision Record (ADR-0029)
+
+This section embeds the official architectural decision that defines the creation, standard, and deployment constraints of the `modulex` framework.
+
+### Context & Problem Statement
+
+As Go applications grow within a monorepo, features that start as simple internal modules often need to scale, compile, and deploy independently. However, Go developers commonly fall into the trap of tight coupling by importing concrete structures and adapters from other packages (e.g., calling a database helper directly or importing a controller). 
+
+If Feature A directly imports Feature B's `service` or `adapters` packages, compilation boundaries are broken:
+- Feature A cannot be compiled without pulling in Feature B's dependencies (causing bloated binaries).
+- Circular package imports occur frequently.
+- Extracting a feature into a standalone service requires a major rewrite.
+
+We need a standardized framework and layout rules to enforce linear execution paths, clean interface segregation, and dynamic runtime wiring.
+
+### Options Considered
+
+* **Option 1: Compile-time Dependency Injection (e.g., Wire, Dig)**
+  * *Pros:* Type-safe at compile time.
+  * *Cons:* Requires highly complex setup configurations in `main.go`. Changing target topologies requires maintaining distinct, cumbersome compile-time configuration sets.
+* **Option 2: Service Locator and Module Registry Pattern (`modulex`)**
+  * *Pros:* Extremely low coupling. The core business logic is completely insulated. Topologies are selected at the composition root (the entry point `main.go`) by choosing to register either local modules or network proxy clients under the same interface names.
+  * *Cons:* Registry resolution type-checks are performed at startup rather than compile-time.
+
+### Confirming the Design
+
+We confirm the selection of **Option 2** (the Service Locator and Module Registry Pattern). Modulex enforces clean hexagonal segregation and supports runtime topology mapping:
+
+```mermaid
+graph TD
+    subgraph "Monolithic Execution"
+        MA[Service A] -->|1. Resolve Port B| MR[Registry]
+        MR -->|2. Local In-Memory| MB[Service B]
+    end
+
+    subgraph "Standalone Execution"
+        DA[Service A] -->|1. Resolve Port B| DR[Registry]
+        DR -->|2. Network Proxy Client| DC[Client Adapter]
+        DC -->|3. TCP/NATS/gRPC| DS[Service B Standalone Process]
+    end
+
+    style MA fill:#1e1e24,stroke:#333,stroke-width:2px,color:#fff
+    style MB fill:#1e1e24,stroke:#333,stroke-width:2px,color:#fff
+    style DA fill:#2e1e24,stroke:#444,stroke-width:2px,color:#fff
+    style DS fill:#2e1e24,stroke:#444,stroke-width:2px,color:#fff
+```
+
+### Consequences
+
+* **Positive:**
+  * **Zero Code Modification:** Splitting a monolith to microservices involves changing *only* the registration block in the application's entrypoint (`main.go`).
+  * **Strict Clean Deletion:** If a feature is deprecated, deleting its package directory does not break the compilation of other modules, since no other module imported its code.
+  * **No Resource Leakage:** Reverse-order shutdowns ensure downstream DB connectors/event lines are terminated only after upstream services have stopped consuming them.
+* **Negative:**
+  * **Type Assertions:** Developers must cast resolved interfaces (`val.(ports.Service)`). Missing registrations are caught during startup sequence checks.
 
 ---
 
 ## Directory Standards
 
-Every feature using `modulex` is recommended to adhere to a clean **Hexagonal Layout**:
+Every feature module using `modulex` must reside in its own package and strictly adhere to this layout:
 
-```
-internal/features/myfeature/
-├── domain/            # Entities, pure values, core business rules (Zero feature imports)
-├── ports/             # Contracts: B's inbound port interface & outbound requirements
-│   ├── service.go     # Inbound interface (e.g. type Service interface)
-│   └── repo.go        # Outbound interface (e.g. type Repository interface)
-├── service/           # Implements ports/service.go using domain business logic
-└── adapters/          # Inbound handlers (HTTP/NATS) & Outbound engines (DB, API clients)
-    ├── http.go        # HTTP endpoints handler
-    ├── db_repo.go     # Database repository implementation (Postgres/SQLite)
-    └── client.go      # Remote adapter client implementing ports/service.go (for standalone mode)
-```
+* **`domain/`**: Entities, pure values, core business rules. Zero dependencies on other features.
+* **`ports/`**: Clean interface contracts. Defines how the service can be called (inbound) and what it requires (outbound).
+* **`service/`**: Core logic implementing the inbound ports using pure business logic (no DB/network drivers).
+* **`adapters/`**: Houses all infrastructure mappings:
+  * *Inbound:* HTTP controllers, NATS listeners.
+  * *Outbound:* SQL repositories, API integrations.
+  * *Client:* Client adapter (HTTP/NATS proxy) implementing `ports/` interfaces for standalone deployment mode.
+* **`module.go`**: Implements the `modulex.Module` interface. Acts as the module's localized composition root.
 
 ---
 
@@ -50,6 +108,33 @@ go get github.com/mediusfy/modulex
 #### 1. Define a Module
 
 ```go
+package database
+
+import (
+	"context"
+	"github.com/mediusfy/modulex"
+)
+
+type Module struct {
+	dbConn *Connection
+}
+
+func (m *Module) Name() string      { return "database" }
+func (m *Module) DependsOn() []string { return nil } // No dependencies
+
+func (m *Module) Init(ctx context.Context, reg modulex.Registry) error {
+	m.dbConn = ConnectDB()
+	// Register service for other modules to resolve
+	return reg.RegisterService("database.Connection", m.dbConn)
+}
+
+func (m *Module) Start(ctx context.Context) error { return nil }
+func (m *Module) Stop(ctx context.Context) error  { return m.dbConn.Close() }
+```
+
+#### 2. Declare a Dependent Module
+
+```go
 package incident
 
 import (
@@ -61,91 +146,23 @@ type Module struct {
 	svc Service
 }
 
-func (m *Module) Name() string {
-	return "incident"
-}
-
-func (m *Module) DependsOn() []string {
-	// Initializes after database module
-	return []string{"database"}
-}
+func (m *Module) Name() string      { return "incident" }
+func (m *Module) DependsOn() []string { return []string{"database"} } // Boot database first
 
 func (m *Module) Init(ctx context.Context, reg modulex.Registry) error {
-	// Resolve database connection
-	dbConn, err := reg.ResolveService("database.Connection")
+	// Resolve dependency without importing any concrete implementation
+	conn, err := reg.ResolveService("database.Connection")
 	if err != nil {
 		return err
 	}
 
-	// Instantiate Hexagonal core
-	m.svc = NewService(dbConn)
-
-	// Expose inbound port/service to other modules
+	m.svc = NewService(conn)
 	return reg.RegisterService("incident.Service", m.svc)
 }
 
-func (m *Module) Start(ctx context.Context) error {
-	// Start background workers
-	return nil
-}
-
-func (m *Module) Stop(ctx context.Context) error {
-	// Clean up resources
-	return nil
-}
+func (m *Module) Start(ctx context.Context) error { return nil }
+func (m *Module) Stop(ctx context.Context) error  { return nil }
 ```
-
-#### 2. Bootstrap the Application (Monolith Mode)
-
-```go
-package main
-
-import (
-	"context"
-	"log/slog"
-	"net/http"
-	
-	gochi "github.com/go-chi/chi/v5"
-	"github.com/mediusfy/modulex"
-)
-
-func main() {
-	router := gochi.NewRouter()
-	mgr := modulex.NewManager(router, nil, slog.Default(), nil)
-
-	// Register modules
-	mgr.RegisterModule(&database.Module{})
-	mgr.RegisterModule(&incident.Module{})
-
-	ctx := context.Background()
-
-	// Initialize & start modules in topological order
-	if err := mgr.InitModules(ctx); err != nil {
-		panic(err)
-	}
-	if err := mgr.StartModules(ctx); err != nil {
-		panic(err)
-	}
-
-	// Graceful shutdown logic ...
-	defer mgr.StopModules(ctx)
-}
-```
-
----
-
-## Topology Agility (Moving to Standalone Binaries)
-
-When you decide to deploy `incident` as a separate microservice:
-
-1. **Monolith Configuration:** Remove `mgr.RegisterModule(&incident.Module{})`. Instead, register a client proxy adapter that implements the `IncidentService` interface:
-   ```go
-   clientAdapter := incidentclient.NewHTTPClient("http://incident-service:8080")
-   mgr.RegisterService("incident.Service", clientAdapter)
-   ```
-2. **Standalone Runner:** In a separate git folder or binary definition, spin up a lightweight registry containing only `incident.Module`.
-
-Other features in the monolith resolve `"incident.Service"` and execute method calls exactly as they did before, unaware that the call is now transported over the network rather than executed in-process.
 
 ---
 
