@@ -11,10 +11,15 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/goleak"
 
 	"github.com/mediusfy/modulex"
 	rabbitadapter "github.com/mediusfy/modulex/rabbitmq"
 )
+
+func TestMain(m *testing.M) {
+	goleak.VerifyTestMain(m)
+}
 
 // rabbitMQURL returns the broker URL to use for tests. It defaults to a local
 // RabbitMQ instance and can be overridden with the RABBITMQ_URL environment

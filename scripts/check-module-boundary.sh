@@ -16,4 +16,11 @@ trap 'rm -rf "$(dirname "$bin")"' EXIT
 cd "$repo_root"
 "$bin" -root=github.com/mediusfy/modulex/examples/deployment ./examples/deployment/...
 
-echo "ok: examples/deployment respects the module boundary"
+# Run the database boundary check if any SQL migration files exist under examples.
+if ls examples/**/migrations/*.sql 2>/dev/null; then
+	"$bin" -root=github.com/mediusfy/modulex/examples/deployment \
+	       -dbschema="*/migrations/*.sql" \
+	       ./examples/deployment/...
+fi
+
+echo "ok: examples/deployment respects the module and database boundary"

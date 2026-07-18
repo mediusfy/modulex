@@ -13,7 +13,12 @@ import (
 	modulexchi "github.com/mediusfy/modulex/chi"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/goleak"
 )
+
+func TestMain(m *testing.M) {
+	goleak.VerifyTestMain(m)
+}
 
 type chiModule struct {
 	name   string

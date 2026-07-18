@@ -65,3 +65,23 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
+
+      - name: Notify proxy.golang.org and pkg.go.dev
+        env:
+          MODULE: github.com/mediusfy/modulex
+          VERSION: ${{ github.ref_name }}
+        run: |
+          echo "Notifying Go module proxy for $MODULE@$VERSION..."
+          STATUS=$(curl -sL -o /dev/null -w "%{http_code}" \
+            "https://proxy.golang.org/$MODULE/@v/$VERSION.info" \
+            || true)
+          echo "proxy.golang.org responded with HTTP $STATUS"
+          echo ""
+          echo "Triggering pkg.go.dev to fetch and display documentation..."
+          STATUS=$(curl -sL -o /dev/null -w "%{http_code}" \
+            "https://pkg.go.dev/$MODULE@$VERSION" \
+            || true)
+          echo "pkg.go.dev responded with HTTP $STATUS"
+          echo ""
+          echo "Release $VERSION published."
+          echo "View at: https://pkg.go.dev/$MODULE"

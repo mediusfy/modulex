@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Goroutine leak detection via `go.uber.org/goleak` in the core module and
+  all adapter sub-packages (chi, nats, rabbitmq, watermill, otel).
+- `make release` target to tag, push, and create GitHub releases.
+- `make publish-godev` target to manually request go.dev re-indexing.
+- Release workflow notifies `proxy.golang.org` and `pkg.go.dev` to
+  trigger module indexing after a new version tag is pushed.
+- `make publish-godev` fetches the latest version from `proxy.golang.org`
+  and links to `pkg.go.dev` for manual re-indexing.
+- `modboundary` analyzer: `-dbschema` and `-sqltables` flags for
+  cross-module database table reference detection.
+- `modulex/otel/middleware.go`: HTTP middleware (`HTTPMiddleware`) and
+  subscriber middleware (`SubscriberMiddleware`) for automatic span
+  creation with OpenTelemetry.
+
 ### Changed
 
 - Marked the library readiness checklist's "publish v0 prereleases" items

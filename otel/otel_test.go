@@ -2,8 +2,11 @@ package otel_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/mediusfy/modulex"
@@ -15,7 +18,12 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	nooptrace "go.opentelemetry.io/otel/trace/noop"
+	"go.uber.org/goleak"
 )
+
+func TestMain(m *testing.M) {
+	goleak.VerifyTestMain(m)
+}
 
 func newTestManager() *modulex.Manager {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -178,6 +186,134 @@ func TestContextWithSpanContextIgnoresForeignImplementation(t *testing.T) {
 	foreign := foreignSpanContext{}
 	got := tracer.ContextWithSpanContext(ctx, foreign)
 	assert.Equal(t, ctx, got)
+}
+
+func TestHTTPMiddlewareSpanCreation(t *testing.T) {
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+
+	middleware := modulexotel.HTTPMiddleware(tp)
+
+	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "ok", rec.Body.String())
+
+	spans := sr.Ended()
+	require.Len(t, spans, 1)
+	assert.Equal(t, "GET", spans[0].Name())
+	assert.Equal(t, codes.Unset, spans[0].Status().Code)
+}
+
+func TestHTTPMiddlewareRecords5xxError(t *testing.T) {
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+
+	middleware := modulexotel.HTTPMiddleware(tp)
+
+	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/fail", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	spans := sr.Ended()
+	require.Len(t, spans, 1)
+	assert.Equal(t, int64(500), spans[0].Attributes()[2].Value.AsInt64())
+}
+
+func TestHTTPMiddlewareCustomSpanName(t *testing.T) {
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+
+	middleware := modulexotel.HTTPMiddleware(tp,
+		modulexotel.WithHTTPSpanName(func(r *http.Request) string {
+			return r.Method + " " + r.URL.Path
+		}),
+	)
+
+	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/custom", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	spans := sr.Ended()
+	require.Len(t, spans, 1)
+	assert.Equal(t, "GET /custom", spans[0].Name())
+}
+
+func TestSubscriberMiddlewareSpanCreation(t *testing.T) {
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+
+	var gotPayload []byte
+	handler := modulexotel.SubscriberMiddleware(tp)(
+		"orders.created",
+		func(ctx context.Context, payload []byte) error {
+			gotPayload = payload
+			return nil
+		},
+	)
+
+	err := handler(context.Background(), []byte("hello"))
+	require.NoError(t, err)
+	assert.Equal(t, []byte("hello"), gotPayload)
+
+	spans := sr.Ended()
+	require.Len(t, spans, 1)
+	assert.Equal(t, "process orders.created", spans[0].Name())
+}
+
+func TestSubscriberMiddlewareRecordsError(t *testing.T) {
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+
+	sentinel := errors.New("handler failed")
+	handler := modulexotel.SubscriberMiddleware(tp)(
+		"orders.failed",
+		func(ctx context.Context, payload []byte) error {
+			return sentinel
+		},
+	)
+
+	err := handler(context.Background(), []byte("data"))
+	require.ErrorIs(t, err, sentinel)
+
+	spans := sr.Ended()
+	require.Len(t, spans, 1)
+	assert.Equal(t, codes.Error, spans[0].Status().Code)
+}
+
+func TestSubscriberMiddlewareCustomTopicAttr(t *testing.T) {
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+
+	handler := modulexotel.SubscriberMiddleware(tp,
+		modulexotel.WithSubscriberTopicAttr("custom.topic"),
+	)(
+		"events.user",
+		func(ctx context.Context, payload []byte) error {
+			return nil
+		},
+	)
+
+	_ = handler(context.Background(), []byte("data"))
+
+	spans := sr.Ended()
+	require.Len(t, spans, 1)
+	assert.Equal(t, "events.user", spans[0].Attributes()[0].Value.AsString())
 }
 
 type foreignSpanContext struct{}

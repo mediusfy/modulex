@@ -14,7 +14,12 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/goleak"
 )
+
+func TestMain(m *testing.M) {
+	goleak.VerifyTestMain(m)
+}
 
 // startEmbeddedServer starts a NATS server suitable for tests.
 func startEmbeddedServer(t *testing.T) *server.Server {
