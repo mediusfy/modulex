@@ -9,7 +9,12 @@ import (
 
 	"github.com/mediusfy/modulex/watermill"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/goleak"
 )
+
+func TestMain(m *testing.M) {
+	goleak.VerifyTestMain(m)
+}
 
 func TestEventBus_PublishSubscribe(t *testing.T) {
 	t.Parallel()
