@@ -318,7 +318,9 @@ func TestSubscriberMiddlewareCustomTopicAttr(t *testing.T) {
 
 type foreignSpanContext struct{}
 
-func (foreignSpanContext) IsValid() bool { return true }
+func (foreignSpanContext) IsValid() bool   { return true }
+func (foreignSpanContext) TraceID() string { return "foreign-trace" }
+func (foreignSpanContext) SpanID() string  { return "foreign-span" }
 
 type testModule struct {
 	name string

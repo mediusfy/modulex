@@ -185,6 +185,10 @@ type Tracer interface {
 type SpanContext interface {
 	// IsValid reports whether the span context identifies a valid span.
 	IsValid() bool
+	// TraceID returns the trace identifier.
+	TraceID() string
+	// SpanID returns the span identifier.
+	SpanID() string
 }
 
 // Span is a minimal lifecycle span created by a Tracer.
@@ -200,7 +204,9 @@ type Span interface {
 // noopSpanContext is a no-op SpanContext implementation.
 type noopSpanContext struct{}
 
-func (noopSpanContext) IsValid() bool { return false }
+func (noopSpanContext) IsValid() bool   { return false }
+func (noopSpanContext) TraceID() string { return "" }
+func (noopSpanContext) SpanID() string  { return "" }
 
 // noopSpan is a no-op Span implementation.
 type noopSpan struct{}
@@ -580,6 +586,23 @@ func (m *Manager) GetConfig(target interface{}) error {
 }
 
 // Logger implements Registry.
+
+func (m *Manager) startSpan(ctx context.Context, spanName string, attrs map[string]any) (context.Context, Span) {
+	parentSC := m.tracer.SpanContextFromContext(ctx)
+	childCtx, span := m.tracer.Start(ctx, spanName, attrs)
+	childSC := m.tracer.SpanContextFromContext(childCtx)
+
+	if childSC.IsValid() {
+		m.loggerCtx.InfoContext(childCtx, "span started",
+			slog.String("span_name", spanName),
+			slog.String("trace_id", childSC.TraceID()),
+			slog.String("span_id", childSC.SpanID()),
+			slog.String("parent_span_id", parentSC.SpanID()),
+		)
+	}
+	return childCtx, span
+}
+
 func (m *Manager) Logger() *slog.Logger {
 	return m.loggerCtx
 }
@@ -605,7 +628,7 @@ func (m *Manager) closeEventBus(ctx context.Context) error {
 	if eb == nil {
 		return nil
 	}
-	m.loggerCtx.Info("closing event bus")
+	m.loggerCtx.InfoContext(ctx, "closing event bus")
 	if err := eb.Close(ctx); err != nil {
 		return fmt.Errorf("failed to close event bus: %w", err)
 	}
@@ -664,14 +687,14 @@ func (m *Manager) Go(ctx context.Context, taskName string, fn func(ctx context.C
 			handle.finish(taskErr)
 		}()
 
-		execCtx, span := m.tracer.Start(bgCtx, taskName, nil)
+		execCtx, span := m.startSpan(bgCtx, taskName, nil)
 		defer span.End()
 
 		defer func() {
 			if r := recover(); r != nil {
 				err := fmt.Errorf("panic in background task %q: %v", taskName, r)
 				span.RecordError(err)
-				m.loggerCtx.Error("recovered from background task panic",
+				m.loggerCtx.ErrorContext(execCtx, "recovered from background task panic",
 					slog.String("task", taskName),
 					slog.Any("panic", r),
 				)
@@ -737,7 +760,7 @@ func (m *Manager) InitModules(ctx context.Context) error {
 	m.orderedMods = ordered
 	m.mu.Unlock()
 
-	ctx, span := m.tracer.Start(ctx, "InitModules", map[string]any{
+	ctx, span := m.startSpan(ctx, "InitModules", map[string]any{
 		"modulex.module_count": len(ordered),
 	})
 	defer span.End()
@@ -750,7 +773,7 @@ func (m *Manager) InitModules(ctx context.Context) error {
 			break
 		}
 
-		modCtx, modSpan := m.tracer.Start(ctx, fmt.Sprintf("InitModule:%s", mod.Name()), map[string]any{
+		modCtx, modSpan := m.startSpan(ctx, fmt.Sprintf("InitModule:%s", mod.Name()), map[string]any{
 			"modulex.module_name": mod.Name(),
 		})
 		if err := mod.Init(modCtx, m); err != nil {
@@ -815,7 +838,7 @@ func (m *Manager) StartModules(ctx context.Context) error {
 	copy(mods, m.orderedMods)
 	m.mu.RUnlock()
 
-	ctx, span := m.tracer.Start(ctx, "StartModules", map[string]any{
+	ctx, span := m.startSpan(ctx, "StartModules", map[string]any{
 		"modulex.module_count": len(mods),
 	})
 	defer span.End()
@@ -828,7 +851,7 @@ func (m *Manager) StartModules(ctx context.Context) error {
 			break
 		}
 
-		modCtx, modSpan := m.tracer.Start(ctx, fmt.Sprintf("StartModule:%s", mod.Name()), map[string]any{
+		modCtx, modSpan := m.startSpan(ctx, fmt.Sprintf("StartModule:%s", mod.Name()), map[string]any{
 			"modulex.module_name": mod.Name(),
 		})
 		if err := m.startModule(modCtx, mod); err != nil {
@@ -886,7 +909,7 @@ func (m *Manager) startModule(ctx context.Context, mod Module) error {
 func (m *Manager) stopModule(ctx context.Context, mod Module, phase string) error {
 	if s, ok := mod.(Stoppable); ok {
 		if err := s.Stop(ctx); err != nil {
-			m.loggerCtx.Error("failed to stop module",
+			m.loggerCtx.ErrorContext(ctx, "failed to stop module",
 				slog.String("module", mod.Name()),
 				slog.String("phase", phase),
 				slog.Any("error", err),
@@ -927,7 +950,7 @@ func (m *Manager) waitForTasks(ctx context.Context) error {
 		return errors.Join(errs...)
 	}
 
-	m.loggerCtx.Info("waiting for supervised tasks to finish", slog.Int("task_count", len(tasks)))
+	m.loggerCtx.InfoContext(ctx, "waiting for supervised tasks to finish", slog.Int("task_count", len(tasks)))
 
 	g, gCtx := errgroup.WithContext(ctx)
 
@@ -1015,7 +1038,7 @@ func (m *Manager) StopModules(ctx context.Context) error {
 	m.taskMu.Unlock()
 	m.stateMu.Unlock()
 
-	ctx, span := m.tracer.Start(ctx, "StopModules", nil)
+	ctx, span := m.startSpan(ctx, "StopModules", nil)
 	defer span.End()
 
 	var errs []error
@@ -1037,7 +1060,7 @@ func (m *Manager) StopModules(ctx context.Context) error {
 				break
 			}
 			mod := mods[i]
-			modCtx, modSpan := m.tracer.Start(ctx, fmt.Sprintf("StopModule:%s", mod.Name()), map[string]any{
+			modCtx, modSpan := m.startSpan(ctx, fmt.Sprintf("StopModule:%s", mod.Name()), map[string]any{
 				"modulex.module_name": mod.Name(),
 			})
 			if err := m.stopModule(modCtx, mod, "stop"); err != nil {

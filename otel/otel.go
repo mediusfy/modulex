@@ -94,6 +94,14 @@ func (s *spanContext) IsValid() bool {
 	return s.sc.IsValid()
 }
 
+func (s *spanContext) TraceID() string {
+	return s.sc.TraceID().String()
+}
+
+func (s *spanContext) SpanID() string {
+	return s.sc.SpanID().String()
+}
+
 func convertAttributes(attrs map[string]any) []attribute.KeyValue {
 	out := make([]attribute.KeyValue, 0, len(attrs))
 	for k, v := range attrs {
