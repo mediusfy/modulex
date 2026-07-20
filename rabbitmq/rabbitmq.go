@@ -9,12 +9,37 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 
 	"github.com/mediusfy/modulex"
+	"go.opentelemetry.io/otel"
 )
 
 // EventBus implements modulex.EventBus by wrapping a RabbitMQ channel.
+
+type amqpHeadersCarrier map[string]interface{}
+
+func (c amqpHeadersCarrier) Get(key string) string {
+	if v, ok := c[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+func (c amqpHeadersCarrier) Set(key string, value string) {
+	c[key] = value
+}
+
+func (c amqpHeadersCarrier) Keys() []string {
+	keys := make([]string, 0, len(c))
+	for k := range c {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 type EventBus struct {
 	ch      *amqp.Channel
 	mu      sync.Mutex
+	nextTag int
+	tags    []string
 	cancels []context.CancelFunc // tracks consumer cancellation contexts
 }
 
@@ -36,6 +61,8 @@ func NewEventBus(ch *amqp.Channel) *EventBus {
 // queue to which the message is delivered. For routed exchanges, use a
 // broker-specific publisher instead of this adapter.
 func (r *EventBus) Publish(ctx context.Context, topic string, payload []byte) error {
+	headers := make(amqp.Table)
+	otel.GetTextMapPropagator().Inject(ctx, amqpHeadersCarrier(headers))
 	return r.ch.PublishWithContext(ctx,
 		"",    // default exchange
 		topic, // routing key == queue name on the default exchange
@@ -43,6 +70,7 @@ func (r *EventBus) Publish(ctx context.Context, topic string, payload []byte) er
 		false, // immediate
 		amqp.Publishing{
 			ContentType: "application/octet-stream",
+			Headers:     headers,
 			Body:        payload,
 		},
 	)
@@ -64,9 +92,14 @@ func (r *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 		return fmt.Errorf("failed to declare queue %q: %w", topic, err)
 	}
 
+	r.mu.Lock()
+	tag := fmt.Sprintf("modulex-consumer-%d", r.nextTag)
+	r.nextTag++
+	r.mu.Unlock()
+
 	msgs, err := r.ch.Consume(
 		topic, // queue
-		"",    // consumer name
+		tag,   // consumer name
 		true,  // auto-ack
 		false, // exclusive
 		false, // no-local
@@ -79,6 +112,7 @@ func (r *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 
 	subCtx, cancel := context.WithCancel(ctx)
 	r.mu.Lock()
+	r.tags = append(r.tags, tag)
 	r.cancels = append(r.cancels, cancel)
 	r.mu.Unlock()
 
@@ -93,7 +127,14 @@ func (r *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 				if !ok {
 					return
 				}
-				_ = handler(subCtx, d.Body)
+				var headers amqp.Table
+				if d.Headers != nil {
+					headers = d.Headers
+				} else {
+					headers = make(amqp.Table)
+				}
+				msgCtx := otel.GetTextMapPropagator().Extract(subCtx, amqpHeadersCarrier(headers))
+				_ = handler(msgCtx, d.Body)
 			}
 		}
 	}()
@@ -107,9 +148,13 @@ func (r *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 func (r *EventBus) Close(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	for _, tag := range r.tags {
+		_ = r.ch.Cancel(tag, false)
+	}
 	for _, cancel := range r.cancels {
 		cancel()
 	}
+	r.tags = nil
 	r.cancels = nil
 	return nil
 }

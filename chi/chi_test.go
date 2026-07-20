@@ -40,7 +40,7 @@ func (m *chiModule) Init(_ context.Context, reg modulex.Registry) error {
 
 func newTestManager(eb modulex.EventBus) *modulex.Manager {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	mgr, err := modulex.NewManager(eb, logger, nil)
+	mgr, err := modulex.NewManager(modulex.WithEventBus(eb), modulex.WithLogger(logger))
 	if err != nil {
 		panic(err)
 	}

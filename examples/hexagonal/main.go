@@ -30,7 +30,7 @@ func main() {
 	watermillBus := watermilladapter.NewEventBus(100, false, false)
 
 	// Create manager
-	mgr, err := modulex.NewManager(watermillBus, logger, configLoader)
+	mgr, err := modulex.NewManager(modulex.WithEventBus(watermillBus), modulex.WithLogger(logger), modulex.WithConfigLoader(configLoader))
 	if err != nil {
 		logger.Error("failed to create manager", slog.Any("error", err))
 		os.Exit(1)

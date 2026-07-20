@@ -74,6 +74,19 @@ func (w *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 
 	// Consumer thread loop
 	go func() {
+		defer func() {
+			cancel()
+			w.mu.Lock()
+			for i, c := range w.cancelFunc {
+				// Comparing function pointers in Go is not perfectly safe, but we can compare addresses or just clear on close.
+				// A simpler way is to just keep a map of ID to cancel func, but to keep it simple:
+				if fmt.Sprintf("%p", c) == fmt.Sprintf("%p", cancel) {
+					w.cancelFunc = append(w.cancelFunc[:i], w.cancelFunc[i+1:]...)
+					break
+				}
+			}
+			w.mu.Unlock()
+		}()
 		for {
 			select {
 			case <-subCtx.Done():

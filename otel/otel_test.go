@@ -27,7 +27,7 @@ func TestMain(m *testing.M) {
 
 func newTestManager() *modulex.Manager {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	mgr, err := modulex.NewManager(nil, logger, nil)
+	mgr, err := modulex.NewManager(modulex.WithLogger(logger))
 	if err != nil {
 		panic(err)
 	}

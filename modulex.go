@@ -228,6 +228,18 @@ func (noopTracer) ContextWithSpanContext(ctx context.Context, sc SpanContext) co
 type ManagerOption func(*Manager)
 
 // WithPanicPolicy sets the panic policy for supervised background tasks.
+func WithEventBus(eb EventBus) ManagerOption {
+	return func(m *Manager) {
+		m.eventBus = eb
+	}
+}
+
+func WithLogger(logger *slog.Logger) ManagerOption {
+	return func(m *Manager) {
+		m.loggerCtx = logger
+	}
+}
+
 func WithPanicPolicy(policy PanicPolicy) ManagerOption {
 	return func(m *Manager) {
 		m.panicPolicy = policy
@@ -346,6 +358,18 @@ type LoggerProvider interface {
 
 // TaskSpawner is the capability to start a supervised background task. Tasks
 // receive a lifecycle-owned context and are cancelled during shutdown.
+// HealthCheckRegistrar is the capability to register a module health check.
+type HealthCheckRegistrar interface {
+	// RegisterHealthCheck registers a health check function under a unique name.
+	RegisterHealthCheck(name string, check func(context.Context) error) error
+}
+
+// HealthCheckProvider exposes the registered health checks.
+type HealthCheckProvider interface {
+	// HealthChecks returns all registered health checks.
+	HealthChecks() map[string]func(context.Context) error
+}
+
 type TaskSpawner interface {
 	// Go spawns a supervised goroutine to execute background work. It creates a
 	// child span when a Tracer is configured, recovers from panics according to
@@ -370,6 +394,8 @@ type Registry interface {
 	ConfigProvider
 	LoggerProvider
 	TaskSpawner
+	HealthCheckRegistrar
+	HealthCheckProvider
 }
 
 // Manager implements the Registry interface and orchestrates the module lifecycles.
@@ -388,8 +414,11 @@ type Manager struct {
 	tracer       Tracer
 	panicPolicy  PanicPolicy
 	tasks        map[string]*TaskHandle
+	taskErrs     []error
 	taskCtx      context.Context
 	taskCancel   context.CancelFunc
+	healthMu     sync.RWMutex
+	healthChecks map[string]func(context.Context) error
 }
 
 var _ Registry = (*Manager)(nil)
@@ -400,30 +429,31 @@ var _ Registry = (*Manager)(nil)
 // in which case slog.Default() is used. NewManager returns
 // ErrInvalidPanicPolicy if WithPanicPolicy is given a value outside the
 // defined PanicPolicy enum.
-func NewManager(eb EventBus, logger *slog.Logger, configLoader func(target interface{}) error, opts ...ManagerOption) (*Manager, error) {
-	if eb == nil {
-		eb = noopEventBus{}
-	}
-	if logger == nil {
-		logger = slog.Default()
-	}
+func NewManager(opts ...ManagerOption) (*Manager, error) {
 	taskCtx, taskCancel := context.WithCancel(context.Background())
 	m := &Manager{
 		services:     make(map[string]interface{}),
 		modules:      make(map[string]Module),
 		moduleOrder:  make([]string, 0),
-		eventBus:     eb,
-		loggerCtx:    logger,
-		configLoader: configLoader,
+		eventBus:     noopEventBus{},
+		loggerCtx:    slog.Default(),
 		state:        StateConfiguring,
 		tracer:       noopTracer{},
 		panicPolicy:  PanicPolicyLog,
 		tasks:        make(map[string]*TaskHandle),
+		taskErrs:     make([]error, 0),
 		taskCtx:      taskCtx,
 		taskCancel:   taskCancel,
+		healthChecks: make(map[string]func(context.Context) error),
 	}
 	for _, opt := range opts {
 		opt(m)
+	}
+	if m.eventBus == nil {
+		m.eventBus = noopEventBus{}
+	}
+	if m.loggerCtx == nil {
+		m.loggerCtx = slog.Default()
 	}
 	if m.tracer == nil {
 		m.tracer = noopTracer{}
@@ -445,6 +475,29 @@ func NewManager(eb EventBus, logger *slog.Logger, configLoader func(target inter
 // module with the same name is already registered, or initialization has
 // already started. Independent modules preserve their registration order as
 // the deterministic tie-break during topological sorting.
+
+// RegisterHealthCheck registers a health check function under a unique name.
+func (m *Manager) RegisterHealthCheck(name string, check func(context.Context) error) error {
+	m.healthMu.Lock()
+	defer m.healthMu.Unlock()
+	if _, exists := m.healthChecks[name]; exists {
+		return fmt.Errorf("health check %q already registered", name)
+	}
+	m.healthChecks[name] = check
+	return nil
+}
+
+// HealthChecks returns all registered health checks.
+func (m *Manager) HealthChecks() map[string]func(context.Context) error {
+	m.healthMu.RLock()
+	defer m.healthMu.RUnlock()
+	checks := make(map[string]func(context.Context) error, len(m.healthChecks))
+	for k, v := range m.healthChecks {
+		checks[k] = v
+	}
+	return checks
+}
+
 func (m *Manager) RegisterModule(mod Module) error {
 	m.stateMu.Lock()
 	state := m.state
@@ -601,8 +654,12 @@ func (m *Manager) Go(ctx context.Context, taskName string, fn func(ctx context.C
 	go func() {
 		var taskErr error
 		defer func() {
-			// Keep the handle in m.tasks until waitForTasks has had a chance to
-			// collect its result. It will clear the map after awaiting tasks.
+			m.taskMu.Lock()
+			if taskErr != nil {
+				m.taskErrs = append(m.taskErrs, fmt.Errorf("task %q failed: %w", taskName, taskErr))
+			}
+			delete(m.tasks, taskName)
+			m.taskMu.Unlock()
 			taskCancel()
 			handle.finish(taskErr)
 		}()
@@ -636,6 +693,26 @@ func (m *Manager) Go(ctx context.Context, taskName string, fn func(ctx context.C
 //
 // If a module fails to initialize, all previously initialized modules are
 // stopped in reverse order and the manager moves to the stopped state.
+
+// ExportDAG returns a Mermaid-compatible DAG visualization of the registered modules.
+func (m *Manager) ExportDAG() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var sb strings.Builder
+	sb.WriteString("graph TD\n")
+	for name, mod := range m.modules {
+		fmt.Fprintf(&sb, "    %s[%s]\n", name, name)
+		for _, dep := range mod.DependsOn() {
+			depName := strings.TrimSpace(dep)
+			if depName != "" {
+				fmt.Fprintf(&sb, "    %s --> %s\n", name, depName)
+			}
+		}
+	}
+	return sb.String()
+}
+
 func (m *Manager) InitModules(ctx context.Context) error {
 	m.stateMu.Lock()
 	state := m.state
@@ -828,18 +905,26 @@ func (m *Manager) stopModule(ctx context.Context, mod Module, phase string) erro
 // manager is not left with a permanently cancelled context after a failure or
 // shutdown path. New tasks are still rejected by the lifecycle state machine.
 func (m *Manager) waitForTasks(ctx context.Context) error {
-	m.taskCancel()
-
 	m.taskMu.Lock()
+	cancel := m.taskCancel
 	tasks := make([]*TaskHandle, 0, len(m.tasks))
 	for _, t := range m.tasks {
 		tasks = append(tasks, t)
 	}
 	m.taskMu.Unlock()
 
+	if cancel != nil {
+		cancel()
+	}
+
 	if len(tasks) == 0 {
+		m.taskMu.Lock()
+		var errs []error
+		errs = append(errs, m.taskErrs...)
+		m.taskErrs = nil
+		m.taskMu.Unlock()
 		m.resetTaskCtx()
-		return nil
+		return errors.Join(errs...)
 	}
 
 	m.loggerCtx.Info("waiting for supervised tasks to finish", slog.Int("task_count", len(tasks)))
@@ -885,6 +970,8 @@ func (m *Manager) waitForTasks(ctx context.Context) error {
 	}
 
 	m.taskMu.Lock()
+	errs = append(errs, m.taskErrs...)
+	m.taskErrs = nil
 	m.tasks = make(map[string]*TaskHandle)
 	m.taskMu.Unlock()
 
@@ -912,7 +999,7 @@ func (m *Manager) StopModules(ctx context.Context) error {
 	case StateStopped, StateStopping:
 		m.stateMu.Unlock()
 		return nil
-	case StateConfiguring, StateInitialized, StateRunning:
+	case StateConfiguring, StateInitializing, StateInitialized, StateStarting, StateRunning:
 		// proceed with shutdown
 	default:
 		m.stateMu.Unlock()

@@ -27,7 +27,7 @@ func TestMonolithComposition(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	router := gochi.NewRouter()
 
-	mgr, err := modulex.NewManager(nil, logger, nil)
+	mgr, err := modulex.NewManager(modulex.WithLogger(logger))
 	require.NoError(t, err)
 	require.NoError(t, modulexchi.RegisterRouter(mgr, router))
 	require.NoError(t, mgr.RegisterModule(notification.NewModule()))
@@ -64,7 +64,7 @@ func TestRemoteComposition(t *testing.T) {
 
 	// Consumer process with a remote notification module that proxies to the
 	// standalone service over HTTP.
-	mgr, err := modulex.NewManager(nil, logger, nil)
+	mgr, err := modulex.NewManager(modulex.WithLogger(logger))
 	require.NoError(t, err)
 	remoteMod, err := notification.NewRemoteModule(ts.URL, nil)
 	require.NoError(t, err)
@@ -83,7 +83,7 @@ func TestRemoteComposition(t *testing.T) {
 func TestNotificationModuleWithoutRouter(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	mgr, err := modulex.NewManager(nil, logger, nil)
+	mgr, err := modulex.NewManager(modulex.WithLogger(logger))
 	require.NoError(t, err)
 	require.NoError(t, mgr.RegisterModule(notification.NewModule()))
 
