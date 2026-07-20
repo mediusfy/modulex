@@ -48,7 +48,7 @@ func (m *GreeterModule) Init(ctx context.Context, reg modulex.Registry) error {
 
 func main() {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	manager, err := modulex.NewManager(nil, logger, nil)
+	manager, err := modulex.NewManager(modulex.WithLogger(logger))
 	if err != nil {
 		panic(err)
 	}

@@ -76,7 +76,7 @@ import "github.com/mediusfy/modulex/nats"
 
 // Wrap a standard *nats.Conn connection
 eb := nats.NewEventBus(natsConn)
-mgr, err := modulex.NewManager(eb, logger, configLoader)
+mgr, err := modulex.NewManager(modulex.WithEventBus(eb), modulex.WithLogger(logger), modulex.WithConfigLoader(configLoader))
 if err != nil {
     // handle error
 }
@@ -88,7 +88,7 @@ import "github.com/mediusfy/modulex/rabbitmq"
 
 // Wrap a standard *amqp.Channel channel
 eb := rabbitmq.NewEventBus(amqpChannel)
-mgr, err := modulex.NewManager(eb, logger, configLoader)
+mgr, err := modulex.NewManager(modulex.WithEventBus(eb), modulex.WithLogger(logger), modulex.WithConfigLoader(configLoader))
 if err != nil {
     // handle error
 }
@@ -100,7 +100,7 @@ import watermilladapter "github.com/mediusfy/modulex/watermill"
 
 // Initialize Watermill in-memory (Go Channel)
 eb := watermilladapter.NewEventBus(100, false, false)
-mgr, err := modulex.NewManager(eb, logger, configLoader)
+mgr, err := modulex.NewManager(modulex.WithEventBus(eb), modulex.WithLogger(logger), modulex.WithConfigLoader(configLoader))
 if err != nil {
     // handle error
 }
@@ -114,7 +114,7 @@ import (
 )
 
 router := gochi.NewRouter()
-mgr, err := modulex.NewManager(eb, logger, configLoader)
+mgr, err := modulex.NewManager(modulex.WithEventBus(eb), modulex.WithLogger(logger), modulex.WithConfigLoader(configLoader))
 if err != nil {
     // handle error
 }

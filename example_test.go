@@ -98,7 +98,7 @@ func (m *exampleModule) Init(context.Context, modulex.Registry) error { return n
 
 func newExampleManager() *modulex.Manager {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	mgr, err := modulex.NewManager(nil, logger, nil)
+	mgr, err := modulex.NewManager(modulex.WithLogger(logger))
 	if err != nil {
 		panic(err)
 	}

@@ -92,7 +92,7 @@ import (
 )
 
 router := gochi.NewRouter()
-mgr := modulex.NewManager(router, eb, logger, configLoader)
+mgr := modulex.NewManager(modulex.WithEventBus(router), modulex.WithLogger(eb), modulex.WithConfigLoader(logger), configLoader)
 
 func (m *Module) Init(ctx context.Context, reg modulex.Registry) error {
     reg.Router().Get("/api/incidents", m.listIncidents)
@@ -110,7 +110,7 @@ import (
 )
 
 router := gochi.NewRouter()
-mgr, err := modulex.NewManager(eb, logger, configLoader)
+mgr, err := modulex.NewManager(modulex.WithEventBus(eb), modulex.WithLogger(logger), modulex.WithConfigLoader(configLoader))
 if err != nil {
     // handle error
 }
@@ -145,7 +145,7 @@ OpenTelemetry tracer. Tracing is opt-in via `modulex.WithTracer`.
 ```go
 import "github.com/mediusfy/modulex"
 
-mgr := modulex.NewManager(router, eb, logger, configLoader)
+mgr := modulex.NewManager(modulex.WithEventBus(router), modulex.WithLogger(eb), modulex.WithConfigLoader(logger), configLoader)
 // Spans were created using the global OTel tracer from Registry.Tracer().
 ```
 
@@ -234,13 +234,13 @@ no-op implementation, so passing `nil` for local development remains valid.
 ### Before
 
 ```go
-mgr := modulex.NewManager(eb, logger, configLoader)
+mgr := modulex.NewManager(modulex.WithEventBus(eb), modulex.WithLogger(logger), modulex.WithConfigLoader(configLoader))
 ```
 
 ### After
 
 ```go
-mgr, err := modulex.NewManager(eb, logger, configLoader)
+mgr, err := modulex.NewManager(modulex.WithEventBus(eb), modulex.WithLogger(logger), modulex.WithConfigLoader(configLoader))
 if err != nil {
     // handle error
 }

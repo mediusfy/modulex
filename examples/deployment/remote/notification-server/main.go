@@ -20,7 +20,7 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	router := gochi.NewRouter()
 
-	mgr, err := modulex.NewManager(nil, logger, nil)
+	mgr, err := modulex.NewManager(modulex.WithLogger(logger))
 	if err != nil {
 		logger.Error("failed to create manager", slog.Any("error", err))
 		os.Exit(1)

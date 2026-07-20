@@ -166,7 +166,7 @@ func (eb *InMemoryEventBus) Close(ctx context.Context) error {
 
 func newTestManager(eb modulex.EventBus) *modulex.Manager {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	mgr, err := modulex.NewManager(eb, logger, nil)
+	mgr, err := modulex.NewManager(modulex.WithEventBus(eb), modulex.WithLogger(logger))
 	if err != nil {
 		panic(err)
 	}
@@ -177,7 +177,7 @@ func TestNewManagerConstructorValidation(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	t.Run("nil event bus defaults to a no-op implementation", func(t *testing.T) {
-		manager, err := modulex.NewManager(nil, logger, nil)
+		manager, err := modulex.NewManager(modulex.WithLogger(logger))
 		require.NoError(t, err)
 		require.NotNil(t, manager)
 
@@ -190,26 +190,26 @@ func TestNewManagerConstructorValidation(t *testing.T) {
 
 	t.Run("valid explicit event bus is retained", func(t *testing.T) {
 		mockEB := mocks.NewMockEventBus(t)
-		manager, err := modulex.NewManager(mockEB, logger, nil)
+		manager, err := modulex.NewManager(modulex.WithEventBus(mockEB), modulex.WithLogger(logger))
 		require.NoError(t, err)
 		assert.Same(t, mockEB, manager.EventBus())
 	})
 
 	t.Run("nil logger falls back to slog.Default", func(t *testing.T) {
-		manager, err := modulex.NewManager(nil, nil, nil)
+		manager, err := modulex.NewManager()
 		require.NoError(t, err)
 		require.NotNil(t, manager.Logger())
 	})
 
 	t.Run("invalid panic policy is rejected", func(t *testing.T) {
-		manager, err := modulex.NewManager(nil, logger, nil, modulex.WithPanicPolicy(modulex.PanicPolicy(99)))
+		manager, err := modulex.NewManager(modulex.WithLogger(logger), modulex.WithPanicPolicy(modulex.PanicPolicy(99)))
 		require.Nil(t, manager)
 		require.ErrorIs(t, err, modulex.ErrInvalidPanicPolicy)
 	})
 
 	t.Run("valid panic policies are accepted", func(t *testing.T) {
 		for _, policy := range []modulex.PanicPolicy{modulex.PanicPolicyLog, modulex.PanicPolicyPropagate} {
-			manager, err := modulex.NewManager(nil, logger, nil, modulex.WithPanicPolicy(policy))
+			manager, err := modulex.NewManager(modulex.WithLogger(logger), modulex.WithPanicPolicy(policy))
 			require.NoError(t, err)
 			require.NotNil(t, manager)
 		}
@@ -231,7 +231,7 @@ func TestManagerLifecycleAndWiring(t *testing.T) {
 	mockEB := mocks.NewMockEventBus(t)
 	mockEB.On("Close", mock.Anything).Return(nil).Maybe()
 
-	manager, err := modulex.NewManager(mockEB, logger, configLoader)
+	manager, err := modulex.NewManager(modulex.WithEventBus(mockEB), modulex.WithLogger(logger), modulex.WithConfigLoader(configLoader))
 	require.NoError(t, err)
 
 	var initSeq, startSeq, stopSeq []string
@@ -1647,7 +1647,7 @@ func TestSupervisedTasksConcurrentGo(t *testing.T) {
 
 func newTestManagerWithPanicPolicy(policy modulex.PanicPolicy) *modulex.Manager {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	mgr, err := modulex.NewManager(nil, logger, nil, modulex.WithPanicPolicy(policy))
+	mgr, err := modulex.NewManager(modulex.WithLogger(logger), modulex.WithPanicPolicy(policy))
 	if err != nil {
 		panic(err)
 	}
