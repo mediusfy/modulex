@@ -17,3 +17,6 @@ Thumbs.db
 # Cover profiles
 *.out
 coverage.html
+
+# Ad-hoc debug output
+test_output.txt

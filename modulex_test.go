@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -302,7 +303,151 @@ func TestManagerImplementsCapabilityInterfaces(t *testing.T) {
 	var _ modulex.ConfigProvider = manager
 	var _ modulex.LoggerProvider = manager
 	var _ modulex.TaskSpawner = manager
+	var _ modulex.HealthCheckRegistrar = manager
+	var _ modulex.HealthCheckProvider = manager
+	var _ modulex.ReadinessRegistrar = manager
+	var _ modulex.ReadinessProvider = manager
 	var _ modulex.Registry = manager
+}
+
+func TestRegisterHealthCheckValidation(t *testing.T) {
+	tests := []struct {
+		name       string
+		act        func(t *testing.T, manager *modulex.Manager) error
+		wantErrSub string
+	}{
+		{
+			name: "duplicate health check name",
+			act: func(t *testing.T, manager *modulex.Manager) error {
+				require.NoError(t, manager.RegisterHealthCheck("db", func(context.Context) error { return nil }))
+				return manager.RegisterHealthCheck("db", func(context.Context) error { return nil })
+			},
+			wantErrSub: `health check "db" already registered`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manager := newTestManager(nil)
+			err := tt.act(t, manager)
+			assert.ErrorContains(t, err, tt.wantErrSub)
+		})
+	}
+}
+
+func TestHealthChecksDefaultsToEmptyMap(t *testing.T) {
+	manager := newTestManager(nil)
+
+	checks := manager.HealthChecks()
+	assert.NotNil(t, checks)
+	assert.Empty(t, checks)
+}
+
+func TestHealthChecksReturnsDefensiveCopy(t *testing.T) {
+	manager := newTestManager(nil)
+	require.NoError(t, manager.RegisterHealthCheck("db", func(context.Context) error { return nil }))
+
+	checks := manager.HealthChecks()
+	checks["injected"] = func(context.Context) error { return nil }
+
+	assert.Len(t, manager.HealthChecks(), 1)
+}
+
+func TestConcurrentHealthCheckRegistration(t *testing.T) {
+	manager := newTestManager(nil)
+
+	const n = 100
+	var wg sync.WaitGroup
+	wg.Add(n)
+
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			name := fmt.Sprintf("check-%d", i)
+			require.NoError(t, manager.RegisterHealthCheck(name, func(context.Context) error { return nil }))
+		}(i)
+	}
+
+	wg.Wait()
+
+	assert.Len(t, manager.HealthChecks(), n)
+}
+
+func TestRegisterReadinessCheckValidation(t *testing.T) {
+	tests := []struct {
+		name       string
+		act        func(t *testing.T, manager *modulex.Manager) error
+		wantErrSub string
+	}{
+		{
+			name: "duplicate readiness check name",
+			act: func(t *testing.T, manager *modulex.Manager) error {
+				require.NoError(t, manager.RegisterReadinessCheck("cache", func(context.Context) error { return nil }))
+				return manager.RegisterReadinessCheck("cache", func(context.Context) error { return nil })
+			},
+			wantErrSub: `readiness check "cache" already registered`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manager := newTestManager(nil)
+			err := tt.act(t, manager)
+			assert.ErrorContains(t, err, tt.wantErrSub)
+		})
+	}
+}
+
+func TestReadinessChecksDefaultsToEmptyMap(t *testing.T) {
+	manager := newTestManager(nil)
+
+	checks := manager.ReadinessChecks()
+	assert.NotNil(t, checks)
+	assert.Empty(t, checks)
+}
+
+func TestReadinessChecksReturnsDefensiveCopy(t *testing.T) {
+	manager := newTestManager(nil)
+	require.NoError(t, manager.RegisterReadinessCheck("cache", func(context.Context) error { return nil }))
+
+	checks := manager.ReadinessChecks()
+	checks["injected"] = func(context.Context) error { return nil }
+
+	assert.Len(t, manager.ReadinessChecks(), 1)
+}
+
+func TestConcurrentReadinessCheckRegistration(t *testing.T) {
+	manager := newTestManager(nil)
+
+	const n = 100
+	var wg sync.WaitGroup
+	wg.Add(n)
+
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			name := fmt.Sprintf("check-%d", i)
+			require.NoError(t, manager.RegisterReadinessCheck(name, func(context.Context) error { return nil }))
+		}(i)
+	}
+
+	wg.Wait()
+
+	assert.Len(t, manager.ReadinessChecks(), n)
+}
+
+// TestHealthAndReadinessChecksAreIndependent asserts that registering a check
+// under the same name in both the health and readiness namespaces does not
+// collide - they are tracked separately because they answer different
+// questions (liveness vs readiness).
+func TestHealthAndReadinessChecksAreIndependent(t *testing.T) {
+	manager := newTestManager(nil)
+
+	require.NoError(t, manager.RegisterHealthCheck("db", func(context.Context) error { return nil }))
+	require.NoError(t, manager.RegisterReadinessCheck("db", func(context.Context) error { return nil }))
+
+	assert.Len(t, manager.HealthChecks(), 1)
+	assert.Len(t, manager.ReadinessChecks(), 1)
 }
 
 func TestCircularDependencyDetection(t *testing.T) {
@@ -1587,6 +1732,31 @@ func TestSupervisedTaskShutdown(t *testing.T) {
 	}
 }
 
+// spawnNeverReturningTask starts a supervised task that ignores cancellation,
+// used by the StopModules timeout tests below to force StopModules' wait to
+// run out the clock regardless of how quickly the other task under test
+// finishes.
+func spawnNeverReturningTask(t *testing.T, manager *modulex.Manager) {
+	t.Helper()
+	_, err := manager.Go(context.Background(), "ignore-cancel-task", func(ctx context.Context) error {
+		<-make(chan struct{}) // never returns
+		return nil
+	})
+	require.NoError(t, err)
+}
+
+// assertStopModulesTimedOutWithTaskError asserts the shape every StopModules
+// timeout test below expects: a joined error that both reports the context
+// deadline and preserves the named task's error.
+func assertStopModulesTimedOutWithTaskError(t *testing.T, err error, taskErr error, taskName string) {
+	t.Helper()
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.ErrorContains(t, err, "timed out waiting for tasks")
+	assert.ErrorIs(t, err, taskErr)
+	assert.ErrorContains(t, err, taskName)
+}
+
 func TestStopModulesCollectsTaskErrorDespiteTimeout(t *testing.T) {
 	manager := newTestManager(nil)
 	taskErr := errors.New("task failed around deadline")
@@ -1594,15 +1764,11 @@ func TestStopModulesCollectsTaskErrorDespiteTimeout(t *testing.T) {
 	mod := newMockModule(t, mockModuleConfig{
 		name: "mod-a",
 		onStart: func() {
-			_, err := manager.Go(context.Background(), "ignore-cancel-task", func(ctx context.Context) error {
-				<-make(chan struct{}) // never returns
-				return nil
-			})
-			require.NoError(t, err)
+			spawnNeverReturningTask(t, manager)
 
-			_, err = manager.Go(context.Background(), "failing-task", func(ctx context.Context) error {
-				// Finish with an error immediately so the error is collected before
-				// the deadline is reached.
+			// Finish with an error immediately so the error is collected before
+			// the deadline is reached.
+			_, err := manager.Go(context.Background(), "failing-task", func(ctx context.Context) error {
 				return taskErr
 			})
 			require.NoError(t, err)
@@ -1617,11 +1783,76 @@ func TestStopModulesCollectsTaskErrorDespiteTimeout(t *testing.T) {
 	defer cancel()
 	err := manager.StopModules(ctx)
 
+	assertStopModulesTimedOutWithTaskError(t, err, taskErr, "failing-task")
+}
+
+// TestStopModulesCollectsAlreadyFinishedTaskErrorDespiteTimeout is a
+// deterministic variant of TestStopModulesCollectsTaskErrorDespiteTimeout: it
+// waits for the failing task to fully finish (and be removed from the
+// manager's live task set) before starting the task that never returns, so
+// the failing task's error is only ever reachable via m.taskErrs, not via a
+// TaskHandle still present in waitForTasks' snapshot. This reproduces a real
+// bug where waitForTasks dropped m.taskErrs entirely on a timed-out wait,
+// silently losing errors from tasks that had already finished before
+// StopModules was even called.
+func TestStopModulesCollectsAlreadyFinishedTaskErrorDespiteTimeout(t *testing.T) {
+	manager := newTestManager(nil)
+	taskErr := errors.New("task failed before shutdown began")
+
+	mod := newMockModule(t, mockModuleConfig{
+		name: "mod-a",
+		onStart: func() {
+			handle, err := manager.Go(context.Background(), "already-finished-task", func(ctx context.Context) error {
+				return taskErr
+			})
+			require.NoError(t, err)
+			require.ErrorIs(t, handle.Wait(), taskErr)
+
+			spawnNeverReturningTask(t, manager)
+		},
+	})
+
+	require.NoError(t, manager.RegisterModule(mod))
+	require.NoError(t, manager.InitModules(context.Background()))
+	require.NoError(t, manager.StartModules(context.Background()))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	err := manager.StopModules(ctx)
+
+	assertStopModulesTimedOutWithTaskError(t, err, taskErr, "already-finished-task")
+}
+
+// TestStopModulesReportsMidWaitTaskErrorExactlyOnce reproduces a real bug
+// where a task that finished while StopModules was still waiting on it had
+// its error reported twice: once via the TaskHandle read in waitForTasks'
+// post-wait loop, and again via the m.taskErrs the same task had already
+// recorded before signalling completion.
+func TestStopModulesReportsMidWaitTaskErrorExactlyOnce(t *testing.T) {
+	manager := newTestManager(nil)
+	taskErr := errors.New("task failed mid-wait")
+
+	mod := newMockModule(t, mockModuleConfig{
+		name: "mod-a",
+		onStart: func() {
+			_, err := manager.Go(context.Background(), "mid-wait-task", func(ctx context.Context) error {
+				time.Sleep(20 * time.Millisecond)
+				return taskErr
+			})
+			require.NoError(t, err)
+		},
+	})
+
+	require.NoError(t, manager.RegisterModule(mod))
+	require.NoError(t, manager.InitModules(context.Background()))
+	require.NoError(t, manager.StartModules(context.Background()))
+
+	err := manager.StopModules(context.Background())
+
 	require.Error(t, err)
-	assert.ErrorIs(t, err, context.DeadlineExceeded)
-	assert.ErrorContains(t, err, "timed out waiting for tasks")
 	assert.ErrorIs(t, err, taskErr)
-	assert.ErrorContains(t, err, "failing-task")
+	assert.Equal(t, 1, strings.Count(err.Error(), "mid-wait-task"),
+		"task error must be reported exactly once, got: %v", err)
 }
 
 func TestSupervisedTasksConcurrentGo(t *testing.T) {
@@ -1802,4 +2033,32 @@ func TestSupervisedTaskErrorCollectedAfterEarlyFinish(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestExportDAGDeterministic asserts ExportDAG produces the same output
+// across repeated calls, since Manager.modules and Module.DependsOn() are
+// unordered inputs (a Go map, and a caller-supplied slice) that must be
+// sorted before rendering — otherwise the generated Mermaid doc a consumer
+// commits to source control (see rufkis-platform's `make module-dag`) would
+// churn on every regeneration even with no real topology change.
+func TestExportDAGDeterministic(t *testing.T) {
+	t.Parallel()
+
+	manager := newTestManager(NewInMemoryEventBus())
+
+	require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "zeta"})))
+	require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "alpha", deps: []string{"zeta", "mu"}})))
+	require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "mu"})))
+
+	want := manager.ExportDAG()
+	for i := 0; i < 10; i++ {
+		require.Equal(t, want, manager.ExportDAG())
+	}
+
+	require.Equal(t, "graph TD\n"+
+		"    alpha[alpha]\n"+
+		"    alpha --> mu\n"+
+		"    alpha --> zeta\n"+
+		"    mu[mu]\n"+
+		"    zeta[zeta]\n", want)
 }

@@ -7,6 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-22
+
+### Added
+
+- Readiness checks: `ReadinessRegistrar` and `ReadinessProvider` capability
+  interfaces, embedded into `Registry` alongside the existing
+  `HealthCheckRegistrar`/`HealthCheckProvider`. Readiness checks are a
+  distinct namespace from health (liveness) checks — a failing health check
+  means the process should be restarted, a failing readiness check means the
+  instance should be pulled from load balancing without being restarted.
+  `Manager.RegisterReadinessCheck` and `Manager.ReadinessChecks` mirror the
+  existing `RegisterHealthCheck`/`HealthChecks` behavior.
+- `modulex/httpx` package: `HealthHandler` and `ReadinessHandler` expose the
+  registered health/readiness checks as JSON over HTTP (running checks
+  concurrently, each bounded by the request deadline or a 5-second default),
+  and `Serve` spawns a `*http.Server` via `modulex.TaskSpawner` with graceful
+  shutdown, removing the "ListenAndServe + select + Shutdown with a timeout"
+  boilerplate every HTTP-serving consumer previously hand-wrote.
+- Automatic traceID/spanID propagation: `SpanContext` now carries trace and
+  span IDs, and `Manager` logs parent/child span relationships via `slog`
+  during `InitModules`, `StartModules`, `StopModules`, each module lifecycle
+  phase, and supervised `Go` tasks.
+- README documentation for the previously-undocumented
+  `HealthCheckRegistrar`/`HealthCheckProvider` capability interfaces and
+  `Manager.ExportDAG()` (Mermaid DAG export of the registered module graph),
+  plus a new "Health Checks, Readiness, and HTTP Exposure" section covering
+  `modulex/httpx`.
+
+### Fixed
+
+- `Manager.ExportDAG()` now renders modules and their dependencies in sorted
+  order. It previously iterated the module map directly, so the generated
+  Mermaid DAG's node/edge order varied from call to call, producing spurious
+  diffs for consumers that regenerate and commit the DAG (e.g. a `make
+  module-dag` target) even when the module topology hadn't changed.
+- `StopModules`/`waitForTasks` no longer drops or double-reports supervised
+  task errors depending on timing. Task errors were read from two different
+  places — a per-`TaskHandle` check and a separate `m.taskErrs` slice — which
+  meant a task that had already finished (and been removed from the manager's
+  live task set) *before* `StopModules` was called had its error silently
+  dropped whenever the overall wait then timed out, while a task that
+  finished *while* `StopModules` was still waiting on it had its error
+  reported twice. Task errors are now read from `m.taskErrs` exactly once,
+  which is the single point every supervised task already records its result
+  to before signalling completion.
+
+## [0.3.0] - 2026-07-20
+
+### Added
+
+- `HealthCheckRegistrar`/`HealthCheckProvider` capability interfaces,
+  embedded into `Registry`, and `Manager.RegisterHealthCheck`/`HealthChecks`
+  for registering and aggregating module health checks.
+- `Manager.ExportDAG()`: Mermaid-compatible DAG visualization of the
+  registered module dependency graph.
+- `WithEventBus` and `WithLogger` `ManagerOption`s.
+
+### Changed
+
+- **Breaking:** `NewManager` now takes only `...ManagerOption` instead of
+  positional `(eb, logger, configLoader, opts...)` arguments; pass
+  `WithEventBus`/`WithLogger` explicitly where those were previously
+  positional.
+- RabbitMQ and Watermill `EventBus` adapters: propagate trace context over
+  AMQP headers, and fix a subscriber-cancellation bug on the Watermill
+  adapter.
+
+## [0.2.0] - 2026-07-18
+
 ### Added
 
 - Goroutine leak detection via `go.uber.org/goleak` in the core module and
@@ -177,6 +246,9 @@ Initial v0 prerelease.
   service locator, and pluggable event-bus adapters (Chi, NATS, RabbitMQ,
   Watermill, OpenTelemetry).
 
-[Unreleased]: https://github.com/mediusfy/modulex/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/mediusfy/modulex/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/mediusfy/modulex/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/mediusfy/modulex/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/mediusfy/modulex/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/mediusfy/modulex/releases/tag/v0.1.0
 [0.0.0]: https://github.com/mediusfy/modulex/releases/tag/v0.0.0

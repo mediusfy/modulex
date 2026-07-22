@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 
@@ -364,16 +365,51 @@ type LoggerProvider interface {
 
 // TaskSpawner is the capability to start a supervised background task. Tasks
 // receive a lifecycle-owned context and are cancelled during shutdown.
-// HealthCheckRegistrar is the capability to register a module health check.
+// HealthCheckRegistrar is the capability to register a module health (liveness)
+// check.
+//
+// A health check answers "is this process functioning correctly?" A failing
+// health check means the process is broken and should be restarted (e.g. by
+// an orchestrator's liveness probe). Contrast this with ReadinessRegistrar,
+// which answers "should this process currently receive traffic?" — a failing
+// readiness check means the instance should be pulled from load balancing,
+// not restarted.
 type HealthCheckRegistrar interface {
-	// RegisterHealthCheck registers a health check function under a unique name.
+	// RegisterHealthCheck registers a health (liveness) check function under a
+	// unique name.
 	RegisterHealthCheck(name string, check func(context.Context) error) error
 }
 
-// HealthCheckProvider exposes the registered health checks.
+// HealthCheckProvider exposes the registered health (liveness) checks.
 type HealthCheckProvider interface {
-	// HealthChecks returns all registered health checks.
+	// HealthChecks returns all registered health (liveness) checks.
 	HealthChecks() map[string]func(context.Context) error
+}
+
+// ReadinessRegistrar is the capability to register a module readiness check.
+//
+// A readiness check answers "should this process currently receive traffic?"
+// A failing readiness check means the instance is temporarily unable to serve
+// requests (e.g. its database pool isn't warm yet, a dependency is
+// unreachable, a cache hasn't primed) and should be pulled from the load
+// balancer — the process itself is otherwise healthy and should not be
+// restarted. Contrast this with HealthCheckRegistrar, whose checks answer "is
+// this process functioning correctly?" and whose failures indicate the
+// process should be restarted.
+//
+// The consumer defines what "ready" means for their service by registering
+// named check functions; Modulex only abstracts registration, aggregation,
+// and HTTP exposure (see modulex/httpx).
+type ReadinessRegistrar interface {
+	// RegisterReadinessCheck registers a readiness check function under a
+	// unique name.
+	RegisterReadinessCheck(name string, check func(context.Context) error) error
+}
+
+// ReadinessProvider exposes the registered readiness checks.
+type ReadinessProvider interface {
+	// ReadinessChecks returns all registered readiness checks.
+	ReadinessChecks() map[string]func(context.Context) error
 }
 
 type TaskSpawner interface {
@@ -402,29 +438,33 @@ type Registry interface {
 	TaskSpawner
 	HealthCheckRegistrar
 	HealthCheckProvider
+	ReadinessRegistrar
+	ReadinessProvider
 }
 
 // Manager implements the Registry interface and orchestrates the module lifecycles.
 type Manager struct {
-	mu           sync.RWMutex
-	stateMu      sync.Mutex
-	taskMu       sync.Mutex
-	services     map[string]interface{}
-	modules      map[string]Module
-	moduleOrder  []string
-	orderedMods  []Module
-	eventBus     EventBus
-	loggerCtx    *slog.Logger
-	configLoader func(target interface{}) error
-	state        LifecycleState
-	tracer       Tracer
-	panicPolicy  PanicPolicy
-	tasks        map[string]*TaskHandle
-	taskErrs     []error
-	taskCtx      context.Context
-	taskCancel   context.CancelFunc
-	healthMu     sync.RWMutex
-	healthChecks map[string]func(context.Context) error
+	mu              sync.RWMutex
+	stateMu         sync.Mutex
+	taskMu          sync.Mutex
+	services        map[string]interface{}
+	modules         map[string]Module
+	moduleOrder     []string
+	orderedMods     []Module
+	eventBus        EventBus
+	loggerCtx       *slog.Logger
+	configLoader    func(target interface{}) error
+	state           LifecycleState
+	tracer          Tracer
+	panicPolicy     PanicPolicy
+	tasks           map[string]*TaskHandle
+	taskErrs        []error
+	taskCtx         context.Context
+	taskCancel      context.CancelFunc
+	healthMu        sync.RWMutex
+	healthChecks    map[string]func(context.Context) error
+	readinessMu     sync.RWMutex
+	readinessChecks map[string]func(context.Context) error
 }
 
 var _ Registry = (*Manager)(nil)
@@ -438,19 +478,20 @@ var _ Registry = (*Manager)(nil)
 func NewManager(opts ...ManagerOption) (*Manager, error) {
 	taskCtx, taskCancel := context.WithCancel(context.Background())
 	m := &Manager{
-		services:     make(map[string]interface{}),
-		modules:      make(map[string]Module),
-		moduleOrder:  make([]string, 0),
-		eventBus:     noopEventBus{},
-		loggerCtx:    slog.Default(),
-		state:        StateConfiguring,
-		tracer:       noopTracer{},
-		panicPolicy:  PanicPolicyLog,
-		tasks:        make(map[string]*TaskHandle),
-		taskErrs:     make([]error, 0),
-		taskCtx:      taskCtx,
-		taskCancel:   taskCancel,
-		healthChecks: make(map[string]func(context.Context) error),
+		services:        make(map[string]interface{}),
+		modules:         make(map[string]Module),
+		moduleOrder:     make([]string, 0),
+		eventBus:        noopEventBus{},
+		loggerCtx:       slog.Default(),
+		state:           StateConfiguring,
+		tracer:          noopTracer{},
+		panicPolicy:     PanicPolicyLog,
+		tasks:           make(map[string]*TaskHandle),
+		taskErrs:        make([]error, 0),
+		taskCtx:         taskCtx,
+		taskCancel:      taskCancel,
+		healthChecks:    make(map[string]func(context.Context) error),
+		readinessChecks: make(map[string]func(context.Context) error),
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -482,7 +523,8 @@ func NewManager(opts ...ManagerOption) (*Manager, error) {
 // already started. Independent modules preserve their registration order as
 // the deterministic tie-break during topological sorting.
 
-// RegisterHealthCheck registers a health check function under a unique name.
+// RegisterHealthCheck registers a health (liveness) check function under a
+// unique name.
 func (m *Manager) RegisterHealthCheck(name string, check func(context.Context) error) error {
 	m.healthMu.Lock()
 	defer m.healthMu.Unlock()
@@ -493,12 +535,35 @@ func (m *Manager) RegisterHealthCheck(name string, check func(context.Context) e
 	return nil
 }
 
-// HealthChecks returns all registered health checks.
+// HealthChecks returns all registered health (liveness) checks.
 func (m *Manager) HealthChecks() map[string]func(context.Context) error {
 	m.healthMu.RLock()
 	defer m.healthMu.RUnlock()
 	checks := make(map[string]func(context.Context) error, len(m.healthChecks))
 	for k, v := range m.healthChecks {
+		checks[k] = v
+	}
+	return checks
+}
+
+// RegisterReadinessCheck registers a readiness check function under a unique
+// name.
+func (m *Manager) RegisterReadinessCheck(name string, check func(context.Context) error) error {
+	m.readinessMu.Lock()
+	defer m.readinessMu.Unlock()
+	if _, exists := m.readinessChecks[name]; exists {
+		return fmt.Errorf("readiness check %q already registered", name)
+	}
+	m.readinessChecks[name] = check
+	return nil
+}
+
+// ReadinessChecks returns all registered readiness checks.
+func (m *Manager) ReadinessChecks() map[string]func(context.Context) error {
+	m.readinessMu.RLock()
+	defer m.readinessMu.RUnlock()
+	checks := make(map[string]func(context.Context) error, len(m.readinessChecks))
+	for k, v := range m.readinessChecks {
 		checks[k] = v
 	}
 	return checks
@@ -722,11 +787,20 @@ func (m *Manager) ExportDAG() string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	names := make([]string, 0, len(m.modules))
+	for name := range m.modules {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
 	var sb strings.Builder
 	sb.WriteString("graph TD\n")
-	for name, mod := range m.modules {
+	for _, name := range names {
+		mod := m.modules[name]
 		fmt.Fprintf(&sb, "    %s[%s]\n", name, name)
-		for _, dep := range mod.DependsOn() {
+		deps := append([]string(nil), mod.DependsOn()...)
+		sort.Strings(deps)
+		for _, dep := range deps {
 			depName := strings.TrimSpace(dep)
 			if depName != "" {
 				fmt.Fprintf(&sb, "    %s --> %s\n", name, depName)
@@ -972,19 +1046,19 @@ func (m *Manager) waitForTasks(ctx context.Context) error {
 	// is cancelled only by the caller's context deadline.
 	_ = g.Wait()
 
-	// Collect errors from tasks that completed. A non-blocking select is used
-	// because tasks that ignore cancellation may still be running after the
-	// caller's deadline expired.
-	var errs []error
-	for _, t := range tasks {
-		select {
-		case <-t.done:
-			if err := t.Wait(); err != nil {
-				errs = append(errs, fmt.Errorf("task %q failed: %w", t.Name(), err))
-			}
-		default:
-		}
-	}
+	// Every supervised task records its own error into m.taskErrs (under
+	// m.taskMu, in Go's completion goroutine) before signalling t.done, whether
+	// it finished before this call started, while we were waiting above, or
+	// (if still running) not yet at all. m.taskErrs is therefore the single
+	// source of truth for task errors here: collecting them a second time via
+	// each TaskHandle would double-report errors for tasks that finish mid-wait,
+	// while skipping this drain on a timed-out wait would silently lose errors
+	// from tasks that had already finished (and been removed from m.tasks)
+	// before waitForTasks even took its snapshot above.
+	m.taskMu.Lock()
+	errs := append([]error(nil), m.taskErrs...)
+	m.taskErrs = nil
+	m.taskMu.Unlock()
 
 	if ctx.Err() != nil {
 		errs = append(errs, fmt.Errorf("timed out waiting for tasks to finish: %w", ctx.Err()))
@@ -993,8 +1067,6 @@ func (m *Manager) waitForTasks(ctx context.Context) error {
 	}
 
 	m.taskMu.Lock()
-	errs = append(errs, m.taskErrs...)
-	m.taskErrs = nil
 	m.tasks = make(map[string]*TaskHandle)
 	m.taskMu.Unlock()
 
