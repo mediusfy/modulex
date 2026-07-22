@@ -1,8 +1,11 @@
 package nats_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -151,4 +154,88 @@ func TestEventBus_CloseUnsubscribes(t *testing.T) {
 
 func TestEventBus_ImplementsInterface(t *testing.T) {
 	var _ modulex.EventBus = (*natsadapter.EventBus)(nil)
+}
+
+// syncBuffer is a concurrency-safe io.Writer wrapping a bytes.Buffer, needed
+// because the adapter logs from its own subscription callback goroutine while
+// the test polls the buffer's contents from the main goroutine.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func TestEventBus_HandlerErrorIsLogged(t *testing.T) {
+	s := startEmbeddedServer(t)
+
+	conn, err := nats.Connect(s.ClientURL())
+	require.NoError(t, err)
+	t.Cleanup(conn.Close)
+
+	tests := []struct {
+		name       string
+		handlerErr error
+		wantLogged bool
+	}{
+		{
+			name:       "handler error is logged",
+			handlerErr: errors.New("handler failed"),
+			wantLogged: true,
+		},
+		{
+			name:       "handler success is not logged as an error",
+			handlerErr: nil,
+			wantLogged: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var logBuf syncBuffer
+			logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+			eb := natsadapter.NewEventBus(conn, natsadapter.WithLogger(logger))
+			t.Cleanup(func() { _ = eb.Close(context.Background()) })
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			const topic = "test.topic.logging"
+			handlerInvoked := make(chan struct{})
+			var once sync.Once
+
+			require.NoError(t, eb.Subscribe(ctx, topic, func(context.Context, []byte) error {
+				once.Do(func() { close(handlerInvoked) })
+				return tt.handlerErr
+			}))
+
+			require.NoError(t, eb.Publish(ctx, topic, []byte("payload")))
+
+			select {
+			case <-handlerInvoked:
+			case <-ctx.Done():
+				t.Fatal("timed out waiting for handler invocation")
+			}
+
+			// Give the async log write a moment to land before asserting on it.
+			require.Eventually(t, func() bool {
+				return tt.wantLogged == strings.Contains(logBuf.String(), "handler error")
+			}, time.Second, 10*time.Millisecond, "unexpected log output: %q", logBuf.String())
+
+			if tt.wantLogged {
+				assert.Contains(t, logBuf.String(), topic)
+			}
+		})
+	}
 }

@@ -82,6 +82,26 @@ if err != nil {
 }
 ```
 
+#### NATS JetStream Driver (publish-only)
+```go
+import "github.com/mediusfy/modulex/nats"
+
+// js is typically obtained via (*nats.Conn).JetStream()
+eb := nats.NewJetStreamEventBus(js)
+mgr, err := modulex.NewManager(modulex.WithEventBus(eb), modulex.WithLogger(logger), modulex.WithConfigLoader(configLoader))
+if err != nil {
+    // handle error
+}
+```
+
+`JetStreamEventBus` is deliberately publish-only: `Subscribe` always returns
+`nats.ErrJetStreamSubscribeUnsupported`, since JetStream consumption needs
+substantially more configuration (durable vs ephemeral consumers, ack
+policies, delivery subjects, replay policy) than the `EventBus` interface's
+fire-and-forget `Subscribe` can express. Use it when a module only needs to
+publish (fire-and-confirm) to a JetStream stream; use the core NATS
+`EventBus` above, or a direct JetStream consumer, to consume messages.
+
 #### RabbitMQ Driver
 ```go
 import "github.com/mediusfy/modulex/rabbitmq"
@@ -212,6 +232,31 @@ func (m *Module) Start(ctx context.Context, tracer trace.Tracer) error {
 `Go` returns a `*TaskHandle` that can be awaited, and the manager guarantees that
 all supervised tasks are cancelled and awaited before modules are stopped during
 shutdown. Panic recovery is configurable via `WithPanicPolicy`.
+
+### OTLP Provider from Environment
+
+Constructing an OTLP-exporting `TracerProvider` (exporter protocol/endpoint
+selection, resource attributes, sampling) is generic boilerplate that's
+otherwise hand-rolled per service. `modulex/otel.NewProviderFromEnv` factors
+it out, reading the standard `OTEL_EXPORTER_OTLP_*` environment variables:
+
+```go
+tp, shutdown, err := modulexotel.NewProviderFromEnv("my-service")
+if err != nil {
+    // handle error
+}
+defer shutdown(context.Background())
+
+tracer := modulexotel.NewTracer(tp)
+mgr, err := modulex.NewManager(modulex.WithTracer(tracer), modulex.WithLogger(logger))
+```
+
+Set the exporter protocol to `"none"` (via `WithExporterProtocol("none")` or
+`OTEL_EXPORTER_OTLP_PROTOCOL=none`) to disable span export entirely, useful
+for local development. `WithSpanProcessor` attaches an extra
+`sdktrace.SpanProcessor` alongside (or, with `"none"`, instead of) the OTLP
+batch processor — a `tracetest.SpanRecorder` in tests, or a console/debug
+exporter in development.
 
 ### Verifying Spans (Asserting No Gaps)
 
@@ -432,6 +477,32 @@ func (m *OtherModule) Init(ctx context.Context, reg modulex.Registry) error {
 `ErrServiceTypeMismatch` when the registered value does not match the key's
 compile-time type.
 
+## Typed Configuration
+
+`WithConfigLoader` takes a `func(target interface{}) error`, which normally
+means hand-writing the same type-assert-and-copy closure in every service:
+
+```go
+configLoader := func(target interface{}) error {
+    out, ok := target.(*Config)
+    if !ok {
+        return errors.New("invalid config type")
+    }
+    *out = cfg
+    return nil
+}
+mgr, err := modulex.NewManager(modulex.WithConfigLoader(configLoader))
+```
+
+`modulex.WithTypedConfig` removes that boilerplate:
+
+```go
+mgr, err := modulex.NewManager(modulex.WithTypedConfig(cfg))
+```
+
+`GetConfig` then returns `ErrConfigTypeMismatch` if called with a target that
+isn't `*T`.
+
 ## Capability interfaces
 
 `modulex.Registry` is a composite of smaller capability interfaces. The
@@ -571,6 +642,47 @@ runs the full lifecycle.
 
 ```bash
 go run ./examples/quickstart
+```
+
+---
+
+## Application Bootstrap (`modulex/app`)
+
+Every service entrypoint otherwise hand-writes the same ~30-line skeleton:
+construct a `Manager`, register modules, derive a signal-aware context, drive
+`InitModules` -> `StartModules` -> wait -> `StopModules`, and report the
+first failing step. `modulex/app.Run` owns that skeleton:
+
+```go
+import "github.com/mediusfy/modulex/app"
+
+func main() {
+    logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+
+    err := app.Run(logger, configLoader, []modulex.Module{
+        &notification.Module{},
+        &incident.Module{},
+    })
+    if err != nil {
+        logger.Error("application failed", slog.Any("error", err))
+        os.Exit(1)
+    }
+}
+```
+
+`Run` blocks until `os.Interrupt`/`SIGTERM` (or a context passed via
+`app.WithContext`, useful in tests) triggers shutdown, then stops the
+manager within a bounded timeout (`app.WithShutdownTimeout`, 15s default).
+`app.WithManagerOptions` passes extra options through to `modulex.NewManager`
+(`WithTracer`, `WithEventBus`, `WithPanicPolicy`, `WithTypedConfig`, ...);
+`app.WithSetup` runs a hook against the constructed `Manager` before modules
+are registered and initialized — for wiring that must happen first, such as
+`modulexchi.RegisterRouter`. See
+[`examples/bootstrap`](./examples/bootstrap/main.go) for a complete,
+runnable example combining `Run` with `WithTypedConfig`.
+
+```bash
+go run ./examples/bootstrap
 ```
 
 ---

@@ -72,12 +72,6 @@ func TestChiRouterRegistrationAndResolution(t *testing.T) {
 	assert.Equal(t, "hello from chi", rec.Body.String())
 }
 
-func TestResolveRouterWithoutRegistration(t *testing.T) {
-	mgr := newTestManager(nil)
-	_, err := modulexchi.ResolveRouter(mgr)
-	assert.ErrorIs(t, err, modulex.ErrServiceNotFound)
-}
-
 func TestRouterKeyTypeSafety(t *testing.T) {
 	router := gochi.NewRouter()
 	mgr := newTestManager(nil)
@@ -89,21 +83,51 @@ func TestRouterKeyTypeSafety(t *testing.T) {
 	assert.Same(t, router, resolved)
 }
 
-func TestRegisterRouterDuplicate(t *testing.T) {
-	router := gochi.NewRouter()
-	mgr := newTestManager(nil)
+func TestRouterErrorPaths(t *testing.T) {
+	tests := []struct {
+		name    string
+		setup   func(t *testing.T, mgr *modulex.Manager)
+		action  func(mgr *modulex.Manager) error
+		wantErr error
+	}{
+		{
+			name:  "resolve without registration",
+			setup: func(t *testing.T, mgr *modulex.Manager) {},
+			action: func(mgr *modulex.Manager) error {
+				_, err := modulexchi.ResolveRouter(mgr)
+				return err
+			},
+			wantErr: modulex.ErrServiceNotFound,
+		},
+		{
+			name: "register duplicate",
+			setup: func(t *testing.T, mgr *modulex.Manager) {
+				require.NoError(t, modulexchi.RegisterRouter(mgr, gochi.NewRouter()))
+			},
+			action: func(mgr *modulex.Manager) error {
+				return modulexchi.RegisterRouter(mgr, gochi.NewRouter())
+			},
+			wantErr: modulex.ErrDuplicateService,
+		},
+		{
+			name: "resolve type mismatch",
+			setup: func(t *testing.T, mgr *modulex.Manager) {
+				// Register a value under the same string key with the wrong concrete type.
+				require.NoError(t, mgr.RegisterService(modulexchi.RouterKey.Name(), "not-a-router"))
+			},
+			action: func(mgr *modulex.Manager) error {
+				_, err := modulexchi.ResolveRouter(mgr)
+				return err
+			},
+			wantErr: modulex.ErrServiceTypeMismatch,
+		},
+	}
 
-	require.NoError(t, modulexchi.RegisterRouter(mgr, router))
-	err := modulexchi.RegisterRouter(mgr, router)
-	assert.ErrorIs(t, err, modulex.ErrDuplicateService)
-}
-
-func TestResolveRouterTypeMismatch(t *testing.T) {
-	mgr := newTestManager(nil)
-
-	// Register a value under the same string key with the wrong concrete type.
-	require.NoError(t, mgr.RegisterService(modulexchi.RouterKey.Name(), "not-a-router"))
-
-	_, err := modulexchi.ResolveRouter(mgr)
-	assert.ErrorIs(t, err, modulex.ErrServiceTypeMismatch)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mgr := newTestManager(nil)
+			tt.setup(t, mgr)
+			assert.ErrorIs(t, tt.action(mgr), tt.wantErr)
+		})
+	}
 }

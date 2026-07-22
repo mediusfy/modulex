@@ -19,8 +19,9 @@ type EventBus struct {
 	pubSub *gochannel.GoChannel
 	logger watermill.LoggerAdapter
 
-	mu         sync.Mutex
-	cancelFunc []context.CancelFunc
+	mu        sync.Mutex
+	nextSubID uint64
+	cancels   map[uint64]context.CancelFunc
 }
 
 // NewEventBus creates a configured in-memory GoChannel PubSub.
@@ -40,8 +41,9 @@ func NewEventBus(bufferSize int64, persistent bool, debug bool) *EventBus {
 	)
 
 	return &EventBus{
-		pubSub: pubSub,
-		logger: logger,
+		pubSub:  pubSub,
+		logger:  logger,
+		cancels: make(map[uint64]context.CancelFunc),
 	}
 }
 
@@ -69,7 +71,9 @@ func (w *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 
 	subCtx, cancel := context.WithCancel(context.Background())
 	w.mu.Lock()
-	w.cancelFunc = append(w.cancelFunc, cancel)
+	subID := w.nextSubID
+	w.nextSubID++
+	w.cancels[subID] = cancel
 	w.mu.Unlock()
 
 	// Consumer thread loop
@@ -77,14 +81,7 @@ func (w *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 		defer func() {
 			cancel()
 			w.mu.Lock()
-			for i, c := range w.cancelFunc {
-				// Comparing function pointers in Go is not perfectly safe, but we can compare addresses or just clear on close.
-				// A simpler way is to just keep a map of ID to cancel func, but to keep it simple:
-				if fmt.Sprintf("%p", c) == fmt.Sprintf("%p", cancel) {
-					w.cancelFunc = append(w.cancelFunc[:i], w.cancelFunc[i+1:]...)
-					break
-				}
-			}
+			delete(w.cancels, subID)
 			w.mu.Unlock()
 		}()
 		for {
@@ -123,10 +120,10 @@ func (w *EventBus) Close(ctx context.Context) error {
 	defer w.mu.Unlock()
 
 	// Cancel all consumer loops
-	for _, cancel := range w.cancelFunc {
+	for _, cancel := range w.cancels {
 		cancel()
 	}
-	w.cancelFunc = nil
+	w.cancels = make(map[uint64]context.CancelFunc)
 
 	// Shut down the pub/sub engine
 	if err := w.pubSub.Close(); err != nil {
