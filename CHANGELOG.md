@@ -42,6 +42,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Mermaid DAG's node/edge order varied from call to call, producing spurious
   diffs for consumers that regenerate and commit the DAG (e.g. a `make
   module-dag` target) even when the module topology hadn't changed.
+- `StopModules`/`waitForTasks` no longer drops or double-reports supervised
+  task errors depending on timing. Task errors were read from two different
+  places — a per-`TaskHandle` check and a separate `m.taskErrs` slice — which
+  meant a task that had already finished (and been removed from the manager's
+  live task set) *before* `StopModules` was called had its error silently
+  dropped whenever the overall wait then timed out, while a task that
+  finished *while* `StopModules` was still waiting on it had its error
+  reported twice. Task errors are now read from `m.taskErrs` exactly once,
+  which is the single point every supervised task already records its result
+  to before signalling completion.
 
 ## [0.3.0] - 2026-07-20
 

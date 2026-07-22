@@ -1046,19 +1046,19 @@ func (m *Manager) waitForTasks(ctx context.Context) error {
 	// is cancelled only by the caller's context deadline.
 	_ = g.Wait()
 
-	// Collect errors from tasks that completed. A non-blocking select is used
-	// because tasks that ignore cancellation may still be running after the
-	// caller's deadline expired.
-	var errs []error
-	for _, t := range tasks {
-		select {
-		case <-t.done:
-			if err := t.Wait(); err != nil {
-				errs = append(errs, fmt.Errorf("task %q failed: %w", t.Name(), err))
-			}
-		default:
-		}
-	}
+	// Every supervised task records its own error into m.taskErrs (under
+	// m.taskMu, in Go's completion goroutine) before signalling t.done, whether
+	// it finished before this call started, while we were waiting above, or
+	// (if still running) not yet at all. m.taskErrs is therefore the single
+	// source of truth for task errors here: collecting them a second time via
+	// each TaskHandle would double-report errors for tasks that finish mid-wait,
+	// while skipping this drain on a timed-out wait would silently lose errors
+	// from tasks that had already finished (and been removed from m.tasks)
+	// before waitForTasks even took its snapshot above.
+	m.taskMu.Lock()
+	errs := append([]error(nil), m.taskErrs...)
+	m.taskErrs = nil
+	m.taskMu.Unlock()
 
 	if ctx.Err() != nil {
 		errs = append(errs, fmt.Errorf("timed out waiting for tasks to finish: %w", ctx.Err()))
@@ -1067,8 +1067,6 @@ func (m *Manager) waitForTasks(ctx context.Context) error {
 	}
 
 	m.taskMu.Lock()
-	errs = append(errs, m.taskErrs...)
-	m.taskErrs = nil
 	m.tasks = make(map[string]*TaskHandle)
 	m.taskMu.Unlock()
 

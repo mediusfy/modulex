@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1766,6 +1767,83 @@ func TestStopModulesCollectsTaskErrorDespiteTimeout(t *testing.T) {
 	assert.ErrorContains(t, err, "timed out waiting for tasks")
 	assert.ErrorIs(t, err, taskErr)
 	assert.ErrorContains(t, err, "failing-task")
+}
+
+// TestStopModulesCollectsAlreadyFinishedTaskErrorDespiteTimeout is a
+// deterministic variant of TestStopModulesCollectsTaskErrorDespiteTimeout: it
+// waits for the failing task to fully finish (and be removed from the
+// manager's live task set) before starting the task that never returns, so
+// the failing task's error is only ever reachable via m.taskErrs, not via a
+// TaskHandle still present in waitForTasks' snapshot. This reproduces a real
+// bug where waitForTasks dropped m.taskErrs entirely on a timed-out wait,
+// silently losing errors from tasks that had already finished before
+// StopModules was even called.
+func TestStopModulesCollectsAlreadyFinishedTaskErrorDespiteTimeout(t *testing.T) {
+	manager := newTestManager(nil)
+	taskErr := errors.New("task failed before shutdown began")
+
+	mod := newMockModule(t, mockModuleConfig{
+		name: "mod-a",
+		onStart: func() {
+			handle, err := manager.Go(context.Background(), "already-finished-task", func(ctx context.Context) error {
+				return taskErr
+			})
+			require.NoError(t, err)
+			require.ErrorIs(t, handle.Wait(), taskErr)
+
+			_, err = manager.Go(context.Background(), "ignore-cancel-task", func(ctx context.Context) error {
+				<-make(chan struct{}) // never returns
+				return nil
+			})
+			require.NoError(t, err)
+		},
+	})
+
+	require.NoError(t, manager.RegisterModule(mod))
+	require.NoError(t, manager.InitModules(context.Background()))
+	require.NoError(t, manager.StartModules(context.Background()))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	err := manager.StopModules(ctx)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.ErrorContains(t, err, "timed out waiting for tasks")
+	assert.ErrorIs(t, err, taskErr)
+	assert.ErrorContains(t, err, "already-finished-task")
+}
+
+// TestStopModulesReportsMidWaitTaskErrorExactlyOnce reproduces a real bug
+// where a task that finished while StopModules was still waiting on it had
+// its error reported twice: once via the TaskHandle read in waitForTasks'
+// post-wait loop, and again via the m.taskErrs the same task had already
+// recorded before signalling completion.
+func TestStopModulesReportsMidWaitTaskErrorExactlyOnce(t *testing.T) {
+	manager := newTestManager(nil)
+	taskErr := errors.New("task failed mid-wait")
+
+	mod := newMockModule(t, mockModuleConfig{
+		name: "mod-a",
+		onStart: func() {
+			_, err := manager.Go(context.Background(), "mid-wait-task", func(ctx context.Context) error {
+				time.Sleep(20 * time.Millisecond)
+				return taskErr
+			})
+			require.NoError(t, err)
+		},
+	})
+
+	require.NoError(t, manager.RegisterModule(mod))
+	require.NoError(t, manager.InitModules(context.Background()))
+	require.NoError(t, manager.StartModules(context.Background()))
+
+	err := manager.StopModules(context.Background())
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, taskErr)
+	assert.Equal(t, 1, strings.Count(err.Error(), "mid-wait-task"),
+		"task error must be reported exactly once, got: %v", err)
 }
 
 func TestSupervisedTasksConcurrentGo(t *testing.T) {
