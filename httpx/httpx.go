@@ -182,7 +182,12 @@ func Serve(ctx context.Context, spawner modulex.TaskSpawner, name string, server
 		case <-taskCtx.Done():
 		}
 
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		// taskCtx is already cancelled by this point (that's why we're here),
+		// so deriving the shutdown deadline from it would produce an
+		// already-expired context and make Shutdown fail immediately.
+		// WithoutCancel keeps taskCtx's values (e.g. trace span context set by
+		// the manager's tracer) without inheriting its cancellation.
+		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(taskCtx), shutdownTimeout)
 		defer cancel()
 
 		shutdownErr := server.Shutdown(shutdownCtx)
