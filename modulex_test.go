@@ -302,7 +302,151 @@ func TestManagerImplementsCapabilityInterfaces(t *testing.T) {
 	var _ modulex.ConfigProvider = manager
 	var _ modulex.LoggerProvider = manager
 	var _ modulex.TaskSpawner = manager
+	var _ modulex.HealthCheckRegistrar = manager
+	var _ modulex.HealthCheckProvider = manager
+	var _ modulex.ReadinessRegistrar = manager
+	var _ modulex.ReadinessProvider = manager
 	var _ modulex.Registry = manager
+}
+
+func TestRegisterHealthCheckValidation(t *testing.T) {
+	tests := []struct {
+		name       string
+		act        func(t *testing.T, manager *modulex.Manager) error
+		wantErrSub string
+	}{
+		{
+			name: "duplicate health check name",
+			act: func(t *testing.T, manager *modulex.Manager) error {
+				require.NoError(t, manager.RegisterHealthCheck("db", func(context.Context) error { return nil }))
+				return manager.RegisterHealthCheck("db", func(context.Context) error { return nil })
+			},
+			wantErrSub: `health check "db" already registered`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manager := newTestManager(nil)
+			err := tt.act(t, manager)
+			assert.ErrorContains(t, err, tt.wantErrSub)
+		})
+	}
+}
+
+func TestHealthChecksDefaultsToEmptyMap(t *testing.T) {
+	manager := newTestManager(nil)
+
+	checks := manager.HealthChecks()
+	assert.NotNil(t, checks)
+	assert.Empty(t, checks)
+}
+
+func TestHealthChecksReturnsDefensiveCopy(t *testing.T) {
+	manager := newTestManager(nil)
+	require.NoError(t, manager.RegisterHealthCheck("db", func(context.Context) error { return nil }))
+
+	checks := manager.HealthChecks()
+	checks["injected"] = func(context.Context) error { return nil }
+
+	assert.Len(t, manager.HealthChecks(), 1)
+}
+
+func TestConcurrentHealthCheckRegistration(t *testing.T) {
+	manager := newTestManager(nil)
+
+	const n = 100
+	var wg sync.WaitGroup
+	wg.Add(n)
+
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			name := fmt.Sprintf("check-%d", i)
+			require.NoError(t, manager.RegisterHealthCheck(name, func(context.Context) error { return nil }))
+		}(i)
+	}
+
+	wg.Wait()
+
+	assert.Len(t, manager.HealthChecks(), n)
+}
+
+func TestRegisterReadinessCheckValidation(t *testing.T) {
+	tests := []struct {
+		name       string
+		act        func(t *testing.T, manager *modulex.Manager) error
+		wantErrSub string
+	}{
+		{
+			name: "duplicate readiness check name",
+			act: func(t *testing.T, manager *modulex.Manager) error {
+				require.NoError(t, manager.RegisterReadinessCheck("cache", func(context.Context) error { return nil }))
+				return manager.RegisterReadinessCheck("cache", func(context.Context) error { return nil })
+			},
+			wantErrSub: `readiness check "cache" already registered`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manager := newTestManager(nil)
+			err := tt.act(t, manager)
+			assert.ErrorContains(t, err, tt.wantErrSub)
+		})
+	}
+}
+
+func TestReadinessChecksDefaultsToEmptyMap(t *testing.T) {
+	manager := newTestManager(nil)
+
+	checks := manager.ReadinessChecks()
+	assert.NotNil(t, checks)
+	assert.Empty(t, checks)
+}
+
+func TestReadinessChecksReturnsDefensiveCopy(t *testing.T) {
+	manager := newTestManager(nil)
+	require.NoError(t, manager.RegisterReadinessCheck("cache", func(context.Context) error { return nil }))
+
+	checks := manager.ReadinessChecks()
+	checks["injected"] = func(context.Context) error { return nil }
+
+	assert.Len(t, manager.ReadinessChecks(), 1)
+}
+
+func TestConcurrentReadinessCheckRegistration(t *testing.T) {
+	manager := newTestManager(nil)
+
+	const n = 100
+	var wg sync.WaitGroup
+	wg.Add(n)
+
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			name := fmt.Sprintf("check-%d", i)
+			require.NoError(t, manager.RegisterReadinessCheck(name, func(context.Context) error { return nil }))
+		}(i)
+	}
+
+	wg.Wait()
+
+	assert.Len(t, manager.ReadinessChecks(), n)
+}
+
+// TestHealthAndReadinessChecksAreIndependent asserts that registering a check
+// under the same name in both the health and readiness namespaces does not
+// collide - they are tracked separately because they answer different
+// questions (liveness vs readiness).
+func TestHealthAndReadinessChecksAreIndependent(t *testing.T) {
+	manager := newTestManager(nil)
+
+	require.NoError(t, manager.RegisterHealthCheck("db", func(context.Context) error { return nil }))
+	require.NoError(t, manager.RegisterReadinessCheck("db", func(context.Context) error { return nil }))
+
+	assert.Len(t, manager.HealthChecks(), 1)
+	assert.Len(t, manager.ReadinessChecks(), 1)
 }
 
 func TestCircularDependencyDetection(t *testing.T) {
@@ -1802,4 +1946,32 @@ func TestSupervisedTaskErrorCollectedAfterEarlyFinish(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestExportDAGDeterministic asserts ExportDAG produces the same output
+// across repeated calls, since Manager.modules and Module.DependsOn() are
+// unordered inputs (a Go map, and a caller-supplied slice) that must be
+// sorted before rendering — otherwise the generated Mermaid doc a consumer
+// commits to source control (see rufkis-platform's `make module-dag`) would
+// churn on every regeneration even with no real topology change.
+func TestExportDAGDeterministic(t *testing.T) {
+	t.Parallel()
+
+	manager := newTestManager(NewInMemoryEventBus())
+
+	require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "zeta"})))
+	require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "alpha", deps: []string{"zeta", "mu"}})))
+	require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "mu"})))
+
+	want := manager.ExportDAG()
+	for i := 0; i < 10; i++ {
+		require.Equal(t, want, manager.ExportDAG())
+	}
+
+	require.Equal(t, "graph TD\n"+
+		"    alpha[alpha]\n"+
+		"    alpha --> mu\n"+
+		"    alpha --> zeta\n"+
+		"    mu[mu]\n"+
+		"    zeta[zeta]\n", want)
 }

@@ -464,6 +464,105 @@ func (m *Module) Init(ctx context.Context, reg modulex.Registry) error {
 
 ---
 
+## Health Checks, Readiness, and HTTP Exposure
+
+`modulex.Registry` embeds two independent check namespaces that modules
+register named check functions against:
+
+- **Health (liveness) checks** answer "is this process functioning
+  correctly?" A failing health check means the process is broken and should
+  be *restarted*.
+- **Readiness checks** answer "should this process currently receive
+  traffic?" A failing readiness check means the instance should be *pulled
+  from load balancing* — its database pool isn't warm yet, a dependency is
+  unreachable, a cache hasn't primed — while the process itself keeps
+  running and should not be restarted.
+
+Modulex only abstracts registration, aggregation, and (via `modulex/httpx`)
+HTTP exposure; the consumer defines what "healthy" and "ready" mean for their
+service:
+
+```go
+func (m *Module) Init(ctx context.Context, reg modulex.Registry) error {
+    if err := reg.RegisterHealthCheck("db-ping", func(ctx context.Context) error {
+        return m.db.PingContext(ctx)
+    }); err != nil {
+        return err
+    }
+
+    return reg.RegisterReadinessCheck("db-pool-warm", func(ctx context.Context) error {
+        if m.db.Stats().OpenConnections == 0 {
+            return errors.New("connection pool not yet warm")
+        }
+        return nil
+    })
+}
+```
+
+`HealthChecks()` and `ReadinessChecks()` return a defensive copy of every
+check registered under their respective namespace so callers can safely
+aggregate or expose them without holding an internal lock.
+
+### Exposing checks over HTTP
+
+The core `modulex` package stays free of `net/http`, the same way it stays
+free of Chi (see [`modulex/chi`](./chi)). HTTP-serving consumers instead use
+[`modulex/httpx`](./httpx):
+
+```go
+import "github.com/mediusfy/modulex/httpx"
+
+mux := http.NewServeMux()
+mux.HandleFunc("/healthz", httpx.HealthHandler(manager))
+mux.HandleFunc("/readyz", httpx.ReadinessHandler(manager))
+
+server := &http.Server{Addr: ":8080", Handler: mux}
+handle, err := httpx.Serve(ctx, manager, "http-server", server, 10*time.Second)
+if err != nil {
+    return err
+}
+// handle.Wait() blocks until the server has shut down (or failed).
+```
+
+- `httpx.HealthHandler` / `httpx.ReadinessHandler` run every registered check
+  concurrently, each bounded by the caller's request deadline (or a 5-second
+  default), and respond with a JSON body listing every check by name:
+  `{"status":"ok","checks":{"db-ping":"ok"}}` (200) or
+  `{"status":"unhealthy","checks":{"db-ping":"connection refused"}}` (503).
+  `ReadinessHandler` uses `"ready"` / `"not-ready"` in place of `"ok"` /
+  `"unhealthy"`.
+- `httpx.Serve` spawns `server.ListenAndServe()` as a supervised task via
+  `modulex.TaskSpawner.Go` and shuts the server down gracefully with the
+  given timeout when either the passed context or the manager's own
+  shutdown fires first, treating `http.ErrServerClosed` as a clean exit.
+  This removes the "spawn ListenAndServe, select on ctx.Done, Shutdown with a
+  timeout" boilerplate every HTTP-serving consumer would otherwise
+  hand-write.
+
+See [`httpx/README.md`](./httpx/README.md) for the full adapter reference.
+
+### Visualizing the module graph
+
+`Manager.ExportDAG()` returns a [Mermaid](https://mermaid.js.org/)-compatible
+graph of the registered modules and their `DependsOn()` edges:
+
+```go
+fmt.Println(manager.ExportDAG())
+```
+
+```
+graph TD
+    notifications[notifications]
+    incidents[incidents]
+    incidents --> notifications
+```
+
+Paste the output into any Mermaid renderer (GitHub Markdown, the [Mermaid
+Live Editor](https://mermaid.live/), etc.) to visualize dependency ordering
+during design or debugging.
+
+---
+
 ## Quickstart
 
 See [`examples/quickstart`](./examples/quickstart/main.go) for a minimal,
