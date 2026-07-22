@@ -7,7 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-07-22
+
+### Fixed
+
+- Retracted v0.4.0 in `go.mod`. It was tagged on the wrong commit — a
+  CI-permissions-only change branched off an older `main` — and published to
+  the module proxy before the mistake was caught. v0.4.1 already carries the
+  content that was originally intended for v0.4.0 (see that entry below); the
+  proxy treats published versions as immutable, so the retraction itself
+  could only take effect starting with this release, not v0.4.1.
+
+## [0.4.1] - 2026-07-22
+
+Republishes the content originally intended for v0.4.0 (below) under a new
+version, since v0.4.0 was tagged on the wrong commit and the module proxy
+would not pick up a corrected tag at the same version.
+
+### Added
+
+See the [0.4.0] entry below — this release's content is identical.
+
 ## [0.4.0] - 2026-07-22
+
+**Retracted, do not use.** This version was tagged on the wrong commit and
+does not actually contain the changes described below. They are published as
+v0.4.1 instead.
 
 ### Added
 
@@ -246,7 +271,9 @@ Initial v0 prerelease.
   service locator, and pluggable event-bus adapters (Chi, NATS, RabbitMQ,
   Watermill, OpenTelemetry).
 
-[Unreleased]: https://github.com/mediusfy/modulex/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/mediusfy/modulex/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/mediusfy/modulex/compare/v0.4.1...v0.4.2
+[0.4.1]: https://github.com/mediusfy/modulex/compare/v0.3.0...v0.4.1
 [0.4.0]: https://github.com/mediusfy/modulex/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/mediusfy/modulex/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/mediusfy/modulex/compare/v0.1.0...v0.2.0

@@ -2,6 +2,13 @@ module github.com/mediusfy/modulex
 
 go 1.25.0
 
+// v0.4.0 was tagged on the wrong commit (a small CI-permissions change that
+// branched off an older main, missing the release's actual content) and
+// published to the module proxy before the mistake was caught. The proxy
+// treats published versions as immutable, so the tag itself cannot be
+// corrected in place. The intended v0.4.0 content ships as v0.4.1.
+retract v0.4.0
+
 require (
 	github.com/ThreeDotsLabs/watermill v1.5.2
 	github.com/go-chi/chi/v5 v5.3.1
