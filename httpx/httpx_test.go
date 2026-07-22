@@ -38,14 +38,47 @@ func decodeBody(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
 	return body
 }
 
+// checkHandlerCase is a table-driven case shared by TestHealthHandler and
+// TestReadinessHandler, which exercise HealthHandler and ReadinessHandler
+// through the same request/assert shape and differ only in which checks
+// they register and which status strings the handler reports.
+type checkHandlerCase struct {
+	name       string
+	setup      func(t *testing.T, manager *modulex.Manager)
+	wantCode   int
+	wantStatus string
+	wantChecks map[string]string
+}
+
+func runCheckHandlerTests(t *testing.T, path string, handler func(*modulex.Manager) http.HandlerFunc, tests []checkHandlerCase) {
+	t.Helper()
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manager := newTestManager(t)
+			tt.setup(t, manager)
+
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			rec := httptest.NewRecorder()
+
+			handler(manager)(rec, req)
+
+			assert.Equal(t, tt.wantCode, rec.Code)
+			body := decodeBody(t, rec)
+			assert.Equal(t, tt.wantStatus, body["status"])
+
+			gotChecks, ok := body["checks"].(map[string]any)
+			require.True(t, ok)
+			assert.Len(t, gotChecks, len(tt.wantChecks))
+			for name, want := range tt.wantChecks {
+				assert.Equal(t, want, gotChecks[name])
+			}
+		})
+	}
+}
+
 func TestHealthHandler(t *testing.T) {
-	tests := []struct {
-		name       string
-		setup      func(t *testing.T, manager *modulex.Manager)
-		wantCode   int
-		wantStatus string
-		wantChecks map[string]string
-	}{
+	runCheckHandlerTests(t, "/healthz", func(m *modulex.Manager) http.HandlerFunc { return httpx.HealthHandler(m) }, []checkHandlerCase{
 		{
 			name:       "no checks registered",
 			setup:      func(t *testing.T, manager *modulex.Manager) {},
@@ -75,40 +108,11 @@ func TestHealthHandler(t *testing.T) {
 			wantStatus: "unhealthy",
 			wantChecks: map[string]string{"db": "ok", "cache": "connection refused"},
 		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			manager := newTestManager(t)
-			tt.setup(t, manager)
-
-			req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
-			rec := httptest.NewRecorder()
-
-			httpx.HealthHandler(manager)(rec, req)
-
-			assert.Equal(t, tt.wantCode, rec.Code)
-			body := decodeBody(t, rec)
-			assert.Equal(t, tt.wantStatus, body["status"])
-
-			gotChecks, ok := body["checks"].(map[string]any)
-			require.True(t, ok)
-			assert.Len(t, gotChecks, len(tt.wantChecks))
-			for name, want := range tt.wantChecks {
-				assert.Equal(t, want, gotChecks[name])
-			}
-		})
-	}
+	})
 }
 
 func TestReadinessHandler(t *testing.T) {
-	tests := []struct {
-		name       string
-		setup      func(t *testing.T, manager *modulex.Manager)
-		wantCode   int
-		wantStatus string
-		wantChecks map[string]string
-	}{
+	runCheckHandlerTests(t, "/readyz", func(m *modulex.Manager) http.HandlerFunc { return httpx.ReadinessHandler(m) }, []checkHandlerCase{
 		{
 			name:       "no checks registered",
 			setup:      func(t *testing.T, manager *modulex.Manager) {},
@@ -136,30 +140,7 @@ func TestReadinessHandler(t *testing.T) {
 			wantStatus: "not-ready",
 			wantChecks: map[string]string{"db-pool-warm": "pool not warm"},
 		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			manager := newTestManager(t)
-			tt.setup(t, manager)
-
-			req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
-			rec := httptest.NewRecorder()
-
-			httpx.ReadinessHandler(manager)(rec, req)
-
-			assert.Equal(t, tt.wantCode, rec.Code)
-			body := decodeBody(t, rec)
-			assert.Equal(t, tt.wantStatus, body["status"])
-
-			gotChecks, ok := body["checks"].(map[string]any)
-			require.True(t, ok)
-			assert.Len(t, gotChecks, len(tt.wantChecks))
-			for name, want := range tt.wantChecks {
-				assert.Equal(t, want, gotChecks[name])
-			}
-		})
-	}
+	})
 }
 
 func TestHealthHandlerRespectsCallerDeadline(t *testing.T) {

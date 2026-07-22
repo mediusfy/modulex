@@ -1732,6 +1732,31 @@ func TestSupervisedTaskShutdown(t *testing.T) {
 	}
 }
 
+// spawnNeverReturningTask starts a supervised task that ignores cancellation,
+// used by the StopModules timeout tests below to force StopModules' wait to
+// run out the clock regardless of how quickly the other task under test
+// finishes.
+func spawnNeverReturningTask(t *testing.T, manager *modulex.Manager) {
+	t.Helper()
+	_, err := manager.Go(context.Background(), "ignore-cancel-task", func(ctx context.Context) error {
+		<-make(chan struct{}) // never returns
+		return nil
+	})
+	require.NoError(t, err)
+}
+
+// assertStopModulesTimedOutWithTaskError asserts the shape every StopModules
+// timeout test below expects: a joined error that both reports the context
+// deadline and preserves the named task's error.
+func assertStopModulesTimedOutWithTaskError(t *testing.T, err error, taskErr error, taskName string) {
+	t.Helper()
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.ErrorContains(t, err, "timed out waiting for tasks")
+	assert.ErrorIs(t, err, taskErr)
+	assert.ErrorContains(t, err, taskName)
+}
+
 func TestStopModulesCollectsTaskErrorDespiteTimeout(t *testing.T) {
 	manager := newTestManager(nil)
 	taskErr := errors.New("task failed around deadline")
@@ -1739,15 +1764,11 @@ func TestStopModulesCollectsTaskErrorDespiteTimeout(t *testing.T) {
 	mod := newMockModule(t, mockModuleConfig{
 		name: "mod-a",
 		onStart: func() {
-			_, err := manager.Go(context.Background(), "ignore-cancel-task", func(ctx context.Context) error {
-				<-make(chan struct{}) // never returns
-				return nil
-			})
-			require.NoError(t, err)
+			spawnNeverReturningTask(t, manager)
 
-			_, err = manager.Go(context.Background(), "failing-task", func(ctx context.Context) error {
-				// Finish with an error immediately so the error is collected before
-				// the deadline is reached.
+			// Finish with an error immediately so the error is collected before
+			// the deadline is reached.
+			_, err := manager.Go(context.Background(), "failing-task", func(ctx context.Context) error {
 				return taskErr
 			})
 			require.NoError(t, err)
@@ -1762,11 +1783,7 @@ func TestStopModulesCollectsTaskErrorDespiteTimeout(t *testing.T) {
 	defer cancel()
 	err := manager.StopModules(ctx)
 
-	require.Error(t, err)
-	assert.ErrorIs(t, err, context.DeadlineExceeded)
-	assert.ErrorContains(t, err, "timed out waiting for tasks")
-	assert.ErrorIs(t, err, taskErr)
-	assert.ErrorContains(t, err, "failing-task")
+	assertStopModulesTimedOutWithTaskError(t, err, taskErr, "failing-task")
 }
 
 // TestStopModulesCollectsAlreadyFinishedTaskErrorDespiteTimeout is a
@@ -1791,11 +1808,7 @@ func TestStopModulesCollectsAlreadyFinishedTaskErrorDespiteTimeout(t *testing.T)
 			require.NoError(t, err)
 			require.ErrorIs(t, handle.Wait(), taskErr)
 
-			_, err = manager.Go(context.Background(), "ignore-cancel-task", func(ctx context.Context) error {
-				<-make(chan struct{}) // never returns
-				return nil
-			})
-			require.NoError(t, err)
+			spawnNeverReturningTask(t, manager)
 		},
 	})
 
@@ -1807,11 +1820,7 @@ func TestStopModulesCollectsAlreadyFinishedTaskErrorDespiteTimeout(t *testing.T)
 	defer cancel()
 	err := manager.StopModules(ctx)
 
-	require.Error(t, err)
-	assert.ErrorIs(t, err, context.DeadlineExceeded)
-	assert.ErrorContains(t, err, "timed out waiting for tasks")
-	assert.ErrorIs(t, err, taskErr)
-	assert.ErrorContains(t, err, "already-finished-task")
+	assertStopModulesTimedOutWithTaskError(t, err, taskErr, "already-finished-task")
 }
 
 // TestStopModulesReportsMidWaitTaskErrorExactlyOnce reproduces a real bug
