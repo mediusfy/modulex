@@ -4,12 +4,20 @@ package rabbitmq
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
 	"github.com/mediusfy/modulex"
 	"go.opentelemetry.io/otel"
+)
+
+const (
+	// logKeyQueue is the structured log key for the RabbitMQ queue/topic name.
+	logKeyQueue = "queue"
+	// logKeyError is the structured log key for an error value.
+	logKeyError = "error"
 )
 
 // EventBus implements modulex.EventBus by wrapping a RabbitMQ channel.
@@ -37,10 +45,22 @@ func (c amqpHeadersCarrier) Keys() []string {
 
 type EventBus struct {
 	ch      *amqp.Channel
+	logger  *slog.Logger
 	mu      sync.Mutex
 	nextTag int
 	tags    []string
 	cancels []context.CancelFunc // tracks consumer cancellation contexts
+}
+
+// Option configures an EventBus during construction.
+type Option func(*EventBus)
+
+// WithLogger sets the logger used to report handler errors encountered while
+// consuming messages. If not provided, or if nil, slog.Default() is used.
+func WithLogger(logger *slog.Logger) Option {
+	return func(r *EventBus) {
+		r.logger = logger
+	}
 }
 
 // NewEventBus instantiates the RabbitMQ event bus driver.
@@ -50,8 +70,15 @@ type EventBus struct {
 // modulex.Manager.StopModules has closed the EventBus. This lets a single
 // channel or connection be shared across multiple concerns outside the
 // module lifecycle if desired.
-func NewEventBus(ch *amqp.Channel) *EventBus {
-	return &EventBus{ch: ch}
+func NewEventBus(ch *amqp.Channel, opts ...Option) *EventBus {
+	r := &EventBus{ch: ch, logger: slog.Default()}
+	for _, opt := range opts {
+		opt(r)
+	}
+	if r.logger == nil {
+		r.logger = slog.Default()
+	}
+	return r
 }
 
 // Publish implements modulex.EventBus.
@@ -80,6 +107,13 @@ func (r *EventBus) Publish(ctx context.Context, topic string, payload []byte) er
 // consumes messages from it in a background routine. The queue is declared as
 // durable and non-exclusive so the adapter works out of the box. If the caller
 // cancels the supplied context, the consumer goroutine exits.
+//
+// Messages are acknowledged manually: a successful handler call acks the
+// message, and a failing handler call nacks it without requeue and logs the
+// error. Requeuing is deliberately not attempted here since a persistently
+// failing handler would otherwise redeliver the same message forever; this
+// matches the acknowledge-and-log policy used by the other EventBus adapters
+// in this module (see watermill.EventBus.Subscribe).
 func (r *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.EventHandler) error {
 	if _, err := r.ch.QueueDeclare(
 		topic, // name
@@ -100,7 +134,7 @@ func (r *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 	msgs, err := r.ch.Consume(
 		topic, // queue
 		tag,   // consumer name
-		true,  // auto-ack
+		false, // auto-ack (messages are acked/nacked manually below)
 		false, // exclusive
 		false, // no-local
 		false, // no-wait
@@ -134,7 +168,25 @@ func (r *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 					headers = make(amqp.Table)
 				}
 				msgCtx := otel.GetTextMapPropagator().Extract(subCtx, amqpHeadersCarrier(headers))
-				_ = handler(msgCtx, d.Body)
+				if err := handler(msgCtx, d.Body); err != nil {
+					r.logger.ErrorContext(msgCtx, "handler error, message nacked without requeue",
+						slog.String(logKeyQueue, topic),
+						slog.Any(logKeyError, err),
+					)
+					if nackErr := d.Nack(false, false); nackErr != nil {
+						r.logger.ErrorContext(msgCtx, "failed to nack message",
+							slog.String(logKeyQueue, topic),
+							slog.Any(logKeyError, nackErr),
+						)
+					}
+					continue
+				}
+				if ackErr := d.Ack(false); ackErr != nil {
+					r.logger.ErrorContext(msgCtx, "failed to ack message",
+						slog.String(logKeyQueue, topic),
+						slog.Any(logKeyError, ackErr),
+					)
+				}
 			}
 		}
 	}()

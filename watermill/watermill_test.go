@@ -3,11 +3,13 @@ package watermill_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/mediusfy/modulex/watermill"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
 )
@@ -114,4 +116,41 @@ func TestEventBus_Close(t *testing.T) {
 
 	// Publishing after close should fail.
 	require.Error(t, bus.Publish(ctx, "test.topic", []byte("after close")))
+}
+
+// TestEventBus_CloseWithManyConcurrentSubscriptions guards against a bug
+// where each subscription's cleanup goroutine removed itself from the shared
+// cancel-func bookkeeping by comparing fmt.Sprintf("%p", ...) of two
+// context.CancelFunc values. That comparison is unreliable: closures created
+// from the same call site can format identically, so concurrent cleanups
+// could remove the wrong entry. Close() cancelling every remaining tracked
+// subscription (run under -race, and under goleak via TestMain) is what
+// would surface the corruption: either a data race on the shared slice/map,
+// or a leaked goroutine because its cancel func was never invoked.
+func TestEventBus_CloseWithManyConcurrentSubscriptions(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	const subscriberCount = 50
+
+	bus := watermill.NewEventBus(0, false, false)
+
+	var wg sync.WaitGroup
+	wg.Add(subscriberCount)
+	for i := 0; i < subscriberCount; i++ {
+		topic := fmt.Sprintf("test.topic.%d", i)
+		go func() {
+			defer wg.Done()
+			assert.NoError(t, bus.Subscribe(ctx, topic, func(context.Context, []byte) error { return nil }))
+		}()
+	}
+	wg.Wait()
+
+	require.NoError(t, bus.Close(ctx))
+
+	// A subsequent Subscribe/Publish must still work correctly, confirming
+	// the EventBus is left in a consistent state after the concurrent close.
+	require.Error(t, bus.Publish(ctx, "test.topic.0", []byte("after close")))
 }

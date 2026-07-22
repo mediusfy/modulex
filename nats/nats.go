@@ -4,6 +4,7 @@ package nats
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 
 	"github.com/mediusfy/modulex"
@@ -12,11 +13,30 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 )
 
+const (
+	// logKeyTopic is the structured log key for the NATS subject/topic name.
+	logKeyTopic = "topic"
+	// logKeyError is the structured log key for an error value.
+	logKeyError = "error"
+)
+
 // EventBus implements modulex.EventBus by wrapping a concrete NATS connection.
 type EventBus struct {
 	conn   *nats.Conn
+	logger *slog.Logger
 	subsMu sync.Mutex
 	subs   []*nats.Subscription
+}
+
+// Option configures an EventBus during construction.
+type Option func(*EventBus)
+
+// WithLogger sets the logger used to report handler errors encountered while
+// consuming messages. If not provided, or if nil, slog.Default() is used.
+func WithLogger(logger *slog.Logger) Option {
+	return func(n *EventBus) {
+		n.logger = logger
+	}
 }
 
 // NewEventBus instantiates the NATS event bus driver.
@@ -25,8 +45,15 @@ type EventBus struct {
 // the underlying *nats.Conn, typically after modulex.Manager.StopModules has
 // closed the EventBus. This lets a single connection be shared across
 // multiple concerns outside the module lifecycle if desired.
-func NewEventBus(conn *nats.Conn) *EventBus {
-	return &EventBus{conn: conn}
+func NewEventBus(conn *nats.Conn, opts ...Option) *EventBus {
+	n := &EventBus{conn: conn, logger: slog.Default()}
+	for _, opt := range opts {
+		opt(n)
+	}
+	if n.logger == nil {
+		n.logger = slog.Default()
+	}
+	return n
 }
 
 // Publish implements modulex.EventBus.
@@ -48,13 +75,24 @@ func (n *EventBus) Publish(ctx context.Context, topic string, payload []byte) er
 // The subscriber's context is propagated into the handler. If the incoming NATS
 // message carries W3C trace context headers, they are extracted and merged so
 // OpenTelemetry span continuity is preserved across the broker.
+//
+// NATS core has no acknowledgement semantics, so a failing handler cannot be
+// redelivered or retried by the broker. The error is logged so failures are
+// visible instead of silently discarded; this mirrors the acknowledge-and-log
+// policy used by the other EventBus adapters in this module (see
+// rabbitmq.EventBus.Subscribe and watermill.EventBus.Subscribe).
 func (n *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.EventHandler) error {
 	n.subsMu.Lock()
 	defer n.subsMu.Unlock()
 
 	sub, err := n.conn.Subscribe(topic, func(msg *nats.Msg) {
 		msgCtx := messageContext(ctx, msg)
-		_ = handler(msgCtx, msg.Data)
+		if err := handler(msgCtx, msg.Data); err != nil {
+			n.logger.ErrorContext(msgCtx, "handler error",
+				slog.String(logKeyTopic, topic),
+				slog.Any(logKeyError, err),
+			)
+		}
 	})
 	if err != nil {
 		return fmt.Errorf("failed to subscribe to %s: %w", topic, err)

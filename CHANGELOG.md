@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `rabbitmq.EventBus.Subscribe` no longer auto-acks messages before the
+  handler runs. It now acks on success and nacks without requeue (logging the
+  error) on failure, so a failing handler no longer silently drops the
+  message with no visibility.
+- `nats.EventBus.Subscribe` now logs handler errors instead of discarding
+  them silently. NATS core has no ack/nack semantics, so the message still
+  cannot be redelivered, but the failure is no longer invisible.
+- `watermill.EventBus.Subscribe`/`Close` no longer track per-subscription
+  cancel funcs by comparing `fmt.Sprintf("%p", ...)` of `context.CancelFunc`
+  values, which is unreliable since closures from the same call site can
+  format identically. Cancel funcs are now tracked by a unique subscription
+  ID.
+
+### Added
+
+- `rabbitmq.WithLogger` and `nats.WithLogger` options to configure the
+  `*slog.Logger` used to report subscribe-handler errors (defaults to
+  `slog.Default()`).
+- A dedicated `integration-test` CI job that runs the RabbitMQ adapter's
+  integration tests against a real broker service container. Previously
+  these tests always skipped in CI since no broker was reachable.
+- `TestEndToEnd_FullStackLifecycle` (`e2e_test.go`): an end-to-end test
+  composing `Manager`, `chi`, `httpx` (health/readiness + `Serve`), `otel`
+  tracing, and the `watermill` `EventBus` through a full
+  Init→Start→exercise→Stop lifecycle.
+- `modulex/app`: a new package providing `Run(logger, configLoader, modules,
+  opts...)`, an opinionated bootstrap helper that owns manager construction,
+  module registration, signal-aware context creation, and the full
+  Init→Start→wait→Stop lifecycle — removing the ~30-line skeleton every
+  service entrypoint otherwise hand-writes. Configurable via
+  `WithContext`, `WithSignals`, `WithShutdownTimeout`, `WithManagerOptions`,
+  and `WithSetup`. See `examples/bootstrap`.
+- `modulex.WithTypedConfig[T any](cfg T) ManagerOption`: removes the
+  hand-written type-assert-and-copy closure every `WithConfigLoader` caller
+  otherwise repeats. Returns `ErrConfigTypeMismatch` from `GetConfig` when
+  called with a target that isn't `*T`.
+- `otel.NewProviderFromEnv(serviceName string, opts ...ProviderOption)`: an
+  opt-in helper that builds an OTLP-exporting `*sdktrace.TracerProvider` from
+  standard `OTEL_EXPORTER_OTLP_*` environment variables (exporter
+  protocol/endpoint, sampling ratio, resource attributes) — the generic
+  OTLP-provider-construction boilerplate every OTLP-exporting service
+  otherwise hand-rolls. New `go.mod` dependencies:
+  `go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc` and
+  `.../otlptracehttp`.
+- `nats.JetStreamEventBus`: a new, deliberately publish-only `EventBus`
+  implementation backed by NATS JetStream, for services that need
+  acknowledged publishing but not JetStream consumption (which requires
+  substantially more configuration than the `EventBus` interface can
+  express). `Subscribe` returns `ErrJetStreamSubscribeUnsupported`.
+
 ## [0.4.2] - 2026-07-22
 
 ### Fixed

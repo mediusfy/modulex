@@ -188,132 +188,155 @@ func TestContextWithSpanContextIgnoresForeignImplementation(t *testing.T) {
 	assert.Equal(t, ctx, got)
 }
 
-func TestHTTPMiddlewareSpanCreation(t *testing.T) {
-	sr := tracetest.NewSpanRecorder()
-	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
-
-	middleware := modulexotel.HTTPMiddleware(tp)
-
-	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	}))
-
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.Equal(t, "ok", rec.Body.String())
-
-	spans := sr.Ended()
-	require.Len(t, spans, 1)
-	assert.Equal(t, "GET", spans[0].Name())
-	assert.Equal(t, codes.Unset, spans[0].Status().Code)
-}
-
-func TestHTTPMiddlewareRecords5xxError(t *testing.T) {
-	sr := tracetest.NewSpanRecorder()
-	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
-
-	middleware := modulexotel.HTTPMiddleware(tp)
-
-	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-
-	req := httptest.NewRequest(http.MethodPost, "/fail", nil)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	spans := sr.Ended()
-	require.Len(t, spans, 1)
-	assert.Equal(t, int64(500), spans[0].Attributes()[2].Value.AsInt64())
-}
-
-func TestHTTPMiddlewareCustomSpanName(t *testing.T) {
-	sr := tracetest.NewSpanRecorder()
-	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
-
-	middleware := modulexotel.HTTPMiddleware(tp,
-		modulexotel.WithHTTPSpanName(func(r *http.Request) string {
-			return r.Method + " " + r.URL.Path
-		}),
-	)
-
-	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	req := httptest.NewRequest(http.MethodGet, "/custom", nil)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	spans := sr.Ended()
-	require.Len(t, spans, 1)
-	assert.Equal(t, "GET /custom", spans[0].Name())
-}
-
-func TestSubscriberMiddlewareSpanCreation(t *testing.T) {
-	sr := tracetest.NewSpanRecorder()
-	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
-
-	var gotPayload []byte
-	handler := modulexotel.SubscriberMiddleware(tp)(
-		"orders.created",
-		func(ctx context.Context, payload []byte) error {
-			gotPayload = payload
-			return nil
+func TestHTTPMiddleware(t *testing.T) {
+	tests := []struct {
+		name           string
+		opts           []modulexotel.HTTPOption
+		method         string
+		path           string
+		handlerStatus  int
+		wantSpanName   string
+		wantStatusCode codes.Code
+		check          func(t *testing.T, span sdktrace.ReadOnlySpan)
+	}{
+		{
+			name:           "creates span named after the HTTP method",
+			method:         http.MethodGet,
+			path:           "/test",
+			handlerStatus:  http.StatusOK,
+			wantSpanName:   "GET",
+			wantStatusCode: codes.Unset,
 		},
-	)
+		{
+			name:           "records the status code attribute on 5xx responses",
+			method:         http.MethodPost,
+			path:           "/fail",
+			handlerStatus:  http.StatusInternalServerError,
+			wantSpanName:   "POST",
+			wantStatusCode: codes.Unset,
+			check: func(t *testing.T, span sdktrace.ReadOnlySpan) {
+				assert.Equal(t, int64(500), span.Attributes()[2].Value.AsInt64())
+			},
+		},
+		{
+			name: "custom span name function overrides the default",
+			opts: []modulexotel.HTTPOption{
+				modulexotel.WithHTTPSpanName(func(r *http.Request) string {
+					return r.Method + " " + r.URL.Path
+				}),
+			},
+			method:         http.MethodGet,
+			path:           "/custom",
+			handlerStatus:  http.StatusOK,
+			wantSpanName:   "GET /custom",
+			wantStatusCode: codes.Unset,
+		},
+	}
 
-	err := handler(context.Background(), []byte("hello"))
-	require.NoError(t, err)
-	assert.Equal(t, []byte("hello"), gotPayload)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sr := tracetest.NewSpanRecorder()
+			tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
 
-	spans := sr.Ended()
-	require.Len(t, spans, 1)
-	assert.Equal(t, "process orders.created", spans[0].Name())
+			middleware := modulexotel.HTTPMiddleware(tp, tt.opts...)
+			handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.handlerStatus)
+				_, _ = w.Write([]byte("body"))
+			}))
+
+			req := httptest.NewRequest(tt.method, tt.path, nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			assert.Equal(t, tt.handlerStatus, rec.Code)
+
+			spans := sr.Ended()
+			require.Len(t, spans, 1)
+			assert.Equal(t, tt.wantSpanName, spans[0].Name())
+			assert.Equal(t, tt.wantStatusCode, spans[0].Status().Code)
+			if tt.check != nil {
+				tt.check(t, spans[0])
+			}
+		})
+	}
 }
 
-func TestSubscriberMiddlewareRecordsError(t *testing.T) {
-	sr := tracetest.NewSpanRecorder()
-	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
-
+func TestSubscriberMiddleware(t *testing.T) {
 	sentinel := errors.New("handler failed")
-	handler := modulexotel.SubscriberMiddleware(tp)(
-		"orders.failed",
-		func(ctx context.Context, payload []byte) error {
-			return sentinel
+
+	tests := []struct {
+		name           string
+		opts           []modulexotel.SubscriberOption
+		topic          string
+		payload        []byte
+		handlerErr     error
+		wantErr        error
+		wantSpanName   string
+		wantStatusCode codes.Code
+		check          func(t *testing.T, span sdktrace.ReadOnlySpan)
+	}{
+		{
+			name:           "creates span named after the topic",
+			topic:          "orders.created",
+			payload:        []byte("hello"),
+			wantSpanName:   "process orders.created",
+			wantStatusCode: codes.Unset,
 		},
-	)
-
-	err := handler(context.Background(), []byte("data"))
-	require.ErrorIs(t, err, sentinel)
-
-	spans := sr.Ended()
-	require.Len(t, spans, 1)
-	assert.Equal(t, codes.Error, spans[0].Status().Code)
-}
-
-func TestSubscriberMiddlewareCustomTopicAttr(t *testing.T) {
-	sr := tracetest.NewSpanRecorder()
-	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
-
-	handler := modulexotel.SubscriberMiddleware(tp,
-		modulexotel.WithSubscriberTopicAttr("custom.topic"),
-	)(
-		"events.user",
-		func(ctx context.Context, payload []byte) error {
-			return nil
+		{
+			name:           "records handler error and error status",
+			topic:          "orders.failed",
+			payload:        []byte("data"),
+			handlerErr:     sentinel,
+			wantErr:        sentinel,
+			wantSpanName:   "process orders.failed",
+			wantStatusCode: codes.Error,
 		},
-	)
+		{
+			name: "custom topic attribute key",
+			opts: []modulexotel.SubscriberOption{
+				modulexotel.WithSubscriberTopicAttr("custom.topic"),
+			},
+			topic:          "events.user",
+			payload:        []byte("data"),
+			wantSpanName:   "process events.user",
+			wantStatusCode: codes.Unset,
+			check: func(t *testing.T, span sdktrace.ReadOnlySpan) {
+				assert.Equal(t, "events.user", span.Attributes()[0].Value.AsString())
+			},
+		},
+	}
 
-	_ = handler(context.Background(), []byte("data"))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sr := tracetest.NewSpanRecorder()
+			tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
 
-	spans := sr.Ended()
-	require.Len(t, spans, 1)
-	assert.Equal(t, "events.user", spans[0].Attributes()[0].Value.AsString())
+			var gotPayload []byte
+			handler := modulexotel.SubscriberMiddleware(tp, tt.opts...)(
+				tt.topic,
+				func(ctx context.Context, payload []byte) error {
+					gotPayload = payload
+					return tt.handlerErr
+				},
+			)
+
+			err := handler(context.Background(), tt.payload)
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tt.payload, gotPayload)
+
+			spans := sr.Ended()
+			require.Len(t, spans, 1)
+			assert.Equal(t, tt.wantSpanName, spans[0].Name())
+			assert.Equal(t, tt.wantStatusCode, spans[0].Status().Code)
+			if tt.check != nil {
+				tt.check(t, spans[0])
+			}
+		})
+	}
 }
 
 type foreignSpanContext struct{}
