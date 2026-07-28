@@ -128,3 +128,11 @@ func TestJetStreamEventBus_CloseDoesNotCloseConnection(t *testing.T) {
 
 	assert.False(t, conn.IsClosed(), "EventBus.Close must not close the caller-owned connection")
 }
+
+func TestJetStreamEventBus_PublishRejectsCancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	eb := natsadapter.NewJetStreamEventBus(nil)
+	assert.ErrorIs(t, eb.Publish(ctx, "any.subject", []byte("payload")), context.Canceled)
+}

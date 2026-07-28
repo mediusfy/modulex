@@ -61,6 +61,10 @@ func NewJetStreamEventBus(js nats.JetStreamContext, opts ...JetStreamOption) *Je
 // Publish implements modulex.EventBus. It publishes to the JetStream stream
 // whose subject matches topic and waits for the broker's acknowledgement.
 func (j *JetStreamEventBus) Publish(ctx context.Context, topic string, payload []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	msg := nats.NewMsg(topic)
 	msg.Data = payload
 

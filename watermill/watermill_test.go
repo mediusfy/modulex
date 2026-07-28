@@ -118,6 +118,18 @@ func TestEventBus_Close(t *testing.T) {
 	require.Error(t, bus.Publish(ctx, "test.topic", []byte("after close")))
 }
 
+func TestEventBus_RejectsCancelledContextAndNilHandler(t *testing.T) {
+	bus := watermill.NewEventBus(0, false, false)
+	defer func() { _ = bus.Close(context.Background()) }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	assert.ErrorIs(t, bus.Publish(ctx, "topic", []byte("payload")), context.Canceled)
+	assert.Error(t, bus.Subscribe(context.Background(), "topic", nil))
+	assert.ErrorIs(t, bus.Subscribe(ctx, "topic", func(context.Context, []byte) error { return nil }), context.Canceled)
+}
+
 // TestEventBus_CloseWithManyConcurrentSubscriptions guards against a bug
 // where each subscription's cleanup goroutine removed itself from the shared
 // cancel-func bookkeeping by comparing fmt.Sprintf("%p", ...) of two

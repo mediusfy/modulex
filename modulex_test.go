@@ -324,6 +324,11 @@ func TestRegisterHealthCheckValidation(t *testing.T) {
 			},
 			wantErrSub: `health check "db" already registered`,
 		},
+		{
+			name:       "empty health check name",
+			act:        func(_ *testing.T, manager *modulex.Manager) error { return manager.RegisterHealthCheck(" ", nil) },
+			wantErrSub: "health check name must not be empty",
+		},
 	}
 
 	for _, tt := range tests {
@@ -386,6 +391,11 @@ func TestRegisterReadinessCheckValidation(t *testing.T) {
 				return manager.RegisterReadinessCheck("cache", func(context.Context) error { return nil })
 			},
 			wantErrSub: `readiness check "cache" already registered`,
+		},
+		{
+			name:       "empty readiness check name",
+			act:        func(_ *testing.T, manager *modulex.Manager) error { return manager.RegisterReadinessCheck(" ", nil) },
+			wantErrSub: "readiness check name must not be empty",
 		},
 	}
 
@@ -1227,6 +1237,67 @@ type orderTrackingEventBus struct {
 	*InMemoryEventBus
 	mu    *sync.Mutex
 	order *[]string
+}
+
+type closeCountingEventBus struct {
+	*InMemoryEventBus
+	mu         sync.Mutex
+	closeCount int
+}
+
+func (eb *closeCountingEventBus) Close(ctx context.Context) error {
+	eb.mu.Lock()
+	eb.closeCount++
+	eb.mu.Unlock()
+	return eb.InMemoryEventBus.Close(ctx)
+}
+
+func (eb *closeCountingEventBus) CloseCount() int {
+	eb.mu.Lock()
+	defer eb.mu.Unlock()
+	return eb.closeCount
+}
+
+func TestEventBusClosedOnLifecycleFailure(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(*modulex.Manager, *testing.T)
+	}{
+		{
+			name: "dependency graph failure",
+			setup: func(manager *modulex.Manager, t *testing.T) {
+				require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "module-a", deps: []string{"missing"}})))
+			},
+		},
+		{
+			name: "init failure",
+			setup: func(manager *modulex.Manager, t *testing.T) {
+				require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "module-a", initErr: errors.New("init failed")})))
+			},
+		},
+		{
+			name: "start failure",
+			setup: func(manager *modulex.Manager, t *testing.T) {
+				require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "module-a", startErr: errors.New("start failed")})))
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			eb := &closeCountingEventBus{InMemoryEventBus: NewInMemoryEventBus()}
+			manager := newTestManager(eb)
+			tt.setup(manager, t)
+			err := manager.InitModules(context.Background())
+			if tt.name == "start failure" {
+				require.NoError(t, err)
+				require.Error(t, manager.StartModules(context.Background()))
+			} else {
+				require.Error(t, err)
+			}
+			assert.Equal(t, 1, eb.CloseCount())
+		})
+	}
 }
 
 func (eb *orderTrackingEventBus) Close(ctx context.Context) error {

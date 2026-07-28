@@ -16,7 +16,7 @@ var ErrConfigTypeMismatch = errors.New("config target type mismatch")
 func WithTypedConfig[T any](cfg T) ManagerOption {
 	return WithConfigLoader(func(target interface{}) error {
 		out, ok := target.(*T)
-		if !ok {
+		if !ok || out == nil {
 			return fmt.Errorf("%w: GetConfig target must be *%T, got %T", ErrConfigTypeMismatch, cfg, target)
 		}
 		*out = cfg
