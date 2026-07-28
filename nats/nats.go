@@ -114,6 +114,10 @@ func (n *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 
 	n.subs = append(n.subs, sub)
 	n.cancels = append(n.cancels, cancel)
+	go func() {
+		<-subCtx.Done()
+		_ = sub.Unsubscribe()
+	}()
 	return nil
 }
 
