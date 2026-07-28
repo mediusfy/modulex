@@ -80,7 +80,9 @@ func (w *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 		return fmt.Errorf("watermill subscription failed: %w", err)
 	}
 
-	subCtx, cancel := context.WithCancel(context.Background())
+	// Derive the consumer context from the caller's context so cancellation of
+	// Subscribe's ctx also stops the consumer goroutine.
+	subCtx, cancel := context.WithCancel(ctx)
 	w.mu.Lock()
 	subID := w.nextSubID
 	w.nextSubID++

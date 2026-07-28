@@ -23,6 +23,11 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	// Some timeout tests intentionally spawn supervised tasks that ignore
+	// context cancellation (e.g. blocking forever on a nil channel) in order to
+	// force StopModules to time out. Those goroutines never exit by design, so
+	// ignore the manager's task-spawning goroutine rather than the specific
+	// test helper closures, which all share the same runtime function name.
 	goleak.VerifyTestMain(m,
 		goleak.IgnoreAnyFunction("github.com/mediusfy/modulex.(*Manager).Go.func1"),
 	)

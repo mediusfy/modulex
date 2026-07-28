@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-28
+
+### Changed
+
+- **Breaking:** `nats.NewEventBus` and `rabbitmq.NewEventBus` now accept
+  optional adapter options. Existing calls must continue to compile by adding
+  no options or passing the new options explicitly; callers using function
+  values must update their signatures.
+
 ### Fixed
 
 - `app.Run` now defaults a nil logger safely, and manager startup failure paths
@@ -31,6 +40,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   values, which is unreliable since closures from the same call site can
   format identically. Cancel funcs are now tracked by a unique subscription
   ID.
+- RabbitMQ EventBus shutdown now rejects new subscriptions after closing,
+  waits for active consumers without racing registration, and returns the
+  caller's context cancellation or deadline when handlers do not finish.
 
 ### Added
 

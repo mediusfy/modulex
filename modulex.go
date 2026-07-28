@@ -240,19 +240,23 @@ func (noopTracer) ContextWithSpanContext(ctx context.Context, sc SpanContext) co
 // ManagerOption configures a Manager during construction.
 type ManagerOption func(*Manager)
 
-// WithPanicPolicy sets the panic policy for supervised background tasks.
+// WithEventBus configures the pluggable event bus. If nil, a no-op event bus
+// is used so event publishing remains optional.
 func WithEventBus(eb EventBus) ManagerOption {
 	return func(m *Manager) {
 		m.eventBus = eb
 	}
 }
 
+// WithLogger configures the logger used by the manager and its modules. If
+// nil, slog.Default() is used.
 func WithLogger(logger *slog.Logger) ManagerOption {
 	return func(m *Manager) {
 		m.loggerCtx = logger
 	}
 }
 
+// WithPanicPolicy sets the panic policy for supervised background tasks.
 func WithPanicPolicy(policy PanicPolicy) ManagerOption {
 	return func(m *Manager) {
 		m.panicPolicy = policy
@@ -369,8 +373,6 @@ type LoggerProvider interface {
 	Logger() *slog.Logger
 }
 
-// TaskSpawner is the capability to start a supervised background task. Tasks
-// receive a lifecycle-owned context and are cancelled during shutdown.
 // HealthCheckRegistrar is the capability to register a module health (liveness)
 // check.
 //
@@ -418,6 +420,8 @@ type ReadinessProvider interface {
 	ReadinessChecks() map[string]func(context.Context) error
 }
 
+// TaskSpawner is the capability to start a supervised background task. Tasks
+// receive a lifecycle-owned context and are cancelled during shutdown.
 type TaskSpawner interface {
 	// Go spawns a supervised goroutine to execute background work. It creates a
 	// child span when a Tracer is configured, recovers from panics according to
@@ -521,14 +525,6 @@ func NewManager(opts ...ManagerOption) (*Manager, error) {
 	return m, nil
 }
 
-// RegisterModule registers a feature module in the manager.
-// Modules should be registered before calling InitModules.
-//
-// Registration is rejected if the module is nil, its name is empty, another
-// module with the same name is already registered, or initialization has
-// already started. Independent modules preserve their registration order as
-// the deterministic tie-break during topological sorting.
-
 // RegisterHealthCheck registers a health (liveness) check function under a
 // unique name.
 func (m *Manager) RegisterHealthCheck(name string, check func(context.Context) error) error {
@@ -585,6 +581,13 @@ func (m *Manager) ReadinessChecks() map[string]func(context.Context) error {
 	return checks
 }
 
+// RegisterModule registers a feature module in the manager.
+// Modules should be registered before calling InitModules.
+//
+// Registration is rejected if the module is nil, its name is empty, another
+// module with the same name is already registered, or initialization has
+// already started. Independent modules preserve their registration order as
+// the deterministic tie-break during topological sorting.
 func (m *Manager) RegisterModule(mod Module) error {
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
@@ -670,6 +673,9 @@ func (m *Manager) GetConfig(target interface{}) error {
 }
 
 // Logger implements Registry.
+func (m *Manager) Logger() *slog.Logger {
+	return m.loggerCtx
+}
 
 func (m *Manager) startSpan(ctx context.Context, spanName string, attrs map[string]any) (context.Context, Span) {
 	parentSC := m.tracer.SpanContextFromContext(ctx)
@@ -677,7 +683,7 @@ func (m *Manager) startSpan(ctx context.Context, spanName string, attrs map[stri
 	childSC := m.tracer.SpanContextFromContext(childCtx)
 
 	if childSC.IsValid() {
-		m.loggerCtx.InfoContext(childCtx, "span started",
+		m.loggerCtx.DebugContext(childCtx, "span started",
 			slog.String("span_name", spanName),
 			slog.String("trace_id", childSC.TraceID()),
 			slog.String("span_id", childSC.SpanID()),
@@ -685,10 +691,6 @@ func (m *Manager) startSpan(ctx context.Context, spanName string, attrs map[stri
 		)
 	}
 	return childCtx, span
-}
-
-func (m *Manager) Logger() *slog.Logger {
-	return m.loggerCtx
 }
 
 // State returns the current lifecycle state of the manager.
@@ -795,12 +797,6 @@ func (m *Manager) Go(ctx context.Context, taskName string, fn func(ctx context.C
 	return handle, nil
 }
 
-// InitModules sorts the modules topologically based on dependencies,
-// then initializes them sequentially in dependency order inside trace spans.
-//
-// If a module fails to initialize, all previously initialized modules are
-// stopped in reverse order and the manager moves to the stopped state.
-
 // ExportDAG returns a Mermaid-compatible DAG visualization of the registered modules.
 func (m *Manager) ExportDAG() string {
 	m.mu.RLock()
@@ -829,6 +825,11 @@ func (m *Manager) ExportDAG() string {
 	return sb.String()
 }
 
+// InitModules sorts the modules topologically based on dependencies,
+// then initializes them sequentially in dependency order inside trace spans.
+//
+// If a module fails to initialize, all previously initialized modules are
+// stopped in reverse order and the manager moves to the stopped state.
 func (m *Manager) InitModules(ctx context.Context) error {
 	m.stateMu.Lock()
 	state := m.state
