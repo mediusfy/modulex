@@ -74,7 +74,6 @@ func (w *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 		return err
 	}
 
-	// Subscribe returns a read-only channel of messages
 	messages, err := w.pubSub.Subscribe(ctx, topic)
 	if err != nil {
 		return fmt.Errorf("watermill subscription failed: %w", err)
@@ -89,7 +88,6 @@ func (w *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 	w.cancels[subID] = cancel
 	w.mu.Unlock()
 
-	// Consumer thread loop
 	go func() {
 		defer func() {
 			cancel()
@@ -106,10 +104,7 @@ func (w *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 					return // Channel closed (likely EventBus shutting down)
 				}
 
-				// Retrieve tracing context from incoming message
 				msgCtx := msg.Context()
-
-				// Execute module's generic callback
 				if err := handler(msgCtx, msg.Payload); err != nil {
 					// Watermill's in-memory GoChannel redelivers Nack'd messages, which
 					// can cause infinite loops for a handler that persistently fails.
@@ -118,7 +113,7 @@ func (w *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 					msg.Ack()
 					w.logger.Error("handler error, message acknowledged to prevent redelivery", err, nil)
 				} else {
-					msg.Ack() // Standard acknowledgment
+					msg.Ack()
 				}
 			}
 		}

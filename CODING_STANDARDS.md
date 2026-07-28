@@ -1,7 +1,7 @@
 # Modulex Library — Coding Standards
 
 > **Reference implementation:** `~/programming/projects/pim-agl.monorepo/pim-agl-online-data-relay/`
-> All new Go code in this repository should follow the coding style established in the pim-agl-online-data-relay
+> All new code in this repository should follow the coding style established in the pim-agl-online-data-relay
 > project. When in doubt about style, naming, error handling, or observability conventions,
 > consult that codebase as the canonical reference.
 

@@ -182,7 +182,6 @@ func (r *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 	r.cancels = append(r.cancels, cancel)
 	r.mu.Unlock()
 
-	// Spin up consumer loop
 	go func() {
 		defer func() {
 			cancel()
@@ -239,9 +238,11 @@ func (r *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 // *amqp.Channel or its connection, which the caller owns.
 func (r *EventBus) Close(ctx context.Context) error {
 	r.mu.Lock()
-	if !r.closed {
-		r.closed = true
+	if r.closed {
+		r.mu.Unlock()
+		return nil
 	}
+	r.closed = true
 	tags := append([]string(nil), r.tags...)
 	cancels := append([]context.CancelFunc(nil), r.cancels...)
 	stopped := r.stopped

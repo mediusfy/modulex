@@ -24,14 +24,12 @@ func NewModule() *Module {
 	return &Module{}
 }
 
-// Name implements modulex.Module.
 func (m *Module) Name() string { return "notification" }
 
-// DependsOn implements modulex.Module.
 func (m *Module) DependsOn() []string { return nil }
 
-// Init implements modulex.Module. It registers the notification service and,
-// if a Chi router is available, mounts the HTTP endpoint.
+// Init registers the notification service and, if a Chi router is available,
+// mounts the HTTP endpoint.
 func (m *Module) Init(ctx context.Context, reg modulex.Registry) error {
 	svc := ports.Service(service.New(reg.Logger()))
 	if err := modulex.Provide(reg, ports.ServiceKey, svc); err != nil {
@@ -69,14 +67,12 @@ func NewRemoteModule(baseURL string, client *http.Client) (*RemoteModule, error)
 	return &RemoteModule{baseURL: baseURL, client: client}, nil
 }
 
-// Name implements modulex.Module.
 func (m *RemoteModule) Name() string { return "notification" }
 
-// DependsOn implements modulex.Module.
 func (m *RemoteModule) DependsOn() []string { return nil }
 
-// Init implements modulex.Module. It registers the remote client adapter under
-// the same typed key the local module uses.
+// Init registers the remote client adapter under the same typed key the local
+// module uses.
 func (m *RemoteModule) Init(_ context.Context, reg modulex.Registry) error {
 	client, err := adapters.NewHTTPClient(m.baseURL, m.client)
 	if err != nil {

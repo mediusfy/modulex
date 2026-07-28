@@ -10,14 +10,12 @@ import (
 	"github.com/mediusfy/modulex"
 )
 
-// LoggerService is a trivial service registered and resolved by typed key.
 type LoggerService struct{}
 
 func (LoggerService) Log(msg string) { fmt.Println(msg) }
 
 var loggerKey = modulex.NewKey[LoggerService]("quickstart.Logger")
 
-// LoggerModule registers a shared logger service.
 type LoggerModule struct{}
 
 func (m *LoggerModule) Name() string        { return "logger" }
@@ -26,7 +24,6 @@ func (m *LoggerModule) Init(ctx context.Context, reg modulex.Registry) error {
 	return modulex.Provide(reg, loggerKey, LoggerService{})
 }
 
-// GreeterModule depends on the logger service.
 type GreeterModule struct {
 	logger LoggerService
 }

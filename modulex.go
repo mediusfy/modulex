@@ -153,7 +153,6 @@ type TaskHandle struct {
 	err  error
 }
 
-// Name returns the task name.
 func (h *TaskHandle) Name() string { return h.name }
 
 // Wait blocks until the task finishes and returns its final error.
@@ -190,11 +189,8 @@ type Tracer interface {
 
 // SpanContext is an opaque span context used for trace propagation.
 type SpanContext interface {
-	// IsValid reports whether the span context identifies a valid span.
 	IsValid() bool
-	// TraceID returns the trace identifier.
 	TraceID() string
-	// SpanID returns the span identifier.
 	SpanID() string
 }
 
@@ -208,21 +204,18 @@ type Span interface {
 	SetAttributes(attrs map[string]any)
 }
 
-// noopSpanContext is a no-op SpanContext implementation.
 type noopSpanContext struct{}
 
 func (noopSpanContext) IsValid() bool   { return false }
 func (noopSpanContext) TraceID() string { return "" }
 func (noopSpanContext) SpanID() string  { return "" }
 
-// noopSpan is a no-op Span implementation.
 type noopSpan struct{}
 
 func (noopSpan) End()                               {}
 func (noopSpan) RecordError(err error)              {}
 func (noopSpan) SetAttributes(attrs map[string]any) {}
 
-// noopTracer is a no-op Tracer implementation.
 type noopTracer struct{}
 
 func (noopTracer) Start(ctx context.Context, spanName string, attrs map[string]any) (context.Context, Span) {
@@ -280,7 +273,10 @@ func WithTracer(tracer Tracer) ManagerOption {
 	}
 }
 
-// EventHandler is a generic callback function signature for incoming events.
+// EventHandler processes an event delivered by an EventBus. The meaning of a
+// returned error depends on the concrete adapter: some adapters ack/nack based
+// on the error, others only log it. Callers coding against the EventBus
+// abstraction should not assume specific retry or redelivery semantics.
 type EventHandler func(ctx context.Context, payload []byte) error
 
 // EventBus abstracts the underlying message broker (NATS, Kafka, RabbitMQ, etc.).
@@ -288,7 +284,10 @@ type EventBus interface {
 	// Publish sends a payload to a specific topic/subject.
 	Publish(ctx context.Context, topic string, payload []byte) error
 
-	// Subscribe listens to a topic and invokes the handler when an event is received.
+	// Subscribe listens to a topic and invokes the handler when an event is
+	// received. The adapter determines how handler errors affect
+	// acknowledgment, retry, and redelivery; see the adapter documentation for
+	// its policy.
 	Subscribe(ctx context.Context, topic string, handler EventHandler) error
 
 	// Close gracefully disconnects from the broker, shutting down active subscribers.
@@ -355,7 +354,6 @@ type ServiceRegistry interface {
 
 // EventBusProvider is the capability to access the pluggable event bus.
 type EventBusProvider interface {
-	// EventBus returns the pluggable, configured event bus abstraction.
 	EventBus() EventBus
 }
 
@@ -369,7 +367,6 @@ type ConfigProvider interface {
 
 // LoggerProvider is the capability to access the system logger.
 type LoggerProvider interface {
-	// Logger returns the system logger.
 	Logger() *slog.Logger
 }
 
@@ -390,7 +387,6 @@ type HealthCheckRegistrar interface {
 
 // HealthCheckProvider exposes the registered health (liveness) checks.
 type HealthCheckProvider interface {
-	// HealthChecks returns all registered health (liveness) checks.
 	HealthChecks() map[string]func(context.Context) error
 }
 
@@ -416,7 +412,6 @@ type ReadinessRegistrar interface {
 
 // ReadinessProvider exposes the registered readiness checks.
 type ReadinessProvider interface {
-	// ReadinessChecks returns all registered readiness checks.
 	ReadinessChecks() map[string]func(context.Context) error
 }
 

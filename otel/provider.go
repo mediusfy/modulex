@@ -110,10 +110,14 @@ func WithSpanProcessor(sp sdktrace.SpanProcessor) ProviderOption {
 //	defer shutdown(context.Background())
 //	tracer := otel.NewTracer(tp)
 func NewProviderFromEnv(serviceName string, opts ...ProviderOption) (*sdktrace.TracerProvider, func(context.Context) error, error) {
+	sampleRatio, err := envFloatOrDefault(envSampleRatio, defaultSampleRatio)
+	if err != nil {
+		return nil, nil, err
+	}
 	cfg := providerConfig{
 		protocol:    envOrDefault(envExporterProtocol, defaultExporterProtocol),
 		endpoint:    os.Getenv(envExporterEndpoint),
-		sampleRatio: envFloatOrDefault(envSampleRatio, defaultSampleRatio),
+		sampleRatio: sampleRatio,
 	}
 	for _, opt := range opts {
 		opt(&cfg)
@@ -184,14 +188,14 @@ func envOrDefault(key, fallback string) string {
 	return fallback
 }
 
-func envFloatOrDefault(key string, fallback float64) float64 {
+func envFloatOrDefault(key string, fallback float64) (float64, error) {
 	v := os.Getenv(key)
 	if v == "" {
-		return fallback
+		return fallback, nil
 	}
 	f, err := strconv.ParseFloat(v, 64)
 	if err != nil {
-		return fallback
+		return 0, fmt.Errorf("otel: invalid value %q for %s: %w", v, key, err)
 	}
-	return f
+	return f, nil
 }

@@ -45,7 +45,7 @@ jobs:
     - name: Verify Formatting
       run: |
         if [ -n "$(gofmt -s -l .)" ]; then
-          echo "Go code is not formatted. Run gofmt -s -w ."
+          echo "code is not formatted. Run gofmt -s -w ."
           gofmt -s -l .
           exit 1
         fi

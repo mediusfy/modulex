@@ -303,7 +303,7 @@ This section embeds the official architectural decision that defines the creatio
 
 ### Context & Problem Statement
 
-As Go applications grow within a monorepo, features that start as simple internal modules often need to scale, compile, and deploy independently. However, Go developers commonly fall into the trap of tight coupling by importing concrete structures and adapters from other packages (e.g., calling a database helper directly or importing a controller). 
+As applications grow within a monorepo, features that start as simple internal modules often need to scale, compile, and deploy independently. However, developers commonly fall into the trap of tight coupling by importing concrete structures and adapters from other packages (e.g., calling a database helper directly or importing a controller). 
 
 If Feature A directly imports Feature B's `service` or `adapters` packages, compilation boundaries are broken:
 - Feature A cannot be compiled without pulling in Feature B's dependencies (causing bloated binaries).
