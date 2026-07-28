@@ -22,10 +22,11 @@ const (
 
 // EventBus implements modulex.EventBus by wrapping a concrete NATS connection.
 type EventBus struct {
-	conn   *nats.Conn
-	logger *slog.Logger
-	subsMu sync.Mutex
-	subs   []*nats.Subscription
+	conn    *nats.Conn
+	logger  *slog.Logger
+	subsMu  sync.Mutex
+	subs    []*nats.Subscription
+	cancels []context.CancelFunc
 }
 
 // Option configures an EventBus during construction.
@@ -58,6 +59,10 @@ func NewEventBus(conn *nats.Conn, opts ...Option) *EventBus {
 
 // Publish implements modulex.EventBus.
 func (n *EventBus) Publish(ctx context.Context, topic string, payload []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	// The NATS connection is safe for concurrent use by multiple goroutines.
 	msg := nats.NewMsg(topic)
 	msg.Data = payload
@@ -82,11 +87,19 @@ func (n *EventBus) Publish(ctx context.Context, topic string, payload []byte) er
 // policy used by the other EventBus adapters in this module (see
 // rabbitmq.EventBus.Subscribe and watermill.EventBus.Subscribe).
 func (n *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.EventHandler) error {
+	if handler == nil {
+		return fmt.Errorf("failed to subscribe to %s: handler must not be nil", topic)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	n.subsMu.Lock()
 	defer n.subsMu.Unlock()
 
+	subCtx, cancel := context.WithCancel(ctx)
 	sub, err := n.conn.Subscribe(topic, func(msg *nats.Msg) {
-		msgCtx := messageContext(ctx, msg)
+		msgCtx := messageContext(subCtx, msg)
 		if err := handler(msgCtx, msg.Data); err != nil {
 			n.logger.ErrorContext(msgCtx, "handler error",
 				slog.String(logKeyTopic, topic),
@@ -95,10 +108,16 @@ func (n *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 		}
 	})
 	if err != nil {
+		cancel()
 		return fmt.Errorf("failed to subscribe to %s: %w", topic, err)
 	}
 
 	n.subs = append(n.subs, sub)
+	n.cancels = append(n.cancels, cancel)
+	go func() {
+		<-subCtx.Done()
+		_ = sub.Unsubscribe()
+	}()
 	return nil
 }
 
@@ -122,6 +141,10 @@ func (n *EventBus) Close(ctx context.Context) error {
 	for _, sub := range n.subs {
 		_ = sub.Unsubscribe()
 	}
+	for _, cancel := range n.cancels {
+		cancel()
+	}
 	n.subs = nil
+	n.cancels = nil
 	return nil
 }

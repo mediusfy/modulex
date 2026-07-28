@@ -42,6 +42,11 @@ func TestWithTypedConfig(t *testing.T) {
 			target:  typedConfigTestConfig{},
 			wantErr: modulex.ErrConfigTypeMismatch,
 		},
+		{
+			name:    "nil typed pointer returns ErrConfigTypeMismatch",
+			target:  (*typedConfigTestConfig)(nil),
+			wantErr: modulex.ErrConfigTypeMismatch,
+		},
 	}
 
 	for _, tt := range tests {

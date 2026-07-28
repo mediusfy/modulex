@@ -156,6 +156,16 @@ func TestEventBus_ImplementsInterface(t *testing.T) {
 	var _ modulex.EventBus = (*natsadapter.EventBus)(nil)
 }
 
+func TestEventBus_RejectsInvalidSubscriptionInputs(t *testing.T) {
+	eb := natsadapter.NewEventBus(nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	assert.Error(t, eb.Publish(ctx, "topic", []byte("payload")))
+	assert.Error(t, eb.Subscribe(context.Background(), "topic", nil))
+	assert.Error(t, eb.Subscribe(ctx, "topic", func(context.Context, []byte) error { return nil }))
+}
+
 // syncBuffer is a concurrency-safe io.Writer wrapping a bytes.Buffer, needed
 // because the adapter logs from its own subscription callback goroutine while
 // the test polls the buffer's contents from the main goroutine.

@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `app.Run` now defaults a nil logger safely, and manager startup failure paths
+  close the configured EventBus after rolling back modules.
+- Module and service registration now coordinates lifecycle-state checks with
+  the mutation lock, preventing registration races during initialization.
+- `WithTypedConfig` rejects nil typed pointers instead of panicking.
+- Health/readiness check names and service lookup names now use consistent
+  whitespace validation and normalization.
+- NATS, RabbitMQ, Watermill, and JetStream adapters reject cancelled publish or
+  subscribe contexts before using the broker client; subscriptions reject nil
+  handlers, and NATS subscriptions now follow context cancellation.
 - `rabbitmq.EventBus.Subscribe` no longer auto-acks messages before the
   handler runs. It now acks on success and nacks without requeue (logging the
   error) on failure, so a failing handler no longer silently drops the

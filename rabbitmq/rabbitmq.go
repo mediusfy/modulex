@@ -88,6 +88,10 @@ func NewEventBus(ch *amqp.Channel, opts ...Option) *EventBus {
 // queue to which the message is delivered. For routed exchanges, use a
 // broker-specific publisher instead of this adapter.
 func (r *EventBus) Publish(ctx context.Context, topic string, payload []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	headers := make(amqp.Table)
 	otel.GetTextMapPropagator().Inject(ctx, amqpHeadersCarrier(headers))
 	return r.ch.PublishWithContext(ctx,
@@ -115,6 +119,13 @@ func (r *EventBus) Publish(ctx context.Context, topic string, payload []byte) er
 // matches the acknowledge-and-log policy used by the other EventBus adapters
 // in this module (see watermill.EventBus.Subscribe).
 func (r *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.EventHandler) error {
+	if handler == nil {
+		return fmt.Errorf("failed to subscribe to queue %q: handler must not be nil", topic)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	if _, err := r.ch.QueueDeclare(
 		topic, // name
 		true,  // durable

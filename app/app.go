@@ -97,6 +97,10 @@ func WithSetup(fn func(*modulex.Manager) error) Option {
 //	    os.Exit(1)
 //	}
 func Run(logger *slog.Logger, configLoader func(target interface{}) error, modules []modulex.Module, opts ...Option) error {
+	if logger == nil {
+		logger = slog.Default()
+	}
+
 	cfg := &options{
 		ctx:             context.Background(),
 		signals:         []os.Signal{os.Interrupt, syscall.SIGTERM},

@@ -65,6 +65,12 @@ var (
 	// ErrInvalidPanicPolicy is returned by NewManager when WithPanicPolicy is
 	// given a value outside the defined PanicPolicy enum.
 	ErrInvalidPanicPolicy = errors.New("invalid panic policy")
+
+	// ErrInvalidHealthCheckName is returned when a health check name is empty.
+	ErrInvalidHealthCheckName = errors.New("health check name must not be empty")
+
+	// ErrInvalidReadinessCheckName is returned when a readiness check name is empty.
+	ErrInvalidReadinessCheckName = errors.New("readiness check name must not be empty")
 )
 
 // LifecycleState represents the current phase of the Manager's lifecycle.
@@ -526,6 +532,11 @@ func NewManager(opts ...ManagerOption) (*Manager, error) {
 // RegisterHealthCheck registers a health (liveness) check function under a
 // unique name.
 func (m *Manager) RegisterHealthCheck(name string, check func(context.Context) error) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ErrInvalidHealthCheckName
+	}
+
 	m.healthMu.Lock()
 	defer m.healthMu.Unlock()
 	if _, exists := m.healthChecks[name]; exists {
@@ -549,6 +560,11 @@ func (m *Manager) HealthChecks() map[string]func(context.Context) error {
 // RegisterReadinessCheck registers a readiness check function under a unique
 // name.
 func (m *Manager) RegisterReadinessCheck(name string, check func(context.Context) error) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ErrInvalidReadinessCheckName
+	}
+
 	m.readinessMu.Lock()
 	defer m.readinessMu.Unlock()
 	if _, exists := m.readinessChecks[name]; exists {
@@ -571,12 +587,11 @@ func (m *Manager) ReadinessChecks() map[string]func(context.Context) error {
 
 func (m *Manager) RegisterModule(mod Module) error {
 	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
 	state := m.state
 	if state != StateConfiguring {
-		m.stateMu.Unlock()
 		return fmt.Errorf("%w: cannot register module while in %q state", ErrRegistryLocked, state)
 	}
-	m.stateMu.Unlock()
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -602,12 +617,11 @@ func (m *Manager) RegisterModule(mod Module) error {
 // Registration is only permitted before InitModules has completed.
 func (m *Manager) RegisterService(name string, svc interface{}) error {
 	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
 	state := m.state
 	if state != StateConfiguring && state != StateInitializing {
-		m.stateMu.Unlock()
 		return fmt.Errorf("%w: cannot register service while in %q state", ErrRegistryLocked, state)
 	}
-	m.stateMu.Unlock()
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -627,6 +641,11 @@ func (m *Manager) RegisterService(name string, svc interface{}) error {
 
 // ResolveService implements Registry. It retrieves a registered service by its identifier.
 func (m *Manager) ResolveService(name string) (interface{}, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, ErrInvalidServiceName
+	}
+
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -828,6 +847,9 @@ func (m *Manager) InitModules(ctx context.Context) error {
 		if waitErr := m.waitForTasks(ctx); waitErr != nil {
 			err = errors.Join(err, waitErr)
 		}
+		if closeErr := m.closeEventBus(ctx); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
 		m.setState(StateStopped)
 		return err
 	}
@@ -867,6 +889,9 @@ func (m *Manager) InitModules(ctx context.Context) error {
 		}
 		if rollbackErr := m.rollbackInit(ctx, ordered[:initializedCount]); rollbackErr != nil {
 			initErr = errors.Join(initErr, rollbackErr)
+		}
+		if closeErr := m.closeEventBus(ctx); closeErr != nil {
+			initErr = errors.Join(initErr, closeErr)
 		}
 		m.mu.Lock()
 		m.orderedMods = nil
@@ -945,6 +970,9 @@ func (m *Manager) StartModules(ctx context.Context) error {
 		}
 		if rollbackErr := m.rollbackStart(ctx, mods[:startedCount]); rollbackErr != nil {
 			startErr = errors.Join(startErr, rollbackErr)
+		}
+		if closeErr := m.closeEventBus(ctx); closeErr != nil {
+			startErr = errors.Join(startErr, closeErr)
 		}
 		m.setState(StateStopped)
 		return startErr

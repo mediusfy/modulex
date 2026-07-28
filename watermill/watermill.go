@@ -49,6 +49,10 @@ func NewEventBus(bufferSize int64, persistent bool, debug bool) *EventBus {
 
 // Publish generates a Watermill-compatible message, propagates context/spans, and sends it.
 func (w *EventBus) Publish(ctx context.Context, topic string, payload []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	// Generate a unique Watermill UUID for tracing/deduplication
 	msg := message.NewMessage(watermill.NewUUID(), payload)
 
@@ -63,6 +67,13 @@ func (w *EventBus) Publish(ctx context.Context, topic string, payload []byte) er
 
 // Subscribe listens to a topic and handles messages in the background, maintaining span continuity.
 func (w *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.EventHandler) error {
+	if handler == nil {
+		return fmt.Errorf("watermill subscription failed: handler must not be nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	// Subscribe returns a read-only channel of messages
 	messages, err := w.pubSub.Subscribe(ctx, topic)
 	if err != nil {

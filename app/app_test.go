@@ -118,6 +118,31 @@ func TestRun_FullLifecycle(t *testing.T) {
 	assert.Equal(t, modulex.StateStopped, mgr.State())
 }
 
+func TestRun_NilLoggerUsesDefaultLogger(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mod := &recordingModule{name: "nil-logger", startedCh: make(chan struct{})}
+	runErr := make(chan error, 1)
+	go func() {
+		runErr <- app.Run(nil, nil, []modulex.Module{mod}, app.WithContext(ctx))
+	}()
+
+	select {
+	case <-mod.startedCh:
+		cancel()
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for module to start")
+	}
+
+	select {
+	case err := <-runErr:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Run to return")
+	}
+}
+
 func TestRun_ManagerConstructionFailure(t *testing.T) {
 	err := app.Run(newTestLogger(), nil, nil,
 		app.WithManagerOptions(modulex.WithPanicPolicy(modulex.PanicPolicy(99))),

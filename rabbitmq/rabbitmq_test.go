@@ -132,6 +132,16 @@ func TestEventBus_ImplementsInterface(t *testing.T) {
 	var _ modulex.EventBus = (*rabbitadapter.EventBus)(nil)
 }
 
+func TestEventBus_RejectsInvalidInputsBeforeUsingChannel(t *testing.T) {
+	eb := rabbitadapter.NewEventBus(nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	assert.ErrorIs(t, eb.Publish(ctx, "queue", []byte("payload")), context.Canceled)
+	assert.Error(t, eb.Subscribe(context.Background(), "queue", nil))
+	assert.ErrorIs(t, eb.Subscribe(ctx, "queue", func(context.Context, []byte) error { return nil }), context.Canceled)
+}
+
 // syncBuffer is a concurrency-safe io.Writer wrapping a bytes.Buffer, needed
 // because the adapter logs from its own consumer goroutine while the test
 // polls the buffer's contents from the main goroutine.
