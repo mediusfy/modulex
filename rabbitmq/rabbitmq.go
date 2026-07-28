@@ -47,6 +47,9 @@ type EventBus struct {
 	ch      *amqp.Channel
 	logger  *slog.Logger
 	mu      sync.Mutex
+	closed  bool
+	active  int
+	stopped chan struct{}
 	nextTag int
 	tags    []string
 	cancels []context.CancelFunc // tracks consumer cancellation contexts
@@ -71,7 +74,9 @@ func WithLogger(logger *slog.Logger) Option {
 // channel or connection be shared across multiple concerns outside the
 // module lifecycle if desired.
 func NewEventBus(ch *amqp.Channel, opts ...Option) *EventBus {
-	r := &EventBus{ch: ch, logger: slog.Default()}
+	stopped := make(chan struct{})
+	close(stopped)
+	r := &EventBus{ch: ch, logger: slog.Default(), stopped: stopped}
 	for _, opt := range opts {
 		opt(r)
 	}
@@ -125,6 +130,12 @@ func (r *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	r.mu.Lock()
+	closed := r.closed
+	r.mu.Unlock()
+	if closed {
+		return fmt.Errorf("failed to subscribe to queue %q: event bus is closed", topic)
+	}
 
 	if _, err := r.ch.QueueDeclare(
 		topic, // name
@@ -157,13 +168,31 @@ func (r *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 
 	subCtx, cancel := context.WithCancel(ctx)
 	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		cancel()
+		_ = r.ch.Cancel(tag, false)
+		return fmt.Errorf("failed to subscribe to queue %q: event bus is closed", topic)
+	}
+	if r.active == 0 {
+		r.stopped = make(chan struct{})
+	}
+	r.active++
 	r.tags = append(r.tags, tag)
 	r.cancels = append(r.cancels, cancel)
 	r.mu.Unlock()
 
 	// Spin up consumer loop
 	go func() {
-		defer cancel()
+		defer func() {
+			cancel()
+			r.mu.Lock()
+			r.active--
+			if r.active == 0 {
+				close(r.stopped)
+			}
+			r.mu.Unlock()
+		}()
 		for {
 			select {
 			case <-subCtx.Done():
@@ -205,19 +234,32 @@ func (r *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 	return nil
 }
 
-// Close implements modulex.EventBus. It cancels all active queue consumers
-// but does not close the underlying *amqp.Channel or its connection, which
-// the caller owns.
+// Close implements modulex.EventBus. It cancels all active queue consumers,
+// waits for their goroutines to exit, and does not close the underlying
+// *amqp.Channel or its connection, which the caller owns.
 func (r *EventBus) Close(ctx context.Context) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	for _, tag := range r.tags {
-		_ = r.ch.Cancel(tag, false)
+	if !r.closed {
+		r.closed = true
 	}
-	for _, cancel := range r.cancels {
-		cancel()
-	}
+	tags := append([]string(nil), r.tags...)
+	cancels := append([]context.CancelFunc(nil), r.cancels...)
+	stopped := r.stopped
 	r.tags = nil
 	r.cancels = nil
-	return nil
+	r.mu.Unlock()
+
+	for _, tag := range tags {
+		_ = r.ch.Cancel(tag, false)
+	}
+	for _, cancel := range cancels {
+		cancel()
+	}
+
+	select {
+	case <-stopped:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

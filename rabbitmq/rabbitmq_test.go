@@ -142,6 +142,14 @@ func TestEventBus_RejectsInvalidInputsBeforeUsingChannel(t *testing.T) {
 	assert.ErrorIs(t, eb.Subscribe(ctx, "queue", func(context.Context, []byte) error { return nil }), context.Canceled)
 }
 
+func TestEventBus_RejectsSubscriptionsAfterClose(t *testing.T) {
+	eb := rabbitadapter.NewEventBus(nil)
+	require.NoError(t, eb.Close(context.Background()))
+
+	err := eb.Subscribe(context.Background(), "queue", func(context.Context, []byte) error { return nil })
+	assert.ErrorContains(t, err, "event bus is closed")
+}
+
 // syncBuffer is a concurrency-safe io.Writer wrapping a bytes.Buffer, needed
 // because the adapter logs from its own consumer goroutine while the test
 // polls the buffer's contents from the main goroutine.
