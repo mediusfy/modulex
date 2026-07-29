@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `app.Run` now stops already-initialized modules if `InitModules` or
+  `StartModules` fails partway through, rejects `nil` modules with an error
+  naming the offending index, and includes the module's name when
+  `RegisterModule` fails.
+- `httpx.HealthHandler` and `httpx.ReadinessHandler` respond 503 with a
+  descriptive error instead of panicking when given a `nil` provider;
+  `httpx.Serve` similarly rejects a `nil` spawner. `runChecks` recovers from a
+  panicking check (reporting it as failed) and always bounds each check with
+  `defaultCheckTimeout`, deriving from the caller's context so an existing
+  shorter deadline is still respected.
+- `otel.Tracer`'s `SpanContext` methods (`IsValid`, `TraceID`, `SpanID`) and
+  `ContextWithSpanContext` are now nil-safe.
+- `otel.HTTPMiddleware`'s response-status wrapper no longer double-writes the
+  status header and now forwards `http.Flusher`/`http.Hijacker` to the
+  underlying `ResponseWriter`, so SSE and WebSocket handlers work correctly
+  behind the middleware.
+- `watermill.EventBus.Close` now waits for in-flight subscriber goroutines to
+  exit (bounded by the caller's context) before returning, instead of
+  returning immediately after requesting cancellation.
+
+### Added
+
+- `otel.WithInsecure` provider option and `OTEL_EXPORTER_OTLP_INSECURE`
+  environment variable to explicitly force TLS on/off for the OTLP exporter.
+  Endpoints are now scheme-sanitized, and loopback hosts default to insecure
+  when unspecified.
+
 ## [0.5.2] - 2026-07-29
 
 ### Fixed
@@ -422,7 +451,9 @@ Initial v0 prerelease.
   service locator, and pluggable event-bus adapters (Chi, NATS, RabbitMQ,
   Watermill, OpenTelemetry).
 
-[Unreleased]: https://github.com/mediusfy/modulex/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/mediusfy/modulex/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/mediusfy/modulex/compare/v0.5.1...v0.5.2
+[0.5.1]: https://github.com/mediusfy/modulex/compare/v0.4.2...v0.5.1
 [0.4.2]: https://github.com/mediusfy/modulex/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/mediusfy/modulex/compare/v0.3.0...v0.4.1
 [0.4.0]: https://github.com/mediusfy/modulex/compare/v0.3.0...v0.4.0
