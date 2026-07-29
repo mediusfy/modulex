@@ -59,8 +59,8 @@ func (_c *MockModule_DependsOn_Call) Run(run func()) *MockModule_DependsOn_Call 
 	return _c
 }
 
-func (_c *MockModule_DependsOn_Call) Return(_a0 []string) *MockModule_DependsOn_Call {
-	_c.Call.Return(_a0)
+func (_c *MockModule_DependsOn_Call) Return(deps []string) *MockModule_DependsOn_Call {
+	_c.Call.Return(deps)
 	return _c
 }
 
@@ -106,8 +106,8 @@ func (_c *MockModule_Init_Call) Run(run func(ctx context.Context, reg modulex.Re
 	return _c
 }
 
-func (_c *MockModule_Init_Call) Return(_a0 error) *MockModule_Init_Call {
-	_c.Call.Return(_a0)
+func (_c *MockModule_Init_Call) Return(err error) *MockModule_Init_Call {
+	_c.Call.Return(err)
 	return _c
 }
 
@@ -151,8 +151,8 @@ func (_c *MockModule_Name_Call) Run(run func()) *MockModule_Name_Call {
 	return _c
 }
 
-func (_c *MockModule_Name_Call) Return(_a0 string) *MockModule_Name_Call {
-	_c.Call.Return(_a0)
+func (_c *MockModule_Name_Call) Return(name string) *MockModule_Name_Call {
+	_c.Call.Return(name)
 	return _c
 }
 

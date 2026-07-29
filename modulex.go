@@ -212,8 +212,13 @@ func (noopSpanContext) SpanID() string  { return "" }
 
 type noopSpan struct{}
 
-func (noopSpan) End()                               {}
-func (noopSpan) RecordError(err error)              {}
+// End is intentionally empty; a no-op span has nothing to finalize.
+func (noopSpan) End() {}
+
+// RecordError is intentionally empty; a no-op span discards recorded errors.
+func (noopSpan) RecordError(err error) {}
+
+// SetAttributes is intentionally empty; a no-op span discards attributes.
 func (noopSpan) SetAttributes(attrs map[string]any) {}
 
 type noopTracer struct{}
@@ -282,16 +287,16 @@ type EventHandler func(ctx context.Context, payload []byte) error
 // EventBus abstracts the underlying message broker (NATS, Kafka, RabbitMQ, etc.).
 type EventBus interface {
 	// Publish sends a payload to a specific topic/subject.
-	Publish(ctx context.Context, topic string, payload []byte) error
+	Publish(ctx context.Context, topic string, payload []byte) (err error)
 
 	// Subscribe listens to a topic and invokes the handler when an event is
 	// received. The adapter determines how handler errors affect
 	// acknowledgment, retry, and redelivery; see the adapter documentation for
 	// its policy.
-	Subscribe(ctx context.Context, topic string, handler EventHandler) error
+	Subscribe(ctx context.Context, topic string, handler EventHandler) (err error)
 
 	// Close gracefully disconnects from the broker, shutting down active subscribers.
-	Close(ctx context.Context) error
+	Close(ctx context.Context) (err error)
 }
 
 // Module represents a self-contained feature module that complies with Hexagonal Architecture.
@@ -299,43 +304,43 @@ type EventBus interface {
 // and wiring them through the central registry.
 //
 // Start and Stop are optional lifecycle capabilities. A module that needs to run
-// background work during startup implements Startable; a module that owns resources
-// that must be released implements Stoppable. The manager skips modules that do not
+// background work during startup implements Starter; a module that owns resources
+// that must be released implements Stopper. The manager skips modules that do not
 // implement these interfaces, so simple modules do not require no-op methods.
 type Module interface {
 	// Name returns the unique, kebab-case name of the feature module.
-	Name() string
+	Name() (name string)
 
 	// DependsOn returns the names of other modules that this module depends on.
 	// The Manager uses this list to sort the modules topologically before initialization.
-	DependsOn() []string
+	DependsOn() (deps []string)
 
 	// Init initializes the module with the registry.
 	// This is where modules register their services, register routes, and resolve dependencies.
-	Init(ctx context.Context, reg Registry) error
+	Init(ctx context.Context, reg Registry) (err error)
 }
 
-// Startable is an optional lifecycle capability for modules that begin background
+// Starter is an optional lifecycle capability for modules that begin background
 // work or listeners during startup. The manager calls Start after all modules have
 // been initialized successfully.
-type Startable interface {
-	Start(ctx context.Context) error
+type Starter interface {
+	Start(ctx context.Context) (err error)
 }
 
-// Stoppable is an optional lifecycle capability for modules that release resources
+// Stopper is an optional lifecycle capability for modules that release resources
 // during shutdown. The manager calls Stop in reverse topological order when
 // stopping the application or rolling back a failed init/start.
-type Stoppable interface {
-	Stop(ctx context.Context) error
+type Stopper interface {
+	Stop(ctx context.Context) (err error)
 }
 
-// ServiceRegistrar is the capability to register a service instance under a
+// ServiceRegisterer is the capability to register a service instance under a
 // unique name. Registrations are only permitted before the registry has finished
 // initialization.
-type ServiceRegistrar interface {
+type ServiceRegisterer interface {
 	// RegisterService registers a service implementation under a unique key (e.g. "incidents.Service").
 	// Returns ErrRegistryLocked if the registry has already finished initialization.
-	RegisterService(name string, svc interface{}) error
+	RegisterService(name string, svc interface{}) (err error)
 }
 
 // ServiceResolver is the capability to resolve a previously registered service
@@ -343,18 +348,18 @@ type ServiceRegistrar interface {
 type ServiceResolver interface {
 	// ResolveService resolves a registered service implementation by name.
 	// If the service is not found, it returns ErrServiceNotFound.
-	ResolveService(name string) (interface{}, error)
+	ResolveService(name string) (svc interface{}, err error)
 }
 
 // ServiceRegistry combines service registration and resolution.
 type ServiceRegistry interface {
-	ServiceRegistrar
+	ServiceRegisterer
 	ServiceResolver
 }
 
 // EventBusProvider is the capability to access the pluggable event bus.
 type EventBusProvider interface {
-	EventBus() EventBus
+	EventBus() (eb EventBus)
 }
 
 // ConfigProvider is the capability to unmarshal configuration values into a
@@ -362,57 +367,57 @@ type EventBusProvider interface {
 type ConfigProvider interface {
 	// GetConfig unmarshals configuration values into the target structure.
 	// This abstract config retrieval prevents features from directly reading global configurations.
-	GetConfig(target interface{}) error
+	GetConfig(target interface{}) (err error)
 }
 
 // LoggerProvider is the capability to access the system logger.
 type LoggerProvider interface {
-	Logger() *slog.Logger
+	Logger() (logger *slog.Logger)
 }
 
-// HealthCheckRegistrar is the capability to register a module health (liveness)
+// HealthCheckRegisterer is the capability to register a module health (liveness)
 // check.
 //
 // A health check answers "is this process functioning correctly?" A failing
 // health check means the process is broken and should be restarted (e.g. by
-// an orchestrator's liveness probe). Contrast this with ReadinessRegistrar,
+// an orchestrator's liveness probe). Contrast this with ReadinessRegisterer,
 // which answers "should this process currently receive traffic?" — a failing
 // readiness check means the instance should be pulled from load balancing,
 // not restarted.
-type HealthCheckRegistrar interface {
+type HealthCheckRegisterer interface {
 	// RegisterHealthCheck registers a health (liveness) check function under a
 	// unique name.
-	RegisterHealthCheck(name string, check func(context.Context) error) error
+	RegisterHealthCheck(name string, check func(context.Context) error) (err error)
 }
 
 // HealthCheckProvider exposes the registered health (liveness) checks.
 type HealthCheckProvider interface {
-	HealthChecks() map[string]func(context.Context) error
+	HealthChecks() (checks map[string]func(context.Context) error)
 }
 
-// ReadinessRegistrar is the capability to register a module readiness check.
+// ReadinessRegisterer is the capability to register a module readiness check.
 //
 // A readiness check answers "should this process currently receive traffic?"
 // A failing readiness check means the instance is temporarily unable to serve
 // requests (e.g. its database pool isn't warm yet, a dependency is
 // unreachable, a cache hasn't primed) and should be pulled from the load
 // balancer — the process itself is otherwise healthy and should not be
-// restarted. Contrast this with HealthCheckRegistrar, whose checks answer "is
+// restarted. Contrast this with HealthCheckRegisterer, whose checks answer "is
 // this process functioning correctly?" and whose failures indicate the
 // process should be restarted.
 //
 // The consumer defines what "ready" means for their service by registering
 // named check functions; Modulex only abstracts registration, aggregation,
 // and HTTP exposure (see modulex/httpx).
-type ReadinessRegistrar interface {
+type ReadinessRegisterer interface {
 	// RegisterReadinessCheck registers a readiness check function under a
 	// unique name.
-	RegisterReadinessCheck(name string, check func(context.Context) error) error
+	RegisterReadinessCheck(name string, check func(context.Context) error) (err error)
 }
 
 // ReadinessProvider exposes the registered readiness checks.
 type ReadinessProvider interface {
-	ReadinessChecks() map[string]func(context.Context) error
+	ReadinessChecks() (checks map[string]func(context.Context) error)
 }
 
 // TaskSpawner is the capability to start a supervised background task. Tasks
@@ -424,7 +429,7 @@ type TaskSpawner interface {
 	// for the task to finish. Tasks are cancelled and awaited during manager
 	// shutdown. Returns ErrRegistryLocked if the manager is stopping or stopped,
 	// or ErrDuplicateTask if a task with the same name already exists.
-	Go(ctx context.Context, taskName string, fn func(ctx context.Context) error) (*TaskHandle, error)
+	Go(ctx context.Context, taskName string, fn func(ctx context.Context) error) (handle *TaskHandle, err error)
 }
 
 // Registry manages the collection of features and cross-cutting platform components.
@@ -441,29 +446,35 @@ type Registry interface {
 	ConfigProvider
 	LoggerProvider
 	TaskSpawner
-	HealthCheckRegistrar
+	HealthCheckRegisterer
 	HealthCheckProvider
-	ReadinessRegistrar
+	ReadinessRegisterer
 	ReadinessProvider
 }
 
 // Manager implements the Registry interface and orchestrates the module lifecycles.
 type Manager struct {
-	mu              sync.RWMutex
-	stateMu         sync.Mutex
-	taskMu          sync.Mutex
-	services        map[string]interface{}
-	modules         map[string]Module
-	moduleOrder     []string
-	orderedMods     []Module
-	eventBus        EventBus
-	loggerCtx       *slog.Logger
-	configLoader    func(target interface{}) error
-	state           LifecycleState
-	tracer          Tracer
-	panicPolicy     PanicPolicy
-	tasks           map[string]*TaskHandle
-	taskErrs        []error
+	mu           sync.RWMutex
+	stateMu      sync.Mutex
+	taskMu       sync.Mutex
+	services     map[string]interface{}
+	modules      map[string]Module
+	moduleOrder  []string
+	orderedMods  []Module
+	eventBus     EventBus
+	loggerCtx    *slog.Logger
+	configLoader func(target interface{}) error
+	state        LifecycleState
+	tracer       Tracer
+	panicPolicy  PanicPolicy
+	tasks        map[string]*TaskHandle
+	taskErrs     []error
+	// taskCtx/taskCancel are not request-scoped data threaded through a call
+	// chain; together they are the current cancellation "generation" shared by
+	// every supervised task started via Go, protected by taskMu, and swapped
+	// out wholesale by resetTaskCtx after a shutdown. That mutable, lockable
+	// pair is intentionally kept as Manager state rather than passed as
+	// parameters, which is why it remains a struct field.
 	taskCtx         context.Context
 	taskCancel      context.CancelFunc
 	healthMu        sync.RWMutex
@@ -749,6 +760,11 @@ func (m *Manager) Go(ctx context.Context, taskName string, fn func(ctx context.C
 	handle := &TaskHandle{name: taskName, done: make(chan struct{})}
 	m.tasks[taskName] = handle
 
+	// taskCancel is deliberately NOT deferred here: its lifetime is the spawned
+	// task goroutine below, not this function. Go returns immediately after
+	// spawning the goroutine, so a defer at this scope would cancel taskCtx
+	// (and thus the task) before or as it starts running. taskCancel is called
+	// from the goroutine's own completion defer once fn has returned.
 	taskCtx, taskCancel := context.WithCancel(m.taskCtx)
 	m.taskMu.Unlock()
 
@@ -972,7 +988,7 @@ func (m *Manager) StartModules(ctx context.Context) error {
 }
 
 // rollback stops modules in reverse order during failure recovery. Only
-// modules that implement Stoppable are stopped. Errors from individual stops
+// modules that implement Stopper are stopped. Errors from individual stops
 // are joined together.
 func (m *Manager) rollback(ctx context.Context, mods []Module, phase string) error {
 	var errs []error
@@ -985,20 +1001,20 @@ func (m *Manager) rollback(ctx context.Context, mods []Module, phase string) err
 	return errors.Join(errs...)
 }
 
-// startModule invokes mod.Start if the module implements Startable. Modules that
-// do not implement Startable are skipped without error.
+// startModule invokes mod.Start if the module implements Starter. Modules that
+// do not implement Starter are skipped without error.
 func (m *Manager) startModule(ctx context.Context, mod Module) error {
-	if s, ok := mod.(Startable); ok {
+	if s, ok := mod.(Starter); ok {
 		return s.Start(ctx)
 	}
 	return nil
 }
 
-// stopModule invokes mod.Stop if the module implements Stoppable. Modules that do
-// not implement Stoppable are skipped without error. The phase string is used for
+// stopModule invokes mod.Stop if the module implements Stopper. Modules that do
+// not implement Stopper are skipped without error. The phase string is used for
 // error messages.
 func (m *Manager) stopModule(ctx context.Context, mod Module, phase string) error {
-	if s, ok := mod.(Stoppable); ok {
+	if s, ok := mod.(Stopper); ok {
 		if err := s.Stop(ctx); err != nil {
 			m.loggerCtx.ErrorContext(ctx, "failed to stop module",
 				slog.String("module", mod.Name()),

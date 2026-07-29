@@ -61,8 +61,8 @@ func (_c *MockRegistry_EventBus_Call) Run(run func()) *MockRegistry_EventBus_Cal
 	return _c
 }
 
-func (_c *MockRegistry_EventBus_Call) Return(_a0 modulex.EventBus) *MockRegistry_EventBus_Call {
-	_c.Call.Return(_a0)
+func (_c *MockRegistry_EventBus_Call) Return(eb modulex.EventBus) *MockRegistry_EventBus_Call {
+	_c.Call.Return(eb)
 	return _c
 }
 
@@ -107,8 +107,8 @@ func (_c *MockRegistry_GetConfig_Call) Run(run func(target interface{})) *MockRe
 	return _c
 }
 
-func (_c *MockRegistry_GetConfig_Call) Return(_a0 error) *MockRegistry_GetConfig_Call {
-	_c.Call.Return(_a0)
+func (_c *MockRegistry_GetConfig_Call) Return(err error) *MockRegistry_GetConfig_Call {
+	_c.Call.Return(err)
 	return _c
 }
 
@@ -167,8 +167,8 @@ func (_c *MockRegistry_Go_Call) Run(run func(ctx context.Context, taskName strin
 	return _c
 }
 
-func (_c *MockRegistry_Go_Call) Return(_a0 *modulex.TaskHandle, _a1 error) *MockRegistry_Go_Call {
-	_c.Call.Return(_a0, _a1)
+func (_c *MockRegistry_Go_Call) Return(handle *modulex.TaskHandle, err error) *MockRegistry_Go_Call {
+	_c.Call.Return(handle, err)
 	return _c
 }
 
@@ -214,8 +214,8 @@ func (_c *MockRegistry_HealthChecks_Call) Run(run func()) *MockRegistry_HealthCh
 	return _c
 }
 
-func (_c *MockRegistry_HealthChecks_Call) Return(_a0 map[string]func(context.Context) error) *MockRegistry_HealthChecks_Call {
-	_c.Call.Return(_a0)
+func (_c *MockRegistry_HealthChecks_Call) Return(checks map[string]func(context.Context) error) *MockRegistry_HealthChecks_Call {
+	_c.Call.Return(checks)
 	return _c
 }
 
@@ -261,8 +261,8 @@ func (_c *MockRegistry_Logger_Call) Run(run func()) *MockRegistry_Logger_Call {
 	return _c
 }
 
-func (_c *MockRegistry_Logger_Call) Return(_a0 *slog.Logger) *MockRegistry_Logger_Call {
-	_c.Call.Return(_a0)
+func (_c *MockRegistry_Logger_Call) Return(logger *slog.Logger) *MockRegistry_Logger_Call {
+	_c.Call.Return(logger)
 	return _c
 }
 
@@ -308,8 +308,8 @@ func (_c *MockRegistry_ReadinessChecks_Call) Run(run func()) *MockRegistry_Readi
 	return _c
 }
 
-func (_c *MockRegistry_ReadinessChecks_Call) Return(_a0 map[string]func(context.Context) error) *MockRegistry_ReadinessChecks_Call {
-	_c.Call.Return(_a0)
+func (_c *MockRegistry_ReadinessChecks_Call) Return(checks map[string]func(context.Context) error) *MockRegistry_ReadinessChecks_Call {
+	_c.Call.Return(checks)
 	return _c
 }
 
@@ -355,8 +355,8 @@ func (_c *MockRegistry_RegisterHealthCheck_Call) Run(run func(name string, check
 	return _c
 }
 
-func (_c *MockRegistry_RegisterHealthCheck_Call) Return(_a0 error) *MockRegistry_RegisterHealthCheck_Call {
-	_c.Call.Return(_a0)
+func (_c *MockRegistry_RegisterHealthCheck_Call) Return(err error) *MockRegistry_RegisterHealthCheck_Call {
+	_c.Call.Return(err)
 	return _c
 }
 
@@ -402,8 +402,8 @@ func (_c *MockRegistry_RegisterReadinessCheck_Call) Run(run func(name string, ch
 	return _c
 }
 
-func (_c *MockRegistry_RegisterReadinessCheck_Call) Return(_a0 error) *MockRegistry_RegisterReadinessCheck_Call {
-	_c.Call.Return(_a0)
+func (_c *MockRegistry_RegisterReadinessCheck_Call) Return(err error) *MockRegistry_RegisterReadinessCheck_Call {
+	_c.Call.Return(err)
 	return _c
 }
 
@@ -449,8 +449,8 @@ func (_c *MockRegistry_RegisterService_Call) Run(run func(name string, svc inter
 	return _c
 }
 
-func (_c *MockRegistry_RegisterService_Call) Return(_a0 error) *MockRegistry_RegisterService_Call {
-	_c.Call.Return(_a0)
+func (_c *MockRegistry_RegisterService_Call) Return(err error) *MockRegistry_RegisterService_Call {
+	_c.Call.Return(err)
 	return _c
 }
 
@@ -507,8 +507,8 @@ func (_c *MockRegistry_ResolveService_Call) Run(run func(name string)) *MockRegi
 	return _c
 }
 
-func (_c *MockRegistry_ResolveService_Call) Return(_a0 interface{}, _a1 error) *MockRegistry_ResolveService_Call {
-	_c.Call.Return(_a0, _a1)
+func (_c *MockRegistry_ResolveService_Call) Return(svc interface{}, err error) *MockRegistry_ResolveService_Call {
+	_c.Call.Return(svc, err)
 	return _c
 }
 

@@ -14,12 +14,12 @@ import (
 // HTTPServer exposes the notification service over HTTP. It keeps HTTP
 // concerns (encoding, status codes) separate from business logic.
 type HTTPServer struct {
-	svc    ports.Service
+	svc    ports.Sender
 	logger *slog.Logger
 }
 
 // NewHTTPServer creates an HTTP adapter for the notification service.
-func NewHTTPServer(svc ports.Service, logger *slog.Logger) *HTTPServer {
+func NewHTTPServer(svc ports.Sender, logger *slog.Logger) *HTTPServer {
 	if logger == nil {
 		logger = slog.Default()
 	}

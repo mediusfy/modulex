@@ -7,7 +7,7 @@ import (
 	"log/slog"
 )
 
-// NotificationService implements ports.Service with in-process delivery.
+// NotificationService implements ports.Sender with in-process delivery.
 type NotificationService struct {
 	logger *slog.Logger
 }
@@ -23,7 +23,7 @@ func New(logger *slog.Logger) *NotificationService {
 	return &NotificationService{logger: logger}
 }
 
-// Send implements ports.Service.
+// Send implements ports.Sender.
 func (s *NotificationService) Send(ctx context.Context, message string) error {
 	if message == "" {
 		return ErrEmptyMessage

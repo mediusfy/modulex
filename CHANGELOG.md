@@ -36,6 +36,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Endpoints are now scheme-sanitized, and loopback hosts default to insecure
   when unspecified.
 
+### Changed
+
+- SonarCloud code-smell cleanup (MOD-52): renamed single-method capability
+  interfaces to follow Go's `-er` naming convention (`Startable` ->
+  `Starter`, `Stoppable` -> `Stopper`, `ServiceRegistrar` ->
+  `ServiceRegisterer`, `HealthCheckRegistrar` -> `HealthCheckRegisterer`,
+  `ReadinessRegistrar` -> `ReadinessRegisterer`); no method signatures
+  changed. See the migration guide for details. Also addressed duplicate
+  string literals, grouped same-type parameters, added missing doc comments,
+  and tightened shell script conditionals; no behavior changes.
+
 ## [0.5.2] - 2026-07-29
 
 ### Fixed

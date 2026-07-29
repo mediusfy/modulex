@@ -15,7 +15,7 @@ type typedSvc struct {
 	value string
 }
 
-type typedSvcInterface interface {
+type typedSvcValuer interface {
 	Value() string
 }
 
@@ -98,12 +98,12 @@ func TestTypedServiceWiring(t *testing.T) {
 		{
 			name: "Provide and Resolve interface type",
 			act: func(t *testing.T, manager *modulex.Manager) error {
-				key := modulex.NewKey[typedSvcInterface]("interface.Service")
-				return modulex.Provide(manager, key, typedSvcInterface(&typedSvc{value: "iface"}))
+				key := modulex.NewKey[typedSvcValuer]("interface.Service")
+				return modulex.Provide(manager, key, typedSvcValuer(&typedSvc{value: "iface"}))
 			},
 			assert: func(t *testing.T, manager *modulex.Manager, err error) {
 				require.NoError(t, err)
-				key := modulex.NewKey[typedSvcInterface]("interface.Service")
+				key := modulex.NewKey[typedSvcValuer]("interface.Service")
 				svc, err := modulex.Resolve(manager, key)
 				require.NoError(t, err)
 				assert.Equal(t, "iface", svc.Value())
@@ -112,12 +112,12 @@ func TestTypedServiceWiring(t *testing.T) {
 		{
 			name: "Provide with explicit type argument allows implicit interface conversion",
 			act: func(t *testing.T, manager *modulex.Manager) error {
-				key := modulex.NewKey[typedSvcInterface]("implicit.Service")
-				return modulex.Provide[typedSvcInterface](manager, key, &typedSvc{value: "implicit"})
+				key := modulex.NewKey[typedSvcValuer]("implicit.Service")
+				return modulex.Provide[typedSvcValuer](manager, key, &typedSvc{value: "implicit"})
 			},
 			assert: func(t *testing.T, manager *modulex.Manager, err error) {
 				require.NoError(t, err)
-				svc, err := modulex.Resolve(manager, modulex.NewKey[typedSvcInterface]("implicit.Service"))
+				svc, err := modulex.Resolve(manager, modulex.NewKey[typedSvcValuer]("implicit.Service"))
 				require.NoError(t, err)
 				assert.Equal(t, "implicit", svc.Value())
 			},

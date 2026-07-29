@@ -54,8 +54,8 @@ func (_c *MockServiceRegistry_RegisterService_Call) Run(run func(name string, sv
 	return _c
 }
 
-func (_c *MockServiceRegistry_RegisterService_Call) Return(_a0 error) *MockServiceRegistry_RegisterService_Call {
-	_c.Call.Return(_a0)
+func (_c *MockServiceRegistry_RegisterService_Call) Return(err error) *MockServiceRegistry_RegisterService_Call {
+	_c.Call.Return(err)
 	return _c
 }
 
@@ -112,8 +112,8 @@ func (_c *MockServiceRegistry_ResolveService_Call) Run(run func(name string)) *M
 	return _c
 }
 
-func (_c *MockServiceRegistry_ResolveService_Call) Return(_a0 interface{}, _a1 error) *MockServiceRegistry_ResolveService_Call {
-	_c.Call.Return(_a0, _a1)
+func (_c *MockServiceRegistry_ResolveService_Call) Return(svc interface{}, err error) *MockServiceRegistry_ResolveService_Call {
+	_c.Call.Return(svc, err)
 	return _c
 }
 

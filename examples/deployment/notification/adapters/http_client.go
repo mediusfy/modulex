@@ -13,7 +13,7 @@ import (
 	"github.com/mediusfy/modulex/examples/deployment/notification/ports"
 )
 
-// HTTPClient implements ports.Service by calling a remote notification service
+// HTTPClient implements ports.Sender by calling a remote notification service
 // over HTTP. It demonstrates how a standalone process can consume a feature
 // without importing its implementation.
 type HTTPClient struct {
@@ -35,7 +35,7 @@ func NewHTTPClient(baseURL string, client *http.Client) (*HTTPClient, error) {
 	return &HTTPClient{baseURL: strings.TrimRight(baseURL, "/"), client: client}, nil
 }
 
-// Send implements ports.Service by forwarding the message to the remote service.
+// Send implements ports.Sender by forwarding the message to the remote service.
 func (c *HTTPClient) Send(ctx context.Context, message string) error {
 	reqBody, err := json.Marshal(SendRequest{Message: message})
 	if err != nil {
@@ -61,4 +61,4 @@ func (c *HTTPClient) Send(ctx context.Context, message string) error {
 	return nil
 }
 
-var _ ports.Service = (*HTTPClient)(nil)
+var _ ports.Sender = (*HTTPClient)(nil)

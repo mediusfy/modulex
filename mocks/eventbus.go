@@ -58,8 +58,8 @@ func (_c *MockEventBus_Close_Call) Run(run func(ctx context.Context)) *MockEvent
 	return _c
 }
 
-func (_c *MockEventBus_Close_Call) Return(_a0 error) *MockEventBus_Close_Call {
-	_c.Call.Return(_a0)
+func (_c *MockEventBus_Close_Call) Return(err error) *MockEventBus_Close_Call {
+	_c.Call.Return(err)
 	return _c
 }
 
@@ -106,8 +106,8 @@ func (_c *MockEventBus_Publish_Call) Run(run func(ctx context.Context, topic str
 	return _c
 }
 
-func (_c *MockEventBus_Publish_Call) Return(_a0 error) *MockEventBus_Publish_Call {
-	_c.Call.Return(_a0)
+func (_c *MockEventBus_Publish_Call) Return(err error) *MockEventBus_Publish_Call {
+	_c.Call.Return(err)
 	return _c
 }
 
@@ -154,8 +154,8 @@ func (_c *MockEventBus_Subscribe_Call) Run(run func(ctx context.Context, topic s
 	return _c
 }
 
-func (_c *MockEventBus_Subscribe_Call) Return(_a0 error) *MockEventBus_Subscribe_Call {
-	_c.Call.Return(_a0)
+func (_c *MockEventBus_Subscribe_Call) Return(err error) *MockEventBus_Subscribe_Call {
+	_c.Call.Return(err)
 	return _c
 }
 

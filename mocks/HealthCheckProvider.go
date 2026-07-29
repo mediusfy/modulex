@@ -58,8 +58,8 @@ func (_c *MockHealthCheckProvider_HealthChecks_Call) Run(run func()) *MockHealth
 	return _c
 }
 
-func (_c *MockHealthCheckProvider_HealthChecks_Call) Return(_a0 map[string]func(context.Context) error) *MockHealthCheckProvider_HealthChecks_Call {
-	_c.Call.Return(_a0)
+func (_c *MockHealthCheckProvider_HealthChecks_Call) Return(checks map[string]func(context.Context) error) *MockHealthCheckProvider_HealthChecks_Call {
+	_c.Call.Return(checks)
 	return _c
 }
 

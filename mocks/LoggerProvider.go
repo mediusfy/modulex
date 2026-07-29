@@ -58,8 +58,8 @@ func (_c *MockLoggerProvider_Logger_Call) Run(run func()) *MockLoggerProvider_Lo
 	return _c
 }
 
-func (_c *MockLoggerProvider_Logger_Call) Return(_a0 *slog.Logger) *MockLoggerProvider_Logger_Call {
-	_c.Call.Return(_a0)
+func (_c *MockLoggerProvider_Logger_Call) Return(logger *slog.Logger) *MockLoggerProvider_Logger_Call {
+	_c.Call.Return(logger)
 	return _c
 }
 

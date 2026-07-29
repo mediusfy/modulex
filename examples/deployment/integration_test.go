@@ -96,15 +96,13 @@ func TestNotificationModuleWithoutRouter(t *testing.T) {
 }
 
 type sendRecorder struct {
-	svc         ports.Service
+	svc         ports.Sender
 	called      bool
 	lastMessage string
-	lastContext context.Context
 }
 
 func (r *sendRecorder) Send(ctx context.Context, message string) error {
 	r.called = true
 	r.lastMessage = message
-	r.lastContext = ctx
 	return r.svc.Send(ctx, message)
 }

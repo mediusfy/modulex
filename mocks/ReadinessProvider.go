@@ -58,8 +58,8 @@ func (_c *MockReadinessProvider_ReadinessChecks_Call) Run(run func()) *MockReadi
 	return _c
 }
 
-func (_c *MockReadinessProvider_ReadinessChecks_Call) Return(_a0 map[string]func(context.Context) error) *MockReadinessProvider_ReadinessChecks_Call {
-	_c.Call.Return(_a0)
+func (_c *MockReadinessProvider_ReadinessChecks_Call) Return(checks map[string]func(context.Context) error) *MockReadinessProvider_ReadinessChecks_Call {
+	_c.Call.Return(checks)
 	return _c
 }
 

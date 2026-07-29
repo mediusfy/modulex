@@ -37,7 +37,7 @@ type MockConfig struct {
 	Value string `json:"value"`
 }
 
-type MockService interface {
+type MockDoer interface {
 	DoSomething() string
 }
 
@@ -60,7 +60,7 @@ type mockModuleConfig struct {
 }
 
 // testModule is a test double that implements modulex.Module and the optional
-// Startable/Stoppable lifecycle capabilities. It is used in place of mockery
+// Starter/Stopper lifecycle capabilities. It is used in place of mockery
 // mocks because Start and Stop are no longer part of the base Module interface.
 type testModule struct {
 	cfg mockModuleConfig
@@ -107,7 +107,7 @@ func (m *initOnlyModule) Name() string                                 { return 
 func (m *initOnlyModule) DependsOn() []string                          { return m.deps }
 func (m *initOnlyModule) Init(context.Context, modulex.Registry) error { return nil }
 
-// startOnlyModule implements Module and Startable but not Stoppable.
+// startOnlyModule implements Module and Starter but not Stopper.
 type startOnlyModule struct {
 	name    string
 	started bool
@@ -118,7 +118,7 @@ func (m *startOnlyModule) DependsOn() []string                          { return
 func (m *startOnlyModule) Init(context.Context, modulex.Registry) error { return nil }
 func (m *startOnlyModule) Start(context.Context) error                  { m.started = true; return nil }
 
-// stopOnlyModule implements Module and Stoppable but not Startable.
+// stopOnlyModule implements Module and Stopper but not Starter.
 type stopOnlyModule struct {
 	name    string
 	stopped bool
@@ -273,7 +273,7 @@ func TestManagerLifecycleAndWiring(t *testing.T) {
 	// Verify service registration and resolution
 	svc, err := manager.ResolveService("module-a.Service")
 	require.NoError(t, err)
-	mockSvc, ok := svc.(MockService)
+	mockSvc, ok := svc.(MockDoer)
 	require.True(t, ok)
 	assert.Equal(t, "mocked", mockSvc.DoSomething())
 
@@ -301,16 +301,16 @@ func TestManagerImplementsCapabilityInterfaces(t *testing.T) {
 
 	// Compile-time assertions that Manager implements the narrower capability
 	// interfaces as well as the full Registry composite.
-	var _ modulex.ServiceRegistrar = manager
+	var _ modulex.ServiceRegisterer = manager
 	var _ modulex.ServiceResolver = manager
 	var _ modulex.ServiceRegistry = manager
 	var _ modulex.EventBusProvider = manager
 	var _ modulex.ConfigProvider = manager
 	var _ modulex.LoggerProvider = manager
 	var _ modulex.TaskSpawner = manager
-	var _ modulex.HealthCheckRegistrar = manager
+	var _ modulex.HealthCheckRegisterer = manager
 	var _ modulex.HealthCheckProvider = manager
-	var _ modulex.ReadinessRegistrar = manager
+	var _ modulex.ReadinessRegisterer = manager
 	var _ modulex.ReadinessProvider = manager
 	var _ modulex.Registry = manager
 }
@@ -1472,7 +1472,7 @@ func TestStopOnlyModuleStopsButDoesNotStart(t *testing.T) {
 	assert.Equal(t, modulex.StateStopped, manager.State())
 }
 
-func TestInitRollbackSkipsModulesWithoutStoppable(t *testing.T) {
+func TestInitRollbackSkipsModulesWithoutStopper(t *testing.T) {
 	manager := newTestManager(nil)
 
 	initOnly := &initOnlyModule{name: "init-only"}
@@ -1490,7 +1490,7 @@ func TestInitRollbackSkipsModulesWithoutStoppable(t *testing.T) {
 	assert.Equal(t, modulex.StateStopped, manager.State())
 }
 
-func TestStartRollbackSkipsModulesWithoutStoppable(t *testing.T) {
+func TestStartRollbackSkipsModulesWithoutStopper(t *testing.T) {
 	manager := newTestManager(nil)
 
 	startOnly := &startOnlyModule{name: "start-only"}

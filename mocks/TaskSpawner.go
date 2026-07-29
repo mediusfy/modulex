@@ -72,8 +72,8 @@ func (_c *MockTaskSpawner_Go_Call) Run(run func(ctx context.Context, taskName st
 	return _c
 }
 
-func (_c *MockTaskSpawner_Go_Call) Return(_a0 *modulex.TaskHandle, _a1 error) *MockTaskSpawner_Go_Call {
-	_c.Call.Return(_a0, _a1)
+func (_c *MockTaskSpawner_Go_Call) Return(handle *modulex.TaskHandle, err error) *MockTaskSpawner_Go_Call {
+	_c.Call.Return(handle, err)
 	return _c
 }
 

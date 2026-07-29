@@ -17,18 +17,18 @@ packages:
       Registry:
         config:
           structname: MockRegistry
-      Startable:
+      Starter:
         config:
-          structname: MockStartable
-      Stoppable:
+          structname: MockStarter
+      Stopper:
         config:
-          structname: MockStoppable
+          structname: MockStopper
       ServiceRegistry:
         config:
           structname: MockServiceRegistry
-      ServiceRegistrar:
+      ServiceRegisterer:
         config:
-          structname: MockServiceRegistrar
+          structname: MockServiceRegisterer
       ServiceResolver:
         config:
           structname: MockServiceResolver
@@ -44,15 +44,15 @@ packages:
       TaskSpawner:
         config:
           structname: MockTaskSpawner
-      HealthCheckRegistrar:
+      HealthCheckRegisterer:
         config:
-          structname: MockHealthCheckRegistrar
+          structname: MockHealthCheckRegisterer
       HealthCheckProvider:
         config:
           structname: MockHealthCheckProvider
-      ReadinessRegistrar:
+      ReadinessRegisterer:
         config:
-          structname: MockReadinessRegistrar
+          structname: MockReadinessRegisterer
       ReadinessProvider:
         config:
           structname: MockReadinessProvider
