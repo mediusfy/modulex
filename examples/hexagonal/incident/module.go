@@ -25,17 +25,15 @@ func NewModule() *Module {
 	return &Module{}
 }
 
-// Name implements modulex.Module.
 func (m *Module) Name() string {
 	return "incident"
 }
 
-// DependsOn implements modulex.Module.
 func (m *Module) DependsOn() []string {
-	return nil // incident module has no dependencies on other business modules
+	return nil
 }
 
-// Init implements modulex.Module. It wires repositories, services, registers service locator ports, and routes.
+// Init wires repositories, services, registers service locator ports, and routes.
 func (m *Module) Init(ctx context.Context, reg modulex.Registry) error {
 	m.reg = reg
 
@@ -100,7 +98,6 @@ func (m *Module) Init(ctx context.Context, reg modulex.Registry) error {
 	return nil
 }
 
-// Start implements modulex.Startable.
 func (m *Module) Start(ctx context.Context) error {
 	if m.reg == nil {
 		return nil
@@ -123,7 +120,6 @@ func (m *Module) Start(ctx context.Context) error {
 	return err
 }
 
-// Stop implements modulex.Stoppable.
 func (m *Module) Stop(ctx context.Context) error {
 	return nil
 }

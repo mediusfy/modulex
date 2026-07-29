@@ -138,7 +138,7 @@ cancellation.
 
 ### When to use
 
-When you want explicit lifecycle orchestration for modular Go applications and
+When you want explicit lifecycle orchestration for modular applications and
 prefer constructor injection as the default wiring style, with a typed registry
 as an optional escape hatch.
 

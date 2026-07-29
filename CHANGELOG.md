@@ -7,6 +7,137 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `Manager.InitModules` and `Manager.StartModules` now share a common
+  phase-runner helper, eliminating duplicated lifecycle-loop logic flagged by
+  SonarCloud.
+- `rabbitmq.EventBus.Subscribe` is refactored into `checkClosed`,
+  `startConsumer`, `registerConsumer`, and `consumeLoop` helpers.
+- `nats.EventBus.Subscribe` no longer spawns a per-subscription goroutine to
+  unsubscribe on context cancellation; `Close` already unsubscribes all
+  subscriptions.
+
+### Changed
+
+- `app.Run` stores the user-provided base context as a function rather than a
+  `context.Context` value to avoid the context-in-struct anti-pattern.
+- Bumped `github.com/rabbitmq/amqp091-go` from v1.12.0 to v1.13.0.
+- Bumped `ossf/scorecard-action` from v2.4.3 to v2.4.4.
+
+### Added
+
+- `sonar-project.properties` for SonarCloud analysis.
+- `docs/reviews/28-07-code_review.md`: moved the code-review artifact out of
+  the repository root.
+
+## [0.5.1] - 2026-07-28
+
+### Fixed
+
+- `rabbitmq.EventBus.Close` is now idempotent; calling it more than once no
+  longer attempts redundant `ch.Cancel` calls.
+- `rabbitmq.EventBus.Subscribe` removes the TOCTOU window between the initial
+  closed check and consumer registration.
+- `nats.EventBus.Subscribe` no longer spawns a redundant goroutine per
+  subscription; `Close` unsubscribes all subscriptions and cancels their
+  contexts.
+- `otel.NewProviderFromEnv` returns an error for a malformed
+  `OTEL_TRACES_SAMPLER_ARG` instead of silently defaulting to `1.0`
+  (always-sample).
+
+### Changed
+
+- Cleaned up redundant doc comments and clarified `EventBus` / `EventHandler`
+  semantics in `modulex.go`.
+- Refactored `chi/chi_test.go` error-path tests into a single table-driven
+  test.
+- Updated wording in `CODING_STANDARDS.md`, `Makefile`, `README.md`, and
+  planning docs.
+- Minor `examples/` cleanups.
+
+### Added
+
+- `28-07-code_review.md` at the repository root: documented the v0.5.0
+  code-review findings and their resolutions.
+- `docs/adr/adr-0031-modulex-value-and-specialization-roadmap.md`.
+- `docs/adr/adr-0032-agent-first-development-experience.md`.
+- `modulex/app` package referenced from `doc.go`.
+
+## [0.5.0] - 2026-07-28
+
+### Changed
+
+- **Breaking:** `nats.NewEventBus` and `rabbitmq.NewEventBus` now accept
+  optional adapter options. Existing calls must continue to compile by adding
+  no options or passing the new options explicitly; callers using function
+  values must update their signatures.
+
+### Fixed
+
+- `app.Run` now defaults a nil logger safely, and manager startup failure paths
+  close the configured EventBus after rolling back modules.
+- Module and service registration now coordinates lifecycle-state checks with
+  the mutation lock, preventing registration races during initialization.
+- `WithTypedConfig` rejects nil typed pointers instead of panicking.
+- Health/readiness check names and service lookup names now use consistent
+  whitespace validation and normalization.
+- NATS, RabbitMQ, Watermill, and JetStream adapters reject cancelled publish or
+  subscribe contexts before using the broker client; subscriptions reject nil
+  handlers, and NATS subscriptions now follow context cancellation.
+- `rabbitmq.EventBus.Subscribe` no longer auto-acks messages before the
+  handler runs. It now acks on success and nacks without requeue (logging the
+  error) on failure, so a failing handler no longer silently drops the
+  message with no visibility.
+- `nats.EventBus.Subscribe` now logs handler errors instead of discarding
+  them silently. NATS core has no ack/nack semantics, so the message still
+  cannot be redelivered, but the failure is no longer invisible.
+- `watermill.EventBus.Subscribe`/`Close` no longer track per-subscription
+  cancel funcs by comparing `fmt.Sprintf("%p", ...)` of `context.CancelFunc`
+  values, which is unreliable since closures from the same call site can
+  format identically. Cancel funcs are now tracked by a unique subscription
+  ID.
+- RabbitMQ EventBus shutdown now rejects new subscriptions after closing,
+  waits for active consumers without racing registration, and returns the
+  caller's context cancellation or deadline when handlers do not finish.
+
+### Added
+
+- `rabbitmq.WithLogger` and `nats.WithLogger` options to configure the
+  `*slog.Logger` used to report subscribe-handler errors (defaults to
+  `slog.Default()`).
+- A dedicated `integration-test` CI job that runs the RabbitMQ adapter's
+  integration tests against a real broker service container. Previously
+  these tests always skipped in CI since no broker was reachable.
+- `TestEndToEnd_FullStackLifecycle` (`e2e_test.go`): an end-to-end test
+  composing `Manager`, `chi`, `httpx` (health/readiness + `Serve`), `otel`
+  tracing, and the `watermill` `EventBus` through a full
+  Init→Start→exercise→Stop lifecycle.
+- `modulex/app`: a new package providing `Run(logger, configLoader, modules,
+  opts...)`, an opinionated bootstrap helper that owns manager construction,
+  module registration, signal-aware context creation, and the full
+  Init→Start→wait→Stop lifecycle — removing the ~30-line skeleton every
+  service entrypoint otherwise hand-writes. Configurable via
+  `WithContext`, `WithSignals`, `WithShutdownTimeout`, `WithManagerOptions`,
+  and `WithSetup`. See `examples/bootstrap`.
+- `modulex.WithTypedConfig[T any](cfg T) ManagerOption`: removes the
+  hand-written type-assert-and-copy closure every `WithConfigLoader` caller
+  otherwise repeats. Returns `ErrConfigTypeMismatch` from `GetConfig` when
+  called with a target that isn't `*T`.
+- `otel.NewProviderFromEnv(serviceName string, opts ...ProviderOption)`: an
+  opt-in helper that builds an OTLP-exporting `*sdktrace.TracerProvider` from
+  standard `OTEL_EXPORTER_OTLP_*` environment variables (exporter
+  protocol/endpoint, sampling ratio, resource attributes) — the generic
+  OTLP-provider-construction boilerplate every OTLP-exporting service
+  otherwise hand-rolls. New `go.mod` dependencies:
+  `go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc` and
+  `.../otlptracehttp`.
+- `nats.JetStreamEventBus`: a new, deliberately publish-only `EventBus`
+  implementation backed by NATS JetStream, for services that need
+  acknowledged publishing but not JetStream consumption (which requires
+  substantially more configuration than the `EventBus` interface can
+  express). `Subscribe` returns `ErrJetStreamSubscribeUnsupported`.
+
 ## [0.4.2] - 2026-07-22
 
 ### Fixed

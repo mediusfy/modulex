@@ -65,6 +65,12 @@ var (
 	// ErrInvalidPanicPolicy is returned by NewManager when WithPanicPolicy is
 	// given a value outside the defined PanicPolicy enum.
 	ErrInvalidPanicPolicy = errors.New("invalid panic policy")
+
+	// ErrInvalidHealthCheckName is returned when a health check name is empty.
+	ErrInvalidHealthCheckName = errors.New("health check name must not be empty")
+
+	// ErrInvalidReadinessCheckName is returned when a readiness check name is empty.
+	ErrInvalidReadinessCheckName = errors.New("readiness check name must not be empty")
 )
 
 // LifecycleState represents the current phase of the Manager's lifecycle.
@@ -147,7 +153,6 @@ type TaskHandle struct {
 	err  error
 }
 
-// Name returns the task name.
 func (h *TaskHandle) Name() string { return h.name }
 
 // Wait blocks until the task finishes and returns its final error.
@@ -184,11 +189,8 @@ type Tracer interface {
 
 // SpanContext is an opaque span context used for trace propagation.
 type SpanContext interface {
-	// IsValid reports whether the span context identifies a valid span.
 	IsValid() bool
-	// TraceID returns the trace identifier.
 	TraceID() string
-	// SpanID returns the span identifier.
 	SpanID() string
 }
 
@@ -202,21 +204,18 @@ type Span interface {
 	SetAttributes(attrs map[string]any)
 }
 
-// noopSpanContext is a no-op SpanContext implementation.
 type noopSpanContext struct{}
 
 func (noopSpanContext) IsValid() bool   { return false }
 func (noopSpanContext) TraceID() string { return "" }
 func (noopSpanContext) SpanID() string  { return "" }
 
-// noopSpan is a no-op Span implementation.
 type noopSpan struct{}
 
 func (noopSpan) End()                               {}
 func (noopSpan) RecordError(err error)              {}
 func (noopSpan) SetAttributes(attrs map[string]any) {}
 
-// noopTracer is a no-op Tracer implementation.
 type noopTracer struct{}
 
 func (noopTracer) Start(ctx context.Context, spanName string, attrs map[string]any) (context.Context, Span) {
@@ -234,19 +233,23 @@ func (noopTracer) ContextWithSpanContext(ctx context.Context, sc SpanContext) co
 // ManagerOption configures a Manager during construction.
 type ManagerOption func(*Manager)
 
-// WithPanicPolicy sets the panic policy for supervised background tasks.
+// WithEventBus configures the pluggable event bus. If nil, a no-op event bus
+// is used so event publishing remains optional.
 func WithEventBus(eb EventBus) ManagerOption {
 	return func(m *Manager) {
 		m.eventBus = eb
 	}
 }
 
+// WithLogger configures the logger used by the manager and its modules. If
+// nil, slog.Default() is used.
 func WithLogger(logger *slog.Logger) ManagerOption {
 	return func(m *Manager) {
 		m.loggerCtx = logger
 	}
 }
 
+// WithPanicPolicy sets the panic policy for supervised background tasks.
 func WithPanicPolicy(policy PanicPolicy) ManagerOption {
 	return func(m *Manager) {
 		m.panicPolicy = policy
@@ -270,7 +273,10 @@ func WithTracer(tracer Tracer) ManagerOption {
 	}
 }
 
-// EventHandler is a generic callback function signature for incoming events.
+// EventHandler processes an event delivered by an EventBus. The meaning of a
+// returned error depends on the concrete adapter: some adapters ack/nack based
+// on the error, others only log it. Callers coding against the EventBus
+// abstraction should not assume specific retry or redelivery semantics.
 type EventHandler func(ctx context.Context, payload []byte) error
 
 // EventBus abstracts the underlying message broker (NATS, Kafka, RabbitMQ, etc.).
@@ -278,7 +284,10 @@ type EventBus interface {
 	// Publish sends a payload to a specific topic/subject.
 	Publish(ctx context.Context, topic string, payload []byte) error
 
-	// Subscribe listens to a topic and invokes the handler when an event is received.
+	// Subscribe listens to a topic and invokes the handler when an event is
+	// received. The adapter determines how handler errors affect
+	// acknowledgment, retry, and redelivery; see the adapter documentation for
+	// its policy.
 	Subscribe(ctx context.Context, topic string, handler EventHandler) error
 
 	// Close gracefully disconnects from the broker, shutting down active subscribers.
@@ -345,7 +354,6 @@ type ServiceRegistry interface {
 
 // EventBusProvider is the capability to access the pluggable event bus.
 type EventBusProvider interface {
-	// EventBus returns the pluggable, configured event bus abstraction.
 	EventBus() EventBus
 }
 
@@ -359,12 +367,9 @@ type ConfigProvider interface {
 
 // LoggerProvider is the capability to access the system logger.
 type LoggerProvider interface {
-	// Logger returns the system logger.
 	Logger() *slog.Logger
 }
 
-// TaskSpawner is the capability to start a supervised background task. Tasks
-// receive a lifecycle-owned context and are cancelled during shutdown.
 // HealthCheckRegistrar is the capability to register a module health (liveness)
 // check.
 //
@@ -382,7 +387,6 @@ type HealthCheckRegistrar interface {
 
 // HealthCheckProvider exposes the registered health (liveness) checks.
 type HealthCheckProvider interface {
-	// HealthChecks returns all registered health (liveness) checks.
 	HealthChecks() map[string]func(context.Context) error
 }
 
@@ -408,10 +412,11 @@ type ReadinessRegistrar interface {
 
 // ReadinessProvider exposes the registered readiness checks.
 type ReadinessProvider interface {
-	// ReadinessChecks returns all registered readiness checks.
 	ReadinessChecks() map[string]func(context.Context) error
 }
 
+// TaskSpawner is the capability to start a supervised background task. Tasks
+// receive a lifecycle-owned context and are cancelled during shutdown.
 type TaskSpawner interface {
 	// Go spawns a supervised goroutine to execute background work. It creates a
 	// child span when a Tracer is configured, recovers from panics according to
@@ -515,17 +520,14 @@ func NewManager(opts ...ManagerOption) (*Manager, error) {
 	return m, nil
 }
 
-// RegisterModule registers a feature module in the manager.
-// Modules should be registered before calling InitModules.
-//
-// Registration is rejected if the module is nil, its name is empty, another
-// module with the same name is already registered, or initialization has
-// already started. Independent modules preserve their registration order as
-// the deterministic tie-break during topological sorting.
-
 // RegisterHealthCheck registers a health (liveness) check function under a
 // unique name.
 func (m *Manager) RegisterHealthCheck(name string, check func(context.Context) error) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ErrInvalidHealthCheckName
+	}
+
 	m.healthMu.Lock()
 	defer m.healthMu.Unlock()
 	if _, exists := m.healthChecks[name]; exists {
@@ -549,6 +551,11 @@ func (m *Manager) HealthChecks() map[string]func(context.Context) error {
 // RegisterReadinessCheck registers a readiness check function under a unique
 // name.
 func (m *Manager) RegisterReadinessCheck(name string, check func(context.Context) error) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ErrInvalidReadinessCheckName
+	}
+
 	m.readinessMu.Lock()
 	defer m.readinessMu.Unlock()
 	if _, exists := m.readinessChecks[name]; exists {
@@ -569,14 +576,20 @@ func (m *Manager) ReadinessChecks() map[string]func(context.Context) error {
 	return checks
 }
 
+// RegisterModule registers a feature module in the manager.
+// Modules should be registered before calling InitModules.
+//
+// Registration is rejected if the module is nil, its name is empty, another
+// module with the same name is already registered, or initialization has
+// already started. Independent modules preserve their registration order as
+// the deterministic tie-break during topological sorting.
 func (m *Manager) RegisterModule(mod Module) error {
 	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
 	state := m.state
 	if state != StateConfiguring {
-		m.stateMu.Unlock()
 		return fmt.Errorf("%w: cannot register module while in %q state", ErrRegistryLocked, state)
 	}
-	m.stateMu.Unlock()
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -602,12 +615,11 @@ func (m *Manager) RegisterModule(mod Module) error {
 // Registration is only permitted before InitModules has completed.
 func (m *Manager) RegisterService(name string, svc interface{}) error {
 	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
 	state := m.state
 	if state != StateConfiguring && state != StateInitializing {
-		m.stateMu.Unlock()
 		return fmt.Errorf("%w: cannot register service while in %q state", ErrRegistryLocked, state)
 	}
-	m.stateMu.Unlock()
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -627,6 +639,11 @@ func (m *Manager) RegisterService(name string, svc interface{}) error {
 
 // ResolveService implements Registry. It retrieves a registered service by its identifier.
 func (m *Manager) ResolveService(name string) (interface{}, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, ErrInvalidServiceName
+	}
+
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -651,6 +668,9 @@ func (m *Manager) GetConfig(target interface{}) error {
 }
 
 // Logger implements Registry.
+func (m *Manager) Logger() *slog.Logger {
+	return m.loggerCtx
+}
 
 func (m *Manager) startSpan(ctx context.Context, spanName string, attrs map[string]any) (context.Context, Span) {
 	parentSC := m.tracer.SpanContextFromContext(ctx)
@@ -658,7 +678,7 @@ func (m *Manager) startSpan(ctx context.Context, spanName string, attrs map[stri
 	childSC := m.tracer.SpanContextFromContext(childCtx)
 
 	if childSC.IsValid() {
-		m.loggerCtx.InfoContext(childCtx, "span started",
+		m.loggerCtx.DebugContext(childCtx, "span started",
 			slog.String("span_name", spanName),
 			slog.String("trace_id", childSC.TraceID()),
 			slog.String("span_id", childSC.SpanID()),
@@ -666,10 +686,6 @@ func (m *Manager) startSpan(ctx context.Context, spanName string, attrs map[stri
 		)
 	}
 	return childCtx, span
-}
-
-func (m *Manager) Logger() *slog.Logger {
-	return m.loggerCtx
 }
 
 // State returns the current lifecycle state of the manager.
@@ -776,12 +792,6 @@ func (m *Manager) Go(ctx context.Context, taskName string, fn func(ctx context.C
 	return handle, nil
 }
 
-// InitModules sorts the modules topologically based on dependencies,
-// then initializes them sequentially in dependency order inside trace spans.
-//
-// If a module fails to initialize, all previously initialized modules are
-// stopped in reverse order and the manager moves to the stopped state.
-
 // ExportDAG returns a Mermaid-compatible DAG visualization of the registered modules.
 func (m *Manager) ExportDAG() string {
 	m.mu.RLock()
@@ -810,87 +820,124 @@ func (m *Manager) ExportDAG() string {
 	return sb.String()
 }
 
-func (m *Manager) InitModules(ctx context.Context) error {
-	m.stateMu.Lock()
-	state := m.state
-	if state != StateConfiguring {
-		m.stateMu.Unlock()
-		return fmt.Errorf("%w: InitModules called in %q state", ErrInvalidLifecycleState, state)
-	}
-	m.state = StateInitializing
-	m.stateMu.Unlock()
-
-	m.mu.Lock()
-	ordered, err := m.sortModules()
-	if err != nil {
-		m.orderedMods = nil
-		m.mu.Unlock()
-		if waitErr := m.waitForTasks(ctx); waitErr != nil {
-			err = errors.Join(err, waitErr)
-		}
-		m.setState(StateStopped)
-		return err
-	}
-	m.orderedMods = ordered
-	m.mu.Unlock()
-
-	ctx, span := m.startSpan(ctx, "InitModules", map[string]any{
+// runPhase executes a lifecycle phase (e.g. InitModules or StartModules)
+// over ordered modules. It returns the number of modules successfully
+// processed and the first error encountered. phase names the parent span and
+// appears in the cancellation message; moduleSpanPrefix names each per-module
+// span; action appears in error messages ("init", "start", etc.).
+func (m *Manager) runPhase(
+	ctx context.Context,
+	phase string,
+	moduleSpanPrefix string,
+	action string,
+	ordered []Module,
+	runFn func(context.Context, Module) error,
+) (int, error) {
+	ctx, span := m.startSpan(ctx, phase, map[string]any{
 		"modulex.module_count": len(ordered),
 	})
 	defer span.End()
 
-	var initErr error
-	initializedCount := 0
+	count := 0
 	for _, mod := range ordered {
 		if err := ctx.Err(); err != nil {
-			initErr = fmt.Errorf("init cancelled: %w", err)
-			break
+			return count, fmt.Errorf("%s cancelled: %w", action, err)
 		}
 
-		modCtx, modSpan := m.startSpan(ctx, fmt.Sprintf("InitModule:%s", mod.Name()), map[string]any{
+		modCtx, modSpan := m.startSpan(ctx, fmt.Sprintf("%s:%s", moduleSpanPrefix, mod.Name()), map[string]any{
 			"modulex.module_name": mod.Name(),
 		})
-		if err := mod.Init(modCtx, m); err != nil {
+		if err := runFn(modCtx, mod); err != nil {
 			modSpan.RecordError(err)
 			modSpan.End()
 			span.RecordError(err)
-			initErr = fmt.Errorf("failed to init module %q: %w", mod.Name(), err)
-			break
+			return count, fmt.Errorf("failed to %s module %q: %w", action, mod.Name(), err)
 		}
 		modSpan.End()
-		initializedCount++
+		count++
+	}
+	return count, nil
+}
+
+// InitModules sorts the modules topologically based on dependencies,
+// then initializes them sequentially in dependency order inside trace spans.
+//
+// If a module fails to initialize, all previously initialized modules are
+// stopped in reverse order and the manager moves to the stopped state.
+func (m *Manager) InitModules(ctx context.Context) error {
+	state, err := m.transitionToInitializing()
+	if err != nil {
+		return fmt.Errorf("%w: InitModules called in %q state", ErrInvalidLifecycleState, state)
 	}
 
+	ordered, err := m.lockSortedModules()
+	if err != nil {
+		return m.finalizeInitFailure(ctx, err, nil)
+	}
+
+	initializedCount, initErr := m.runPhase(ctx, "InitModules", "InitModule", "init", ordered, func(ctx context.Context, mod Module) error {
+		return mod.Init(ctx, m)
+	})
 	if initErr != nil {
-		if waitErr := m.waitForTasks(ctx); waitErr != nil {
-			initErr = errors.Join(initErr, waitErr)
-		}
-		if rollbackErr := m.rollbackInit(ctx, ordered[:initializedCount]); rollbackErr != nil {
-			initErr = errors.Join(initErr, rollbackErr)
-		}
-		m.mu.Lock()
-		m.orderedMods = nil
-		m.mu.Unlock()
-		m.setState(StateStopped)
-		return initErr
+		return m.finalizeInitFailure(ctx, initErr, ordered[:initializedCount])
 	}
 
 	m.setState(StateInitialized)
 	return nil
 }
 
-// rollbackInit stops modules that were successfully initialized before a later
-// init failure. Only modules that implement Stoppable are stopped. Errors from
-// individual stops are joined together.
-func (m *Manager) rollbackInit(ctx context.Context, initialized []Module) error {
-	var errs []error
-	for i := len(initialized) - 1; i >= 0; i-- {
-		mod := initialized[i]
-		if err := m.stopModule(ctx, mod, "init rollback"); err != nil {
-			errs = append(errs, err)
-		}
+func (m *Manager) transitionToInitializing() (LifecycleState, error) {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	if m.state != StateConfiguring {
+		return m.state, fmt.Errorf("transition requested in %q state", m.state)
 	}
-	return errors.Join(errs...)
+	m.state = StateInitializing
+	return StateInitializing, nil
+}
+
+func (m *Manager) lockSortedModules() ([]Module, error) {
+	m.mu.Lock()
+	ordered, err := m.sortModules()
+	if err != nil {
+		m.orderedMods = nil
+		m.mu.Unlock()
+		return nil, err
+	}
+	m.orderedMods = ordered
+	m.mu.Unlock()
+	return ordered, nil
+}
+
+func (m *Manager) finalizeInitFailure(ctx context.Context, err error, initialized []Module) error {
+	return m.finalizeFailure(ctx, err,
+		func(ctx context.Context) error { return m.rollback(ctx, initialized, "init rollback") },
+		func() {
+			m.mu.Lock()
+			m.orderedMods = nil
+			m.mu.Unlock()
+		},
+	)
+}
+
+// finalizeFailure joins shutdown-related errors, rolls back the phase, runs
+// an optional cleanup hook, closes the event bus, and transitions the manager
+// to the stopped state.
+func (m *Manager) finalizeFailure(ctx context.Context, err error, rollback func(context.Context) error, cleanup func()) error {
+	if waitErr := m.waitForTasks(ctx); waitErr != nil {
+		err = errors.Join(err, waitErr)
+	}
+	if rollbackErr := rollback(ctx); rollbackErr != nil {
+		err = errors.Join(err, rollbackErr)
+	}
+	if closeErr := m.closeEventBus(ctx); closeErr != nil {
+		err = errors.Join(err, closeErr)
+	}
+	if cleanup != nil {
+		cleanup()
+	}
+	m.setState(StateStopped)
+	return err
 }
 
 // StartModules starts all registered modules in topological dependency order inside trace spans.
@@ -912,56 +959,26 @@ func (m *Manager) StartModules(ctx context.Context) error {
 	copy(mods, m.orderedMods)
 	m.mu.RUnlock()
 
-	ctx, span := m.startSpan(ctx, "StartModules", map[string]any{
-		"modulex.module_count": len(mods),
-	})
-	defer span.End()
-
-	var startErr error
-	startedCount := 0
-	for _, mod := range mods {
-		if err := ctx.Err(); err != nil {
-			startErr = fmt.Errorf("start cancelled: %w", err)
-			break
-		}
-
-		modCtx, modSpan := m.startSpan(ctx, fmt.Sprintf("StartModule:%s", mod.Name()), map[string]any{
-			"modulex.module_name": mod.Name(),
-		})
-		if err := m.startModule(modCtx, mod); err != nil {
-			modSpan.RecordError(err)
-			modSpan.End()
-			span.RecordError(err)
-			startErr = fmt.Errorf("failed to start module %q: %w", mod.Name(), err)
-			break
-		}
-		modSpan.End()
-		startedCount++
-	}
-
+	startedCount, startErr := m.runPhase(ctx, "StartModules", "StartModule", "start", mods, m.startModule)
 	if startErr != nil {
-		if waitErr := m.waitForTasks(ctx); waitErr != nil {
-			startErr = errors.Join(startErr, waitErr)
-		}
-		if rollbackErr := m.rollbackStart(ctx, mods[:startedCount]); rollbackErr != nil {
-			startErr = errors.Join(startErr, rollbackErr)
-		}
-		m.setState(StateStopped)
-		return startErr
+		return m.finalizeFailure(ctx, startErr,
+			func(ctx context.Context) error { return m.rollback(ctx, mods[:startedCount], "start rollback") },
+			nil,
+		)
 	}
 
 	m.setState(StateRunning)
 	return nil
 }
 
-// rollbackStart stops modules that were successfully started before a later
-// start failure. Only modules that implement Stoppable are stopped. Errors from
-// individual stops are joined together.
-func (m *Manager) rollbackStart(ctx context.Context, started []Module) error {
+// rollback stops modules in reverse order during failure recovery. Only
+// modules that implement Stoppable are stopped. Errors from individual stops
+// are joined together.
+func (m *Manager) rollback(ctx context.Context, mods []Module, phase string) error {
 	var errs []error
-	for i := len(started) - 1; i >= 0; i-- {
-		mod := started[i]
-		if err := m.stopModule(ctx, mod, "start rollback"); err != nil {
+	for i := len(mods) - 1; i >= 0; i-- {
+		mod := mods[i]
+		if err := m.stopModule(ctx, mod, phase); err != nil {
 			errs = append(errs, err)
 		}
 	}

@@ -9,7 +9,6 @@ import (
 	"github.com/mediusfy/modulex"
 )
 
-// greetingService is a trivial domain service used in the examples.
 type greetingService struct {
 	greeting string
 }

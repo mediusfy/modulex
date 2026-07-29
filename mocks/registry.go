@@ -177,6 +177,53 @@ func (_c *MockRegistry_Go_Call) RunAndReturn(run func(context.Context, string, f
 	return _c
 }
 
+// HealthChecks provides a mock function with no fields
+func (_m *MockRegistry) HealthChecks() map[string]func(context.Context) error {
+	ret := _m.Called()
+
+	if len(ret) == 0 {
+		panic("no return value specified for HealthChecks")
+	}
+
+	var r0 map[string]func(context.Context) error
+	if rf, ok := ret.Get(0).(func() map[string]func(context.Context) error); ok {
+		r0 = rf()
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(map[string]func(context.Context) error)
+		}
+	}
+
+	return r0
+}
+
+// MockRegistry_HealthChecks_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'HealthChecks'
+type MockRegistry_HealthChecks_Call struct {
+	*mock.Call
+}
+
+// HealthChecks is a helper method to define mock.On call
+func (_e *MockRegistry_Expecter) HealthChecks() *MockRegistry_HealthChecks_Call {
+	return &MockRegistry_HealthChecks_Call{Call: _e.mock.On("HealthChecks")}
+}
+
+func (_c *MockRegistry_HealthChecks_Call) Run(run func()) *MockRegistry_HealthChecks_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run()
+	})
+	return _c
+}
+
+func (_c *MockRegistry_HealthChecks_Call) Return(_a0 map[string]func(context.Context) error) *MockRegistry_HealthChecks_Call {
+	_c.Call.Return(_a0)
+	return _c
+}
+
+func (_c *MockRegistry_HealthChecks_Call) RunAndReturn(run func() map[string]func(context.Context) error) *MockRegistry_HealthChecks_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // Logger provides a mock function with no fields
 func (_m *MockRegistry) Logger() *slog.Logger {
 	ret := _m.Called()
@@ -220,6 +267,147 @@ func (_c *MockRegistry_Logger_Call) Return(_a0 *slog.Logger) *MockRegistry_Logge
 }
 
 func (_c *MockRegistry_Logger_Call) RunAndReturn(run func() *slog.Logger) *MockRegistry_Logger_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// ReadinessChecks provides a mock function with no fields
+func (_m *MockRegistry) ReadinessChecks() map[string]func(context.Context) error {
+	ret := _m.Called()
+
+	if len(ret) == 0 {
+		panic("no return value specified for ReadinessChecks")
+	}
+
+	var r0 map[string]func(context.Context) error
+	if rf, ok := ret.Get(0).(func() map[string]func(context.Context) error); ok {
+		r0 = rf()
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(map[string]func(context.Context) error)
+		}
+	}
+
+	return r0
+}
+
+// MockRegistry_ReadinessChecks_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'ReadinessChecks'
+type MockRegistry_ReadinessChecks_Call struct {
+	*mock.Call
+}
+
+// ReadinessChecks is a helper method to define mock.On call
+func (_e *MockRegistry_Expecter) ReadinessChecks() *MockRegistry_ReadinessChecks_Call {
+	return &MockRegistry_ReadinessChecks_Call{Call: _e.mock.On("ReadinessChecks")}
+}
+
+func (_c *MockRegistry_ReadinessChecks_Call) Run(run func()) *MockRegistry_ReadinessChecks_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run()
+	})
+	return _c
+}
+
+func (_c *MockRegistry_ReadinessChecks_Call) Return(_a0 map[string]func(context.Context) error) *MockRegistry_ReadinessChecks_Call {
+	_c.Call.Return(_a0)
+	return _c
+}
+
+func (_c *MockRegistry_ReadinessChecks_Call) RunAndReturn(run func() map[string]func(context.Context) error) *MockRegistry_ReadinessChecks_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// RegisterHealthCheck provides a mock function with given fields: name, check
+func (_m *MockRegistry) RegisterHealthCheck(name string, check func(context.Context) error) error {
+	ret := _m.Called(name, check)
+
+	if len(ret) == 0 {
+		panic("no return value specified for RegisterHealthCheck")
+	}
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(string, func(context.Context) error) error); ok {
+		r0 = rf(name, check)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// MockRegistry_RegisterHealthCheck_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'RegisterHealthCheck'
+type MockRegistry_RegisterHealthCheck_Call struct {
+	*mock.Call
+}
+
+// RegisterHealthCheck is a helper method to define mock.On call
+//   - name string
+//   - check func(context.Context) error
+func (_e *MockRegistry_Expecter) RegisterHealthCheck(name interface{}, check interface{}) *MockRegistry_RegisterHealthCheck_Call {
+	return &MockRegistry_RegisterHealthCheck_Call{Call: _e.mock.On("RegisterHealthCheck", name, check)}
+}
+
+func (_c *MockRegistry_RegisterHealthCheck_Call) Run(run func(name string, check func(context.Context) error)) *MockRegistry_RegisterHealthCheck_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(string), args[1].(func(context.Context) error))
+	})
+	return _c
+}
+
+func (_c *MockRegistry_RegisterHealthCheck_Call) Return(_a0 error) *MockRegistry_RegisterHealthCheck_Call {
+	_c.Call.Return(_a0)
+	return _c
+}
+
+func (_c *MockRegistry_RegisterHealthCheck_Call) RunAndReturn(run func(string, func(context.Context) error) error) *MockRegistry_RegisterHealthCheck_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// RegisterReadinessCheck provides a mock function with given fields: name, check
+func (_m *MockRegistry) RegisterReadinessCheck(name string, check func(context.Context) error) error {
+	ret := _m.Called(name, check)
+
+	if len(ret) == 0 {
+		panic("no return value specified for RegisterReadinessCheck")
+	}
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(string, func(context.Context) error) error); ok {
+		r0 = rf(name, check)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// MockRegistry_RegisterReadinessCheck_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'RegisterReadinessCheck'
+type MockRegistry_RegisterReadinessCheck_Call struct {
+	*mock.Call
+}
+
+// RegisterReadinessCheck is a helper method to define mock.On call
+//   - name string
+//   - check func(context.Context) error
+func (_e *MockRegistry_Expecter) RegisterReadinessCheck(name interface{}, check interface{}) *MockRegistry_RegisterReadinessCheck_Call {
+	return &MockRegistry_RegisterReadinessCheck_Call{Call: _e.mock.On("RegisterReadinessCheck", name, check)}
+}
+
+func (_c *MockRegistry_RegisterReadinessCheck_Call) Run(run func(name string, check func(context.Context) error)) *MockRegistry_RegisterReadinessCheck_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(string), args[1].(func(context.Context) error))
+	})
+	return _c
+}
+
+func (_c *MockRegistry_RegisterReadinessCheck_Call) Return(_a0 error) *MockRegistry_RegisterReadinessCheck_Call {
+	_c.Call.Return(_a0)
+	return _c
+}
+
+func (_c *MockRegistry_RegisterReadinessCheck_Call) RunAndReturn(run func(string, func(context.Context) error) error) *MockRegistry_RegisterReadinessCheck_Call {
 	_c.Call.Return(run)
 	return _c
 }

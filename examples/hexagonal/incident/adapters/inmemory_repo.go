@@ -8,7 +8,7 @@ import (
 	"github.com/mediusfy/modulex/examples/hexagonal/incident/ports"
 )
 
-// InMemoryRepository is an database adapter that implements ports.Repository.
+// InMemoryRepository is a database adapter that implements ports.Repository.
 type InMemoryRepository struct {
 	mu        sync.RWMutex
 	incidents []domain.Incident

@@ -19,8 +19,9 @@ type EventBus struct {
 	pubSub *gochannel.GoChannel
 	logger watermill.LoggerAdapter
 
-	mu         sync.Mutex
-	cancelFunc []context.CancelFunc
+	mu        sync.Mutex
+	nextSubID uint64
+	cancels   map[uint64]context.CancelFunc
 }
 
 // NewEventBus creates a configured in-memory GoChannel PubSub.
@@ -40,13 +41,18 @@ func NewEventBus(bufferSize int64, persistent bool, debug bool) *EventBus {
 	)
 
 	return &EventBus{
-		pubSub: pubSub,
-		logger: logger,
+		pubSub:  pubSub,
+		logger:  logger,
+		cancels: make(map[uint64]context.CancelFunc),
 	}
 }
 
 // Publish generates a Watermill-compatible message, propagates context/spans, and sends it.
 func (w *EventBus) Publish(ctx context.Context, topic string, payload []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	// Generate a unique Watermill UUID for tracing/deduplication
 	msg := message.NewMessage(watermill.NewUUID(), payload)
 
@@ -61,30 +67,32 @@ func (w *EventBus) Publish(ctx context.Context, topic string, payload []byte) er
 
 // Subscribe listens to a topic and handles messages in the background, maintaining span continuity.
 func (w *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.EventHandler) error {
-	// Subscribe returns a read-only channel of messages
+	if handler == nil {
+		return fmt.Errorf("watermill subscription failed: handler must not be nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	messages, err := w.pubSub.Subscribe(ctx, topic)
 	if err != nil {
 		return fmt.Errorf("watermill subscription failed: %w", err)
 	}
 
-	subCtx, cancel := context.WithCancel(context.Background())
+	// Derive the consumer context from the caller's context so cancellation of
+	// Subscribe's ctx also stops the consumer goroutine.
+	subCtx, cancel := context.WithCancel(ctx)
 	w.mu.Lock()
-	w.cancelFunc = append(w.cancelFunc, cancel)
+	subID := w.nextSubID
+	w.nextSubID++
+	w.cancels[subID] = cancel
 	w.mu.Unlock()
 
-	// Consumer thread loop
 	go func() {
 		defer func() {
 			cancel()
 			w.mu.Lock()
-			for i, c := range w.cancelFunc {
-				// Comparing function pointers in Go is not perfectly safe, but we can compare addresses or just clear on close.
-				// A simpler way is to just keep a map of ID to cancel func, but to keep it simple:
-				if fmt.Sprintf("%p", c) == fmt.Sprintf("%p", cancel) {
-					w.cancelFunc = append(w.cancelFunc[:i], w.cancelFunc[i+1:]...)
-					break
-				}
-			}
+			delete(w.cancels, subID)
 			w.mu.Unlock()
 		}()
 		for {
@@ -96,10 +104,7 @@ func (w *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 					return // Channel closed (likely EventBus shutting down)
 				}
 
-				// Retrieve tracing context from incoming message
 				msgCtx := msg.Context()
-
-				// Execute module's generic callback
 				if err := handler(msgCtx, msg.Payload); err != nil {
 					// Watermill's in-memory GoChannel redelivers Nack'd messages, which
 					// can cause infinite loops for a handler that persistently fails.
@@ -108,7 +113,7 @@ func (w *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 					msg.Ack()
 					w.logger.Error("handler error, message acknowledged to prevent redelivery", err, nil)
 				} else {
-					msg.Ack() // Standard acknowledgment
+					msg.Ack()
 				}
 			}
 		}
@@ -123,10 +128,10 @@ func (w *EventBus) Close(ctx context.Context) error {
 	defer w.mu.Unlock()
 
 	// Cancel all consumer loops
-	for _, cancel := range w.cancelFunc {
+	for _, cancel := range w.cancels {
 		cancel()
 	}
-	w.cancelFunc = nil
+	w.cancels = make(map[uint64]context.CancelFunc)
 
 	// Shut down the pub/sub engine
 	if err := w.pubSub.Close(); err != nil {

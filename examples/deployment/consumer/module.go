@@ -20,13 +20,11 @@ func NewModule() *Module {
 	return &Module{}
 }
 
-// Name implements modulex.Module.
 func (m *Module) Name() string { return "consumer" }
 
-// DependsOn implements modulex.Module.
 func (m *Module) DependsOn() []string { return []string{"notification"} }
 
-// Init implements modulex.Module. It resolves the notification service port.
+// Init resolves the notification service port.
 func (m *Module) Init(ctx context.Context, reg modulex.Registry) error {
 	svc, err := modulex.Resolve(reg, ports.ServiceKey)
 	if err != nil {

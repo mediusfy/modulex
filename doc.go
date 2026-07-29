@@ -13,4 +13,8 @@
 // EventBus adapter sub-packages such as github.com/mediusfy/modulex/nats,
 // github.com/mediusfy/modulex/rabbitmq, and github.com/mediusfy/modulex/watermill
 // keep framework dependencies out of the core package.
+//
+// github.com/mediusfy/modulex/app provides an opinionated Run helper that
+// owns the construct-manager/register-modules/signal-context/Init-Start-wait-Stop
+// bootstrap skeleton every service entrypoint otherwise repeats.
 package modulex

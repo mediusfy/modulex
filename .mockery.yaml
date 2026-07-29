@@ -44,3 +44,15 @@ packages:
       TaskSpawner:
         config:
           structname: MockTaskSpawner
+      HealthCheckRegistrar:
+        config:
+          structname: MockHealthCheckRegistrar
+      HealthCheckProvider:
+        config:
+          structname: MockHealthCheckProvider
+      ReadinessRegistrar:
+        config:
+          structname: MockReadinessRegistrar
+      ReadinessProvider:
+        config:
+          structname: MockReadinessProvider

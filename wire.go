@@ -16,7 +16,6 @@ func NewKey[T any](name string) Key[T] {
 	return Key[T]{name: strings.TrimSpace(name)}
 }
 
-// Name returns the underlying service key string.
 func (k Key[T]) Name() string { return k.name }
 
 // Provide registers a typed service implementation in the registry.

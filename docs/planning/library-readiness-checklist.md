@@ -2,7 +2,7 @@
 
 ## Objective
 
-Build Modulex into a small, deterministic, production-ready lifecycle orchestrator for modular Go applications,
+Build Modulex into a small, deterministic, production-ready lifecycle orchestrator for modular applications,
 with optional typed dependency wiring and framework integrations. The core library must remain portable and must
 not claim compile-time architectural enforcement that it does not provide.
 

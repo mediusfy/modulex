@@ -5,7 +5,7 @@ help:
 	@echo "  deps                    - Download Go module dependencies"
 	@echo "  test                    - Run go test"
 	@echo "  test-arch               - Run go test -race ./..."
-	@echo "  fmt                     - Format Go code using gofmt"
+	@echo "  fmt                     - Format code using gofmt"
 	@echo "  lint                    - Verify linter config and run golangci-lint"
 	@echo "  build                   - Compile packages and examples"
 	@echo "  vuln                    - Run govulncheck vulnerability scan"
