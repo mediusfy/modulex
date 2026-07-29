@@ -16,12 +16,12 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
 strict=0
-if [ "${1:-}" = "-strict" ]; then
+if [[ "${1:-}" = "-strict" ]]; then
     strict=1
 fi
 
 latest_tag="$(git tag -l 'v*' --sort=-v:refname | head -n1)"
-if [ -z "$latest_tag" ]; then
+if [[ -z "$latest_tag" ]]; then
     echo "no tagged release yet; nothing to compare the API against"
     exit 0
 fi
@@ -37,7 +37,7 @@ apidiff_bin="$apidiff_bindir/apidiff"
 worktree_dir=""
 cleanup() {
     rm -rf "$apidiff_bindir"
-    if [ -n "$worktree_dir" ]; then
+    if [[ -n "$worktree_dir" ]]; then
         git worktree remove "$worktree_dir" --force 2>/dev/null || rm -rf "$worktree_dir"
     fi
 }
@@ -66,24 +66,24 @@ for pkg in "${packages[@]}"; do
 
     echo "--- $pkg ---"
     report="$("$apidiff_bin" "$old_export" "$new_export")"
-    if [ -z "$report" ]; then
+    if [[ -z "$report" ]]; then
         echo "no changes"
     else
         echo "$report"
     fi
     incompatible="$("$apidiff_bin" -incompatible "$old_export" "$new_export")"
-    if [ -n "$incompatible" ]; then
+    if [[ -n "$incompatible" ]]; then
         found_incompatible=1
     fi
 
     rm -f "$old_export" "$new_export"
 done
 
-if [ "$found_incompatible" -eq 1 ]; then
+if [[ "$found_incompatible" -eq 1 ]]; then
     echo
     echo "incompatible API changes detected since $latest_tag." >&2
     echo "allowed for a v0 minor release per COMPATIBILITY.md; not allowed for a patch release." >&2
-    if [ "$strict" -eq 1 ]; then
+    if [[ "$strict" -eq 1 ]]; then
         exit 1
     fi
 fi
