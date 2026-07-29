@@ -15,8 +15,8 @@ configuring -> initializing -> initialized -> starting -> running -> stopping ->
 `stopped` after rolling back successfully initialized/started modules.
 
 `Start` and `Stop` are optional lifecycle capabilities. Modules that need to run
-background work implement `modulex.Startable`; modules that own resources that
-must be released implement `modulex.Stoppable`. The manager skips modules that
+background work implement `modulex.Starter`; modules that own resources that
+must be released implement `modulex.Stopper`. The manager skips modules that
 do not implement these interfaces, so simple modules do not require no-op
 methods.
 
@@ -45,7 +45,7 @@ Invalid transitions return `ErrInvalidLifecycleState`.
 2. Sort modules topologically.
 3. Call `Init` on each module in order.
 4. If any module fails, roll back successfully initialized modules by calling
-   `Stop` (for modules that implement `modulex.Stoppable`) in reverse order.
+   `Stop` (for modules that implement `modulex.Stopper`) in reverse order.
 
 ### Example
 
@@ -71,7 +71,7 @@ if err := manager.InitModules(context.Background()); err != nil {
 
 If `module-b` fails to initialize after `module-a` succeeded, `module-a.Stop`
 runs before the error is returned for modules that implement
-`modulex.Stoppable`. Modules that do not implement `Stoppable` are skipped.
+`modulex.Stopper`. Modules that do not implement `Stopper` are skipped.
 Errors from the failed init and from rollback stops are joined.
 
 ## Startup
@@ -79,10 +79,10 @@ Errors from the failed init and from rollback stops are joined.
 `StartModules` performs these steps:
 
 1. Verify the manager is in the `initialized` state.
-2. Call `Start` on each module that implements `modulex.Startable` in
+2. Call `Start` on each module that implements `modulex.Starter` in
    topological order.
 3. If any module fails, stop modules that already started (and implement
-   `modulex.Stoppable`) in reverse order.
+   `modulex.Stopper`) in reverse order.
 
 ### Rollback on start failure
 
@@ -97,7 +97,7 @@ Modules that were never reached are not started and are not stopped.
 `StopModules` performs these steps:
 
 1. Cancel and await supervised background tasks.
-2. Call `Stop` on each started module that implements `modulex.Stoppable` in
+2. Call `Stop` on each started module that implements `modulex.Stopper` in
    reverse topological order.
 3. Close the configured `EventBus`.
 
@@ -108,7 +108,7 @@ connection or channel and leave it open after `Close`, since the caller
 created it and may share it outside the module lifecycle. The `watermill`
 adapter is the exception: it creates its own in-memory `GoChannel` and shuts
 it down in `Close`. Modules that create their own resources should release
-them in `Stop`, implementing `modulex.Stoppable`.
+them in `Stop`, implementing `modulex.Stopper`.
 
 ### Idempotency
 
@@ -155,9 +155,9 @@ Tasks are awaited before modules are stopped. Task errors are joined into the
 - Lifecycle errors may wrap multiple failures with `errors.Join`; inspect them
   with `errors.Is` or iterate with `errors.Unwrap`.
 - Modules should return actionable errors from `Init`, `Start`, and `Stop`.
-- Implement `modulex.Startable` only when the module begins background work or
+- Implement `modulex.Starter` only when the module begins background work or
   listeners during startup.
-- Implement `modulex.Stoppable` only when the module owns resources that must be
+- Implement `modulex.Stopper` only when the module owns resources that must be
   released during shutdown.
 
 ## Checklist for module authors

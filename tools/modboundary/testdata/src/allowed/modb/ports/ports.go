@@ -2,7 +2,7 @@
 // import directly.
 package ports
 
-// Thing is an example port interface.
-type Thing interface {
+// Doer is an example port interface.
+type Doer interface {
 	Do() error
 }

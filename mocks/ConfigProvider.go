@@ -53,8 +53,8 @@ func (_c *MockConfigProvider_GetConfig_Call) Run(run func(target interface{})) *
 	return _c
 }
 
-func (_c *MockConfigProvider_GetConfig_Call) Return(_a0 error) *MockConfigProvider_GetConfig_Call {
-	_c.Call.Return(_a0)
+func (_c *MockConfigProvider_GetConfig_Call) Return(err error) *MockConfigProvider_GetConfig_Call {
+	_c.Call.Return(err)
 	return _c
 }
 

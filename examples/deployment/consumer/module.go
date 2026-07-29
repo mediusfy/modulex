@@ -12,7 +12,7 @@ import (
 
 // Module depends on the notification service.
 type Module struct {
-	svc ports.Service
+	svc ports.Sender
 }
 
 // NewModule creates a consumer module.
@@ -34,7 +34,7 @@ func (m *Module) Init(ctx context.Context, reg modulex.Registry) error {
 	return nil
 }
 
-// Start implements modulex.Startable. It sends a notification to demonstrate
+// Start implements modulex.Starter. It sends a notification to demonstrate
 // that the dependency is wired correctly.
 func (m *Module) Start(ctx context.Context) error {
 	return m.svc.Send(ctx, "hello from consumer")

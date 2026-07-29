@@ -15,6 +15,13 @@ import (
 // defaultCheckTimeout bounds an individual check execution.
 const defaultCheckTimeout = 5 * time.Second
 
+const (
+	// contentTypeHeader is the HTTP header name used to declare the response body's media type.
+	contentTypeHeader = "Content-Type"
+	// contentTypeJSON is the media type written for all health/readiness JSON responses.
+	contentTypeJSON = "application/json"
+)
+
 // checkResponse is the JSON body written by HealthHandler and ReadinessHandler.
 type checkResponse struct {
 	Status string            `json:"status"`
@@ -84,7 +91,7 @@ func writeCheckResponse(w http.ResponseWriter, r *http.Request, checks map[strin
 		code = http.StatusServiceUnavailable
 	}
 
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(checkResponse{Status: status, Checks: results})
 }
@@ -93,7 +100,7 @@ func writeCheckResponse(w http.ResponseWriter, r *http.Request, checks map[strin
 func HealthHandler(p modulex.HealthCheckProvider) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if p == nil {
-			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set(contentTypeHeader, contentTypeJSON)
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_ = json.NewEncoder(w).Encode(checkResponse{
 				Status: "unhealthy",
@@ -109,7 +116,7 @@ func HealthHandler(p modulex.HealthCheckProvider) http.HandlerFunc {
 func ReadinessHandler(p modulex.ReadinessProvider) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if p == nil {
-			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set(contentTypeHeader, contentTypeJSON)
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_ = json.NewEncoder(w).Encode(checkResponse{
 				Status: "not-ready",

@@ -65,8 +65,8 @@ func (_c *MockServiceResolver_ResolveService_Call) Run(run func(name string)) *M
 	return _c
 }
 
-func (_c *MockServiceResolver_ResolveService_Call) Return(_a0 interface{}, _a1 error) *MockServiceResolver_ResolveService_Call {
-	_c.Call.Return(_a0, _a1)
+func (_c *MockServiceResolver_ResolveService_Call) Return(svc interface{}, err error) *MockServiceResolver_ResolveService_Call {
+	_c.Call.Return(svc, err)
 	return _c
 }
 

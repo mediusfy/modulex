@@ -510,7 +510,7 @@ framework still passes the full `Registry` to `Module.Init`, but internal
 helpers and constructors can depend on only the capabilities they need:
 
 - `modulex.ServiceRegistry` – register and resolve services.
-- `modulex.ServiceRegistrar` – register services only.
+- `modulex.ServiceRegisterer` – register services only.
 - `modulex.ServiceResolver` – resolve services only.
 - `modulex.EventBusProvider` – access the event bus.
 - `modulex.ConfigProvider` – load configuration.
@@ -521,7 +521,7 @@ For example, a constructor that only needs to register a service and read the
 logger can accept the narrower interfaces:
 
 ```go
-func NewService(reg modulex.ServiceRegistrar, log modulex.LoggerProvider) *Service {
+func NewService(reg modulex.ServiceRegisterer, log modulex.LoggerProvider) *Service {
     svc := &Service{logger: log.Logger()}
     _ = reg.RegisterService("my.Service", svc)
     return svc

@@ -19,12 +19,12 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-if [ "${SKIP_CHANGELOG_CHECK:-}" = "1" ]; then
+if [[ "${SKIP_CHANGELOG_CHECK:-}" = "1" ]]; then
     echo "SKIP_CHANGELOG_CHECK=1 set; skipping"
     exit 0
 fi
 
-if [ "${GITHUB_ACTOR:-}" = "dependabot[bot]" ]; then
+if [[ "${GITHUB_ACTOR:-}" = "dependabot[bot]" ]]; then
     echo "dependabot PR; skipping CHANGELOG.md requirement"
     exit 0
 fi
@@ -41,7 +41,7 @@ fi
 merge_base="$(git merge-base "$base_ref" "$head_ref")"
 changed_files="$(git diff --name-only "$merge_base" "$head_ref")"
 
-if [ -z "$changed_files" ]; then
+if [[ -z "$changed_files" ]]; then
     echo "no changes between $base_ref and $head_ref"
     exit 0
 fi
@@ -55,7 +55,7 @@ fi
 # change set to be exempt from the CHANGELOG.md requirement.
 non_exempt="$(echo "$changed_files" | grep -v -E '^\.github/' | grep -v -E '^go\.(mod|sum)$' || true)"
 
-if [ -z "$non_exempt" ]; then
+if [[ -z "$non_exempt" ]]; then
     echo "ok: change set is limited to CI config / dependency bumps, no CHANGELOG.md entry required"
     exit 0
 fi

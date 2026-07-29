@@ -57,8 +57,8 @@ func (_c *MockEventBusProvider_EventBus_Call) Run(run func()) *MockEventBusProvi
 	return _c
 }
 
-func (_c *MockEventBusProvider_EventBus_Call) Return(_a0 modulex.EventBus) *MockEventBusProvider_EventBus_Call {
-	_c.Call.Return(_a0)
+func (_c *MockEventBusProvider_EventBus_Call) Return(eb modulex.EventBus) *MockEventBusProvider_EventBus_Call {
+	_c.Call.Return(eb)
 	return _c
 }
 

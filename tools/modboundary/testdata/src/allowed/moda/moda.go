@@ -4,7 +4,7 @@ package moda
 
 import "allowed/modb/ports"
 
-// Consumer uses the ports.Thing interface exposed by modb.
+// Consumer uses the ports.Doer interface exposed by modb.
 type Consumer struct {
-	Thing ports.Thing
+	Thing ports.Doer
 }

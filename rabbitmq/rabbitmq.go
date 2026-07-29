@@ -31,7 +31,7 @@ func (c amqpHeadersCarrier) Get(key string) string {
 	return ""
 }
 
-func (c amqpHeadersCarrier) Set(key string, value string) {
+func (c amqpHeadersCarrier) Set(key, value string) {
 	c[key] = value
 }
 

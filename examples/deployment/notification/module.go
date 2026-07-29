@@ -31,7 +31,7 @@ func (m *Module) DependsOn() []string { return nil }
 // Init registers the notification service and, if a Chi router is available,
 // mounts the HTTP endpoint.
 func (m *Module) Init(ctx context.Context, reg modulex.Registry) error {
-	svc := ports.Service(service.New(reg.Logger()))
+	svc := ports.Sender(service.New(reg.Logger()))
 	if err := modulex.Provide(reg, ports.ServiceKey, svc); err != nil {
 		return err
 	}
@@ -78,6 +78,6 @@ func (m *RemoteModule) Init(_ context.Context, reg modulex.Registry) error {
 	if err != nil {
 		return fmt.Errorf("failed to create remote notification client: %w", err)
 	}
-	remoteClient := ports.Service(client)
+	remoteClient := ports.Sender(client)
 	return modulex.Provide(reg, ports.ServiceKey, remoteClient)
 }
