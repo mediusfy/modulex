@@ -17,6 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `nats.EventBus.Subscribe` no longer spawns a per-subscription goroutine to
   unsubscribe on context cancellation; `Close` already unsubscribes all
   subscriptions.
+- `TestRun_SetupHookRunsBeforeInit` no longer races with `StartModules` by
+  cancelling the context before the module has started.
+
+### Tests
+
+- Added `internal/eventbustest` shared helpers (`RunPublishSubscribeTests`,
+  `RunHandlerErrorLoggingTests`, `SyncBuffer`) and refactored `nats` and
+  `rabbitmq` adapter tests to use them, removing duplicated test code flagged
+  by SonarCloud.
 
 ### Changed
 

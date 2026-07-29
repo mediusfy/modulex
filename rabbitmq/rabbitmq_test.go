@@ -1,14 +1,11 @@
 package rabbitmq_test
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
-	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -18,6 +15,7 @@ import (
 	"go.uber.org/goleak"
 
 	"github.com/mediusfy/modulex"
+	"github.com/mediusfy/modulex/internal/eventbustest"
 	rabbitadapter "github.com/mediusfy/modulex/rabbitmq"
 )
 
@@ -56,55 +54,9 @@ func connectRabbitMQ(t *testing.T) (*amqp.Connection, *amqp.Channel) {
 func TestEventBus_PublishSubscribe(t *testing.T) {
 	_, ch := connectRabbitMQ(t)
 
-	tests := []struct {
-		name       string
-		payloads   [][]byte
-		handlerErr error
-	}{
-		{
-			name:     "single message round-trip",
-			payloads: [][]byte{[]byte("hello rabbitmq")},
-		},
-		{
-			name:     "multiple messages round-trip",
-			payloads: [][]byte{[]byte("first"), []byte("second")},
-		},
-		{
-			name:       "handler error is tolerated",
-			payloads:   [][]byte{[]byte("payload")},
-			handlerErr: errors.New("handler failed"),
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			eb := rabbitadapter.NewEventBus(ch)
-			t.Cleanup(func() { _ = eb.Close(context.Background()) })
-
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-
-			queue := fmt.Sprintf("test.queue.%d", time.Now().UnixNano())
-			received := make(chan []byte, len(tt.payloads))
-			require.NoError(t, eb.Subscribe(ctx, queue, func(_ context.Context, data []byte) error {
-				received <- data
-				return tt.handlerErr
-			}))
-
-			for _, p := range tt.payloads {
-				require.NoError(t, eb.Publish(ctx, queue, p))
-			}
-
-			for _, want := range tt.payloads {
-				select {
-				case got := <-received:
-					assert.Equal(t, want, got)
-				case <-ctx.Done():
-					t.Fatal("timed out waiting for message")
-				}
-			}
-		})
-	}
+	eventbustest.RunPublishSubscribeTests(t, func() modulex.EventBus {
+		return rabbitadapter.NewEventBus(ch)
+	}, fmt.Sprintf("test.queue.%d", time.Now().UnixNano()), 10*time.Second)
 }
 
 func TestEventBus_Close(t *testing.T) {
@@ -150,82 +102,12 @@ func TestEventBus_RejectsSubscriptionsAfterClose(t *testing.T) {
 	assert.ErrorContains(t, err, "event bus is closed")
 }
 
-// syncBuffer is a concurrency-safe io.Writer wrapping a bytes.Buffer, needed
-// because the adapter logs from its own consumer goroutine while the test
-// polls the buffer's contents from the main goroutine.
-type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *syncBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
-
 func TestEventBus_HandlerErrorIsLogged(t *testing.T) {
 	_, ch := connectRabbitMQ(t)
 
-	tests := []struct {
-		name       string
-		handlerErr error
-		wantLogged bool
-	}{
-		{
-			name:       "handler error is logged",
-			handlerErr: errors.New("handler failed"),
-			wantLogged: true,
-		},
-		{
-			name:       "handler success is not logged as an error",
-			handlerErr: nil,
-			wantLogged: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var logBuf syncBuffer
-			logger := slog.New(slog.NewTextHandler(&logBuf, nil))
-
-			eb := rabbitadapter.NewEventBus(ch, rabbitadapter.WithLogger(logger))
-			t.Cleanup(func() { _ = eb.Close(context.Background()) })
-
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-
-			queue := fmt.Sprintf("test.queue.logging.%d", time.Now().UnixNano())
-			handlerInvoked := make(chan struct{})
-
-			require.NoError(t, eb.Subscribe(ctx, queue, func(context.Context, []byte) error {
-				close(handlerInvoked)
-				return tt.handlerErr
-			}))
-
-			require.NoError(t, eb.Publish(ctx, queue, []byte("payload")))
-
-			select {
-			case <-handlerInvoked:
-			case <-ctx.Done():
-				t.Fatal("timed out waiting for handler invocation")
-			}
-
-			require.Eventually(t, func() bool {
-				return tt.wantLogged == strings.Contains(logBuf.String(), "handler error")
-			}, 2*time.Second, 10*time.Millisecond, "unexpected log output: %q", logBuf.String())
-
-			if tt.wantLogged {
-				assert.Contains(t, logBuf.String(), queue)
-			}
-		})
-	}
+	eventbustest.RunHandlerErrorLoggingTests(t, func(logger *slog.Logger) modulex.EventBus {
+		return rabbitadapter.NewEventBus(ch, rabbitadapter.WithLogger(logger))
+	}, fmt.Sprintf("test.queue.logging.%d", time.Now().UnixNano()), 10*time.Second, 2*time.Second)
 }
 
 // TestEventBus_HandlerErrorNacksWithoutRequeue verifies that a failing
