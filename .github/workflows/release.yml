@@ -20,12 +20,13 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
+      checks: write
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: '1.26'
 
@@ -47,7 +48,7 @@ jobs:
         run: go vet ./...
 
       - name: Lint
-        uses: golangci/golangci-lint-action@v9
+        uses: golangci/golangci-lint-action@db9de0fc1a667e1a49d2291a1a042dff081d78f6 # v9
         with:
           version: v2.12.2
 
@@ -62,7 +63,7 @@ jobs:
         run: go test -race -count=1 ./...
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@c12583777ecdfd3be55c69cf75464299dc01057e # v3
         with:
           generate_release_notes: true
 
@@ -72,13 +73,13 @@ jobs:
           VERSION: ${{ github.ref_name }}
         run: |
           echo "Notifying Go module proxy for $MODULE@$VERSION..."
-          STATUS=$(curl -sL -o /dev/null -w "%{http_code}" \
+          STATUS=$(curl -sL --proto-redir "=https" -o /dev/null -w "%{http_code}" \
             "https://proxy.golang.org/$MODULE/@v/$VERSION.info" \
             || true)
           echo "proxy.golang.org responded with HTTP $STATUS"
           echo ""
           echo "Triggering pkg.go.dev to fetch and display documentation..."
-          STATUS=$(curl -sL -o /dev/null -w "%{http_code}" \
+          STATUS=$(curl -sL --proto-redir "=https" -o /dev/null -w "%{http_code}" \
             "https://pkg.go.dev/$MODULE@$VERSION" \
             || true)
           echo "pkg.go.dev responded with HTTP $STATUS"

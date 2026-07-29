@@ -34,6 +34,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bumped `github.com/rabbitmq/amqp091-go` from v1.12.0 to v1.13.0.
 - Bumped `ossf/scorecard-action` from v2.4.3 to v2.4.4.
 
+### CI / Security
+
+- Replaced broad `permissions: read-all` in `.github/workflows/ci.yml` and
+  `.github/workflows/scorecard.yml` with explicit, minimal permissions.
+- Pinned all GitHub Actions to full commit SHAs in CI, Release, and Scorecard
+  workflows to address SonarCloud supply-chain findings.
+- Enforced HTTPS on redirects in the Release workflow's proxy.golang.org /
+  pkg.go.dev notification `curl` calls.
+
 ### Added
 
 - `sonar-project.properties` for SonarCloud analysis.
