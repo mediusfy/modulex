@@ -1,8 +1,3 @@
-// Package otel provides an OpenTelemetry Tracer adapter for Modulex.
-//
-// It implements the modulex.Tracer interface using an OpenTelemetry
-// TracerProvider, preserving span ancestry and recording errors with the
-// appropriate span status.
 package otel
 
 import (
@@ -51,7 +46,10 @@ func (t *Tracer) SpanContextFromContext(ctx context.Context) modulex.SpanContext
 
 // ContextWithSpanContext implements modulex.Tracer.
 func (t *Tracer) ContextWithSpanContext(ctx context.Context, sc modulex.SpanContext) context.Context {
-	if s, ok := sc.(*spanContext); ok {
+	if sc == nil {
+		return ctx
+	}
+	if s, ok := sc.(*spanContext); ok && s != nil {
 		return oteltrace.ContextWithSpanContext(ctx, s.sc)
 	}
 	return ctx
@@ -91,14 +89,20 @@ type spanContext struct {
 
 // IsValid implements modulex.SpanContext.
 func (s *spanContext) IsValid() bool {
-	return s.sc.IsValid()
+	return s != nil && s.sc.IsValid()
 }
 
 func (s *spanContext) TraceID() string {
+	if s == nil {
+		return ""
+	}
 	return s.sc.TraceID().String()
 }
 
 func (s *spanContext) SpanID() string {
+	if s == nil {
+		return ""
+	}
 	return s.sc.SpanID().String()
 }
 
@@ -108,12 +112,12 @@ func convertAttributes(attrs map[string]any) []attribute.KeyValue {
 		switch val := v.(type) {
 		case string:
 			out = append(out, attribute.String(k, val))
+		case bool:
+			out = append(out, attribute.Bool(k, val))
 		case int:
 			out = append(out, attribute.Int(k, val))
 		case int64:
 			out = append(out, attribute.Int64(k, val))
-		case bool:
-			out = append(out, attribute.Bool(k, val))
 		case float64:
 			out = append(out, attribute.Float64(k, val))
 		default:

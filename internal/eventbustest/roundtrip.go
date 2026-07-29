@@ -12,8 +12,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// RunPublishSubscribeTests exercises a basic publish/subscribe round-trip
-// against the supplied EventBus factory.
 func RunPublishSubscribeTests(t *testing.T, newBus func() modulex.EventBus, topic string, timeout time.Duration) {
 	t.Helper()
 

@@ -1,11 +1,3 @@
-// Package app provides an opinionated bootstrap helper for modulex-based
-// services.
-//
-// Every modulex service entrypoint otherwise hand-writes the same skeleton:
-// construct a Manager, register modules, derive a signal-aware context,
-// drive Init -> Start -> wait -> Stop, and report the first failing step.
-// Run owns that skeleton so main() can stay limited to composing modules and
-// configuration.
 package app
 
 import (
@@ -27,10 +19,6 @@ const defaultShutdownTimeout = 15 * time.Second
 // options holds the resolved configuration for Run, built up from the
 // supplied Option values.
 type options struct {
-	// ctx is stored as a function rather than a context.Context value to avoid
-	// keeping a context in a struct field (which is flagged by static analysis
-	// as an anti-pattern). The function is called once when Run builds the
-	// signal-aware lifecycle context.
 	ctx             func() context.Context
 	signals         []os.Signal
 	shutdownTimeout time.Duration
@@ -42,9 +30,7 @@ type options struct {
 type Option func(*options)
 
 // WithContext sets the base context Run derives its signal-aware lifecycle
-// context from. Defaults to context.Background(). Tests typically pass a
-// cancellable context here instead of relying on OS signals to trigger
-// shutdown.
+// context from. Defaults to context.Background().
 func WithContext(ctx context.Context) Option {
 	return func(o *options) {
 		o.ctx = func() context.Context { return ctx }
@@ -59,8 +45,7 @@ func WithSignals(sig ...os.Signal) Option {
 	}
 }
 
-// WithShutdownTimeout bounds the final StopModules call. Defaults to 15
-// seconds.
+// WithShutdownTimeout bounds the final StopModules call. Defaults to 15 seconds.
 func WithShutdownTimeout(d time.Duration) Option {
 	return func(o *options) {
 		o.shutdownTimeout = d
@@ -68,7 +53,7 @@ func WithShutdownTimeout(d time.Duration) Option {
 }
 
 // WithManagerOptions passes additional modulex.ManagerOption values through
-// to modulex.NewManager, e.g. WithTracer, WithEventBus, or WithPanicPolicy.
+// to modulex.NewManager.
 func WithManagerOptions(opts ...modulex.ManagerOption) Option {
 	return func(o *options) {
 		o.managerOpts = append(o.managerOpts, opts...)
@@ -76,9 +61,7 @@ func WithManagerOptions(opts ...modulex.ManagerOption) Option {
 }
 
 // WithSetup registers a hook that runs against the constructed Manager after
-// NewManager but before modules are registered and initialized. Use this for
-// wiring that must happen before Init, such as registering a Chi router via
-// modulexchi.RegisterRouter.
+// NewManager but before modules are registered and initialized.
 func WithSetup(fn func(*modulex.Manager) error) Option {
 	return func(o *options) {
 		o.setup = fn
@@ -87,19 +70,6 @@ func WithSetup(fn func(*modulex.Manager) error) Option {
 
 // Run constructs a modulex.Manager, registers modules, and drives the full
 // Init -> Start -> wait-for-shutdown -> Stop lifecycle.
-//
-// Run blocks until the context derived from WithContext (or
-// context.Background() by default) is cancelled or one of the configured
-// shutdown signals (os.Interrupt and syscall.SIGTERM by default) is
-// received, then stops the manager with a bounded timeout. It returns the
-// first error encountered at any step, wrapped with context about which
-// step failed; Run itself never calls os.Exit, so callers remain free to
-// decide how to report the error:
-//
-//	if err := app.Run(logger, configLoader, modules); err != nil {
-//	    logger.Error("application failed", slog.Any("error", err))
-//	    os.Exit(1)
-//	}
 func Run(logger *slog.Logger, configLoader func(target interface{}) error, modules []modulex.Module, opts ...Option) error {
 	if logger == nil {
 		logger = slog.Default()
@@ -130,14 +100,27 @@ func Run(logger *slog.Logger, configLoader func(target interface{}) error, modul
 		}
 	}
 
-	for _, mod := range modules {
+	for i, mod := range modules {
+		if mod == nil {
+			return fmt.Errorf("app: module at index %d must not be nil", i)
+		}
 		if err := mgr.RegisterModule(mod); err != nil {
-			return fmt.Errorf("app: failed to register module: %w", err)
+			return fmt.Errorf("app: failed to register module %q: %w", mod.Name(), err)
 		}
 	}
 
 	ctx, stop := signal.NotifyContext(cfg.ctx(), cfg.signals...)
 	defer stop()
+
+	// Ensure resources are stopped if Init or Start fails midway
+	var fullyStarted bool
+	defer func() {
+		if !fullyStarted {
+			stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cfg.shutdownTimeout)
+			defer cancel()
+			_ = mgr.StopModules(stopCtx)
+		}
+	}()
 
 	if err := mgr.InitModules(ctx); err != nil {
 		return fmt.Errorf("app: init failed: %w", err)
@@ -146,15 +129,12 @@ func Run(logger *slog.Logger, configLoader func(target interface{}) error, modul
 		return fmt.Errorf("app: start failed: %w", err)
 	}
 
+	fullyStarted = true
 	logger.Info("application running")
+
 	<-ctx.Done()
 	logger.Info("shutdown signal received, stopping modules")
 
-	// ctx is already cancelled by this point (that's why we're here), so
-	// deriving the shutdown deadline from it would produce an
-	// already-expired context and make StopModules fail immediately.
-	// WithoutCancel keeps ctx's values without inheriting its cancellation
-	// (same precedent as httpx.Serve's own shutdown context).
 	stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cfg.shutdownTimeout)
 	defer cancel()
 
