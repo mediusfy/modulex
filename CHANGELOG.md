@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `Manager.InitModules` and `Manager.StartModules` now share a common
+  phase-runner helper, eliminating duplicated lifecycle-loop logic flagged by
+  SonarCloud.
+- `rabbitmq.EventBus.Subscribe` is refactored into `checkClosed`,
+  `startConsumer`, `registerConsumer`, and `consumeLoop` helpers.
+- `nats.EventBus.Subscribe` no longer spawns a per-subscription goroutine to
+  unsubscribe on context cancellation; `Close` already unsubscribes all
+  subscriptions.
+
+### Changed
+
+- `app.Run` stores the user-provided base context as a function rather than a
+  `context.Context` value to avoid the context-in-struct anti-pattern.
+- Bumped `github.com/rabbitmq/amqp091-go` from v1.12.0 to v1.13.0.
+- Bumped `ossf/scorecard-action` from v2.4.3 to v2.4.4.
+
+### Added
+
+- `sonar-project.properties` for SonarCloud analysis.
+- `docs/reviews/28-07-code_review.md`: moved the code-review artifact out of
+  the repository root.
+
+## [0.5.1] - 2026-07-28
+
+### Fixed
+
+- `rabbitmq.EventBus.Close` is now idempotent; calling it more than once no
+  longer attempts redundant `ch.Cancel` calls.
+- `rabbitmq.EventBus.Subscribe` removes the TOCTOU window between the initial
+  closed check and consumer registration.
+- `nats.EventBus.Subscribe` no longer spawns a redundant goroutine per
+  subscription; `Close` unsubscribes all subscriptions and cancels their
+  contexts.
+- `otel.NewProviderFromEnv` returns an error for a malformed
+  `OTEL_TRACES_SAMPLER_ARG` instead of silently defaulting to `1.0`
+  (always-sample).
+
+### Changed
+
+- Cleaned up redundant doc comments and clarified `EventBus` / `EventHandler`
+  semantics in `modulex.go`.
+- Refactored `chi/chi_test.go` error-path tests into a single table-driven
+  test.
+- Updated wording in `CODING_STANDARDS.md`, `Makefile`, `README.md`, and
+  planning docs.
+- Minor `examples/` cleanups.
+
+### Added
+
+- `28-07-code_review.md` at the repository root: documented the v0.5.0
+  code-review findings and their resolutions.
+- `docs/adr/adr-0031-modulex-value-and-specialization-roadmap.md`.
+- `docs/adr/adr-0032-agent-first-development-experience.md`.
+- `modulex/app` package referenced from `doc.go`.
+
 ## [0.5.0] - 2026-07-28
 
 ### Changed

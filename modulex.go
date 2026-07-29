@@ -820,6 +820,45 @@ func (m *Manager) ExportDAG() string {
 	return sb.String()
 }
 
+// runPhase executes a lifecycle phase (e.g. InitModules or StartModules)
+// over ordered modules. It returns the number of modules successfully
+// processed and the first error encountered. phase names the parent span and
+// appears in the cancellation message; moduleSpanPrefix names each per-module
+// span; action appears in error messages ("init", "start", etc.).
+func (m *Manager) runPhase(
+	ctx context.Context,
+	phase string,
+	moduleSpanPrefix string,
+	action string,
+	ordered []Module,
+	runFn func(context.Context, Module) error,
+) (int, error) {
+	ctx, span := m.startSpan(ctx, phase, map[string]any{
+		"modulex.module_count": len(ordered),
+	})
+	defer span.End()
+
+	count := 0
+	for _, mod := range ordered {
+		if err := ctx.Err(); err != nil {
+			return count, fmt.Errorf("%s cancelled: %w", action, err)
+		}
+
+		modCtx, modSpan := m.startSpan(ctx, fmt.Sprintf("%s:%s", moduleSpanPrefix, mod.Name()), map[string]any{
+			"modulex.module_name": mod.Name(),
+		})
+		if err := runFn(modCtx, mod); err != nil {
+			modSpan.RecordError(err)
+			modSpan.End()
+			span.RecordError(err)
+			return count, fmt.Errorf("failed to %s module %q: %w", action, mod.Name(), err)
+		}
+		modSpan.End()
+		count++
+	}
+	return count, nil
+}
+
 // InitModules sorts the modules topologically based on dependencies,
 // then initializes them sequentially in dependency order inside trace spans.
 //
@@ -836,7 +875,9 @@ func (m *Manager) InitModules(ctx context.Context) error {
 		return m.finalizeInitFailure(ctx, err, nil)
 	}
 
-	initializedCount, initErr := m.runInitModules(ctx, ordered)
+	initializedCount, initErr := m.runPhase(ctx, "InitModules", "InitModule", "init", ordered, func(ctx context.Context, mod Module) error {
+		return mod.Init(ctx, m)
+	})
 	if initErr != nil {
 		return m.finalizeInitFailure(ctx, initErr, ordered[:initializedCount])
 	}
@@ -868,62 +909,35 @@ func (m *Manager) lockSortedModules() ([]Module, error) {
 	return ordered, nil
 }
 
-func (m *Manager) runInitModules(ctx context.Context, ordered []Module) (int, error) {
-	ctx, span := m.startSpan(ctx, "InitModules", map[string]any{
-		"modulex.module_count": len(ordered),
-	})
-	defer span.End()
-
-	initializedCount := 0
-	for _, mod := range ordered {
-		if err := ctx.Err(); err != nil {
-			return initializedCount, fmt.Errorf("init cancelled: %w", err)
-		}
-
-		modCtx, modSpan := m.startSpan(ctx, fmt.Sprintf("InitModule:%s", mod.Name()), map[string]any{
-			"modulex.module_name": mod.Name(),
-		})
-		if err := mod.Init(modCtx, m); err != nil {
-			modSpan.RecordError(err)
-			modSpan.End()
-			span.RecordError(err)
-			return initializedCount, fmt.Errorf("failed to init module %q: %w", mod.Name(), err)
-		}
-		modSpan.End()
-		initializedCount++
-	}
-	return initializedCount, nil
+func (m *Manager) finalizeInitFailure(ctx context.Context, err error, initialized []Module) error {
+	return m.finalizeFailure(ctx, err,
+		func(ctx context.Context) error { return m.rollback(ctx, initialized, "init rollback") },
+		func() {
+			m.mu.Lock()
+			m.orderedMods = nil
+			m.mu.Unlock()
+		},
+	)
 }
 
-func (m *Manager) finalizeInitFailure(ctx context.Context, err error, initialized []Module) error {
+// finalizeFailure joins shutdown-related errors, rolls back the phase, runs
+// an optional cleanup hook, closes the event bus, and transitions the manager
+// to the stopped state.
+func (m *Manager) finalizeFailure(ctx context.Context, err error, rollback func(context.Context) error, cleanup func()) error {
 	if waitErr := m.waitForTasks(ctx); waitErr != nil {
 		err = errors.Join(err, waitErr)
 	}
-	if rollbackErr := m.rollbackInit(ctx, initialized); rollbackErr != nil {
+	if rollbackErr := rollback(ctx); rollbackErr != nil {
 		err = errors.Join(err, rollbackErr)
 	}
 	if closeErr := m.closeEventBus(ctx); closeErr != nil {
 		err = errors.Join(err, closeErr)
 	}
-	m.mu.Lock()
-	m.orderedMods = nil
-	m.mu.Unlock()
+	if cleanup != nil {
+		cleanup()
+	}
 	m.setState(StateStopped)
 	return err
-}
-
-// rollbackInit stops modules that were successfully initialized before a later
-// init failure. Only modules that implement Stoppable are stopped. Errors from
-// individual stops are joined together.
-func (m *Manager) rollbackInit(ctx context.Context, initialized []Module) error {
-	var errs []error
-	for i := len(initialized) - 1; i >= 0; i-- {
-		mod := initialized[i]
-		if err := m.stopModule(ctx, mod, "init rollback"); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
 }
 
 // StartModules starts all registered modules in topological dependency order inside trace spans.
@@ -945,59 +959,26 @@ func (m *Manager) StartModules(ctx context.Context) error {
 	copy(mods, m.orderedMods)
 	m.mu.RUnlock()
 
-	ctx, span := m.startSpan(ctx, "StartModules", map[string]any{
-		"modulex.module_count": len(mods),
-	})
-	defer span.End()
-
-	var startErr error
-	startedCount := 0
-	for _, mod := range mods {
-		if err := ctx.Err(); err != nil {
-			startErr = fmt.Errorf("start cancelled: %w", err)
-			break
-		}
-
-		modCtx, modSpan := m.startSpan(ctx, fmt.Sprintf("StartModule:%s", mod.Name()), map[string]any{
-			"modulex.module_name": mod.Name(),
-		})
-		if err := m.startModule(modCtx, mod); err != nil {
-			modSpan.RecordError(err)
-			modSpan.End()
-			span.RecordError(err)
-			startErr = fmt.Errorf("failed to start module %q: %w", mod.Name(), err)
-			break
-		}
-		modSpan.End()
-		startedCount++
-	}
-
+	startedCount, startErr := m.runPhase(ctx, "StartModules", "StartModule", "start", mods, m.startModule)
 	if startErr != nil {
-		if waitErr := m.waitForTasks(ctx); waitErr != nil {
-			startErr = errors.Join(startErr, waitErr)
-		}
-		if rollbackErr := m.rollbackStart(ctx, mods[:startedCount]); rollbackErr != nil {
-			startErr = errors.Join(startErr, rollbackErr)
-		}
-		if closeErr := m.closeEventBus(ctx); closeErr != nil {
-			startErr = errors.Join(startErr, closeErr)
-		}
-		m.setState(StateStopped)
-		return startErr
+		return m.finalizeFailure(ctx, startErr,
+			func(ctx context.Context) error { return m.rollback(ctx, mods[:startedCount], "start rollback") },
+			nil,
+		)
 	}
 
 	m.setState(StateRunning)
 	return nil
 }
 
-// rollbackStart stops modules that were successfully started before a later
-// start failure. Only modules that implement Stoppable are stopped. Errors from
-// individual stops are joined together.
-func (m *Manager) rollbackStart(ctx context.Context, started []Module) error {
+// rollback stops modules in reverse order during failure recovery. Only
+// modules that implement Stoppable are stopped. Errors from individual stops
+// are joined together.
+func (m *Manager) rollback(ctx context.Context, mods []Module, phase string) error {
 	var errs []error
-	for i := len(started) - 1; i >= 0; i-- {
-		mod := started[i]
-		if err := m.stopModule(ctx, mod, "start rollback"); err != nil {
+	for i := len(mods) - 1; i >= 0; i-- {
+		mod := mods[i]
+		if err := m.stopModule(ctx, mod, phase); err != nil {
 			errs = append(errs, err)
 		}
 	}
