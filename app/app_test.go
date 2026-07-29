@@ -191,6 +191,14 @@ func TestRun_SetupHookRunsBeforeInit(t *testing.T) {
 		t.Fatal("timed out waiting for module Init")
 	}
 
+	// Wait for StartModules to finish before cancelling, otherwise StartModules
+	// may race with the cancelled context and return "start cancelled".
+	select {
+	case <-mod.startedCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for module to start")
+	}
+
 	cancel()
 
 	select {
