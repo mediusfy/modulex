@@ -826,43 +826,58 @@ func (m *Manager) ExportDAG() string {
 // If a module fails to initialize, all previously initialized modules are
 // stopped in reverse order and the manager moves to the stopped state.
 func (m *Manager) InitModules(ctx context.Context) error {
-	m.stateMu.Lock()
-	state := m.state
-	if state != StateConfiguring {
-		m.stateMu.Unlock()
+	state, err := m.transitionToInitializing()
+	if err != nil {
 		return fmt.Errorf("%w: InitModules called in %q state", ErrInvalidLifecycleState, state)
 	}
-	m.state = StateInitializing
-	m.stateMu.Unlock()
 
+	ordered, err := m.lockSortedModules()
+	if err != nil {
+		return m.finalizeInitFailure(ctx, err, nil)
+	}
+
+	initializedCount, initErr := m.runInitModules(ctx, ordered)
+	if initErr != nil {
+		return m.finalizeInitFailure(ctx, initErr, ordered[:initializedCount])
+	}
+
+	m.setState(StateInitialized)
+	return nil
+}
+
+func (m *Manager) transitionToInitializing() (LifecycleState, error) {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	if m.state != StateConfiguring {
+		return m.state, fmt.Errorf("transition requested in %q state", m.state)
+	}
+	m.state = StateInitializing
+	return StateInitializing, nil
+}
+
+func (m *Manager) lockSortedModules() ([]Module, error) {
 	m.mu.Lock()
 	ordered, err := m.sortModules()
 	if err != nil {
 		m.orderedMods = nil
 		m.mu.Unlock()
-		if waitErr := m.waitForTasks(ctx); waitErr != nil {
-			err = errors.Join(err, waitErr)
-		}
-		if closeErr := m.closeEventBus(ctx); closeErr != nil {
-			err = errors.Join(err, closeErr)
-		}
-		m.setState(StateStopped)
-		return err
+		return nil, err
 	}
 	m.orderedMods = ordered
 	m.mu.Unlock()
+	return ordered, nil
+}
 
+func (m *Manager) runInitModules(ctx context.Context, ordered []Module) (int, error) {
 	ctx, span := m.startSpan(ctx, "InitModules", map[string]any{
 		"modulex.module_count": len(ordered),
 	})
 	defer span.End()
 
-	var initErr error
 	initializedCount := 0
 	for _, mod := range ordered {
 		if err := ctx.Err(); err != nil {
-			initErr = fmt.Errorf("init cancelled: %w", err)
-			break
+			return initializedCount, fmt.Errorf("init cancelled: %w", err)
 		}
 
 		modCtx, modSpan := m.startSpan(ctx, fmt.Sprintf("InitModule:%s", mod.Name()), map[string]any{
@@ -872,32 +887,29 @@ func (m *Manager) InitModules(ctx context.Context) error {
 			modSpan.RecordError(err)
 			modSpan.End()
 			span.RecordError(err)
-			initErr = fmt.Errorf("failed to init module %q: %w", mod.Name(), err)
-			break
+			return initializedCount, fmt.Errorf("failed to init module %q: %w", mod.Name(), err)
 		}
 		modSpan.End()
 		initializedCount++
 	}
+	return initializedCount, nil
+}
 
-	if initErr != nil {
-		if waitErr := m.waitForTasks(ctx); waitErr != nil {
-			initErr = errors.Join(initErr, waitErr)
-		}
-		if rollbackErr := m.rollbackInit(ctx, ordered[:initializedCount]); rollbackErr != nil {
-			initErr = errors.Join(initErr, rollbackErr)
-		}
-		if closeErr := m.closeEventBus(ctx); closeErr != nil {
-			initErr = errors.Join(initErr, closeErr)
-		}
-		m.mu.Lock()
-		m.orderedMods = nil
-		m.mu.Unlock()
-		m.setState(StateStopped)
-		return initErr
+func (m *Manager) finalizeInitFailure(ctx context.Context, err error, initialized []Module) error {
+	if waitErr := m.waitForTasks(ctx); waitErr != nil {
+		err = errors.Join(err, waitErr)
 	}
-
-	m.setState(StateInitialized)
-	return nil
+	if rollbackErr := m.rollbackInit(ctx, initialized); rollbackErr != nil {
+		err = errors.Join(err, rollbackErr)
+	}
+	if closeErr := m.closeEventBus(ctx); closeErr != nil {
+		err = errors.Join(err, closeErr)
+	}
+	m.mu.Lock()
+	m.orderedMods = nil
+	m.mu.Unlock()
+	m.setState(StateStopped)
+	return err
 }
 
 // rollbackInit stops modules that were successfully initialized before a later

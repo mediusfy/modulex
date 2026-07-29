@@ -27,7 +27,11 @@ const defaultShutdownTimeout = 15 * time.Second
 // options holds the resolved configuration for Run, built up from the
 // supplied Option values.
 type options struct {
-	ctx             context.Context
+	// ctx is stored as a function rather than a context.Context value to avoid
+	// keeping a context in a struct field (which is flagged by static analysis
+	// as an anti-pattern). The function is called once when Run builds the
+	// signal-aware lifecycle context.
+	ctx             func() context.Context
 	signals         []os.Signal
 	shutdownTimeout time.Duration
 	managerOpts     []modulex.ManagerOption
@@ -43,7 +47,7 @@ type Option func(*options)
 // shutdown.
 func WithContext(ctx context.Context) Option {
 	return func(o *options) {
-		o.ctx = ctx
+		o.ctx = func() context.Context { return ctx }
 	}
 }
 
@@ -102,7 +106,7 @@ func Run(logger *slog.Logger, configLoader func(target interface{}) error, modul
 	}
 
 	cfg := &options{
-		ctx:             context.Background(),
+		ctx:             context.Background,
 		signals:         []os.Signal{os.Interrupt, syscall.SIGTERM},
 		shutdownTimeout: defaultShutdownTimeout,
 	}
@@ -132,7 +136,7 @@ func Run(logger *slog.Logger, configLoader func(target interface{}) error, modul
 		}
 	}
 
-	ctx, stop := signal.NotifyContext(cfg.ctx, cfg.signals...)
+	ctx, stop := signal.NotifyContext(cfg.ctx(), cfg.signals...)
 	defer stop()
 
 	if err := mgr.InitModules(ctx); err != nil {

@@ -117,7 +117,7 @@ func NewProviderFromEnv(serviceName string, opts ...ProviderOption) (*sdktrace.T
 	cfg := providerConfig{
 		protocol:    envOrDefault(envExporterProtocol, defaultExporterProtocol),
 		endpoint:    os.Getenv(envExporterEndpoint),
-		sampleRatio: envFloatOrDefault(envSampleRatio, defaultSampleRatio),
+		sampleRatio: sampleRatio,
 	}
 	for _, opt := range opts {
 		opt(&cfg)

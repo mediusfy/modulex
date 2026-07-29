@@ -130,11 +130,8 @@ func (r *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	r.mu.Lock()
-	closed := r.closed
-	r.mu.Unlock()
-	if closed {
-		return fmt.Errorf("failed to subscribe to queue %q: event bus is closed", topic)
+	if err := r.checkClosed(); err != nil {
+		return fmt.Errorf("failed to subscribe to queue %q: %w", topic, err)
 	}
 
 	if _, err := r.ch.QueueDeclare(
@@ -148,6 +145,33 @@ func (r *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 		return fmt.Errorf("failed to declare queue %q: %w", topic, err)
 	}
 
+	tag, msgs, err := r.startConsumer(topic)
+	if err != nil {
+		return err
+	}
+
+	subCtx, cancel := context.WithCancel(ctx)
+	stopped, err := r.registerConsumer(tag, cancel)
+	if err != nil {
+		cancel()
+		_ = r.ch.Cancel(tag, false)
+		return fmt.Errorf("failed to subscribe to queue %q: %w", topic, err)
+	}
+
+	go r.consumeLoop(subCtx, topic, handler, msgs, cancel, stopped)
+	return nil
+}
+
+func (r *EventBus) checkClosed() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return fmt.Errorf("event bus is closed")
+	}
+	return nil
+}
+
+func (r *EventBus) startConsumer(topic string) (string, <-chan amqp.Delivery, error) {
 	r.mu.Lock()
 	tag := fmt.Sprintf("modulex-consumer-%d", r.nextTag)
 	r.nextTag++
@@ -163,16 +187,16 @@ func (r *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 		nil,   // args
 	)
 	if err != nil {
-		return fmt.Errorf("failed to consume queue %q: %w", topic, err)
+		return "", nil, fmt.Errorf("failed to consume queue %q: %w", topic, err)
 	}
+	return tag, msgs, nil
+}
 
-	subCtx, cancel := context.WithCancel(ctx)
+func (r *EventBus) registerConsumer(tag string, cancel context.CancelFunc) (chan struct{}, error) {
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.closed {
-		r.mu.Unlock()
-		cancel()
-		_ = r.ch.Cancel(tag, false)
-		return fmt.Errorf("failed to subscribe to queue %q: event bus is closed", topic)
+		return nil, fmt.Errorf("event bus is closed")
 	}
 	if r.active == 0 {
 		r.stopped = make(chan struct{})
@@ -180,57 +204,59 @@ func (r *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 	r.active++
 	r.tags = append(r.tags, tag)
 	r.cancels = append(r.cancels, cancel)
-	r.mu.Unlock()
+	return r.stopped, nil
+}
 
-	go func() {
-		defer func() {
-			cancel()
-			r.mu.Lock()
-			r.active--
-			if r.active == 0 {
-				close(r.stopped)
-			}
-			r.mu.Unlock()
-		}()
-		for {
-			select {
-			case <-subCtx.Done():
-				return
-			case d, ok := <-msgs:
-				if !ok {
-					return
-				}
-				var headers amqp.Table
-				if d.Headers != nil {
-					headers = d.Headers
-				} else {
-					headers = make(amqp.Table)
-				}
-				msgCtx := otel.GetTextMapPropagator().Extract(subCtx, amqpHeadersCarrier(headers))
-				if err := handler(msgCtx, d.Body); err != nil {
-					r.logger.ErrorContext(msgCtx, "handler error, message nacked without requeue",
-						slog.String(logKeyQueue, topic),
-						slog.Any(logKeyError, err),
-					)
-					if nackErr := d.Nack(false, false); nackErr != nil {
-						r.logger.ErrorContext(msgCtx, "failed to nack message",
-							slog.String(logKeyQueue, topic),
-							slog.Any(logKeyError, nackErr),
-						)
-					}
-					continue
-				}
-				if ackErr := d.Ack(false); ackErr != nil {
-					r.logger.ErrorContext(msgCtx, "failed to ack message",
-						slog.String(logKeyQueue, topic),
-						slog.Any(logKeyError, ackErr),
-					)
-				}
-			}
+func (r *EventBus) consumeLoop(ctx context.Context, topic string, handler modulex.EventHandler, msgs <-chan amqp.Delivery, cancel context.CancelFunc, stopped chan struct{}) {
+	defer func() {
+		cancel()
+		r.mu.Lock()
+		r.active--
+		if r.active == 0 {
+			close(stopped)
 		}
+		r.mu.Unlock()
 	}()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case d, ok := <-msgs:
+			if !ok {
+				return
+			}
+			r.handleDelivery(ctx, topic, handler, d)
+		}
+	}
+}
 
-	return nil
+func (r *EventBus) handleDelivery(ctx context.Context, topic string, handler modulex.EventHandler, d amqp.Delivery) {
+	var headers amqp.Table
+	if d.Headers != nil {
+		headers = d.Headers
+	} else {
+		headers = make(amqp.Table)
+	}
+	msgCtx := otel.GetTextMapPropagator().Extract(ctx, amqpHeadersCarrier(headers))
+	if err := handler(msgCtx, d.Body); err != nil {
+		r.logger.ErrorContext(msgCtx, "handler error, message nacked without requeue",
+			slog.String(logKeyQueue, topic),
+			slog.Any(logKeyError, err),
+		)
+		if nackErr := d.Nack(false, false); nackErr != nil {
+			r.logger.ErrorContext(msgCtx, "failed to nack message",
+				slog.String(logKeyQueue, topic),
+				slog.Any(logKeyError, nackErr),
+			)
+		}
+		return
+	}
+	if ackErr := d.Ack(false); ackErr != nil {
+		r.logger.ErrorContext(msgCtx, "failed to ack message",
+			slog.String(logKeyQueue, topic),
+			slog.Any(logKeyError, ackErr),
+		)
+	}
 }
 
 // Close implements modulex.EventBus. It cancels all active queue consumers,

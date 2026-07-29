@@ -20,7 +20,6 @@ func TestEventBusCloseIsIdempotent(t *testing.T) {
 func TestEventBusCloseHonorsContextWhileConsumersAreActive(t *testing.T) {
 	stopped := make(chan struct{})
 	eb := &EventBus{
-		closed:  true,
 		active:  1,
 		stopped: stopped,
 	}
