@@ -35,6 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   environment variable to explicitly force TLS on/off for the OTLP exporter.
   Endpoints are now scheme-sanitized, and loopback hosts default to insecure
   when unspecified.
+- `docs/planning/agent-safety-policy.md` (MOD-61): documents safe defaults,
+  command classification, protected paths, secret-handling rules, and the
+  human-approval boundary for AI coding agents (Claude, Kimi, OpenAI/Codex,
+  generic MCP clients, no-hook environments) working in this repository.
+  Linked from `AGENTS.md`.
 
 ### Changed
 

@@ -1,4 +1,14 @@
 
+## Agent safety policy
+
+Before making mutating, networked, or external changes (pushing, opening/
+merging PRs, tagging releases, transitioning Jira issues, deleting
+files/branches, or editing CI config), read
+[docs/planning/agent-safety-policy.md](docs/planning/agent-safety-policy.md).
+It defines command classification, protected paths, secret-handling rules,
+and which actions require explicit human approval. It applies to Claude,
+Kimi, OpenAI/Codex, generic MCP clients, and no-hook environments alike.
+
 ## Commands
 
 - **Build all**: `make build` (builds Go services + frontend)
