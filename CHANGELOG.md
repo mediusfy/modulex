@@ -31,6 +31,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `Manager.ModuleContract` (MOD-60): returns a machine-readable
+  `ModuleContract` (`ModuleContractEntry` per module) describing registered
+  modules and their dependency edges, independent of the existing Mermaid
+  `ExportDAG`. Modules and each module's `DependsOn` list are sorted
+  alphabetically so the JSON output is byte-identical across calls, making it
+  safe to diff between releases or deployments.
+- `Manager.Diagnostics` (MOD-60): returns a `Diagnostics` snapshot covering
+  lifecycle state, the module contract, registered service names (never
+  values), supervised task status (`TaskDiagnostic`), health/readiness check
+  names, and lifecycle timings (`LifecycleTimings`, `ModuleTiming`). The
+  result is safe to log or attach to a support ticket since it never exposes
+  service values, check function bodies, or task closures. `TaskHandle` gained
+  non-blocking `Done` and `Err` accessors to support this. See
+  `docs/planning/diagnostics-guide.md`.
 - `otel.WithInsecure` provider option and `OTEL_EXPORTER_OTLP_INSECURE`
   environment variable to explicitly force TLS on/off for the OTLP exporter.
   Endpoints are now scheme-sanitized, and loopback hosts default to insecure
