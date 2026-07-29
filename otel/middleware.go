@@ -1,7 +1,10 @@
 package otel
 
 import (
+	"bufio"
 	"context"
+	"fmt"
+	"net"
 	"net/http"
 
 	"go.opentelemetry.io/otel"
@@ -14,11 +17,6 @@ import (
 	"github.com/mediusfy/modulex"
 )
 
-// HTTPMiddleware returns an HTTP middleware that creates a span for each
-// request. It extracts W3C trace context from incoming headers, records HTTP
-// attributes (method, path, status code), and marks 5xx responses as errors.
-//
-// If tp is nil, the global OpenTelemetry TracerProvider is used.
 func HTTPMiddleware(tp oteltrace.TracerProvider, opts ...HTTPOption) func(http.Handler) http.Handler {
 	tracer, prop := resolveOTel(tp)
 	var cfg httpConfig
@@ -38,10 +36,12 @@ func HTTPMiddleware(tp oteltrace.TracerProvider, opts ...HTTPOption) func(http.H
 			)
 			defer span.End()
 
-			span.SetAttributes(semconv.HTTPRequestMethodKey.String(r.Method))
-			span.SetAttributes(semconv.URLPathKey.String(r.URL.Path))
+			span.SetAttributes(
+				semconv.HTTPRequestMethodKey.String(r.Method),
+				semconv.URLPathKey.String(r.URL.Path),
+			)
 
-			sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+			sw := newStatusWriter(w)
 			next.ServeHTTP(sw, r.WithContext(ctx))
 
 			span.SetAttributes(semconv.HTTPResponseStatusCodeKey.Int(sw.status))
@@ -68,11 +68,8 @@ func WithHTTPSpanName(fn func(r *http.Request) string) HTTPOption {
 }
 
 // SubscriberMiddleware wraps an EventHandler with automatic span creation.
-// Each handler invocation gets a child span named after the topic, with the
-// topic recorded as an attribute. Handler errors are recorded on the span.
-//
-// If tp is nil, the global OpenTelemetry TracerProvider is used.
-func SubscriberMiddleware(tp oteltrace.TracerProvider, opts ...SubscriberOption) func(topic string, handler modulex.EventHandler) modulex.EventHandler {
+func SubscriberMiddleware(tp oteltrace.TracerProvider,
+	opts ...SubscriberOption) func(topic string, handler modulex.EventHandler) modulex.EventHandler {
 	tracer, _ := resolveOTel(tp)
 	var cfg subscriberConfig
 	for _, o := range opts {
@@ -123,12 +120,44 @@ func resolveOTel(tp oteltrace.TracerProvider) (oteltrace.Tracer, propagation.Tex
 	return tp.Tracer("github.com/mediusfy/modulex/otel"), otel.GetTextMapPropagator()
 }
 
+// statusWriter wraps http.ResponseWriter while preserving optional interfaces.
 type statusWriter struct {
 	http.ResponseWriter
-	status int
+	status      int
+	wroteHeader bool
+}
+
+func newStatusWriter(w http.ResponseWriter) *statusWriter {
+	return &statusWriter{ResponseWriter: w, status: http.StatusOK}
 }
 
 func (w *statusWriter) WriteHeader(status int) {
+	if w.wroteHeader {
+		return
+	}
 	w.status = status
+	w.wroteHeader = true
 	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *statusWriter) Write(b []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(b)
+}
+
+// Support http.Flusher interface (Server-Sent Events)
+func (w *statusWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Support http.Hijacker interface (WebSockets)
+func (w *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := w.ResponseWriter.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+	return nil, nil, fmt.Errorf("http.Hijacker not supported by underlying ResponseWriter")
 }

@@ -14,8 +14,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// RunHandlerErrorLoggingTests verifies that handler errors are logged and
-// successful handlers are not logged as errors.
 func RunHandlerErrorLoggingTests(t *testing.T, newBus func(logger *slog.Logger) modulex.EventBus, topic string, timeout, logWait time.Duration) {
 	t.Helper()
 
