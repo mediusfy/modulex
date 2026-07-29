@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -158,6 +159,27 @@ func (h *TaskHandle) Name() string { return h.name }
 // Wait blocks until the task finishes and returns its final error.
 func (h *TaskHandle) Wait() error {
 	<-h.done
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.err
+}
+
+// Done reports whether the task has finished, without blocking. It is safe to
+// call concurrently with Wait and from diagnostics code that must not block
+// on a long-running task.
+func (h *TaskHandle) Done() bool {
+	select {
+	case <-h.done:
+		return true
+	default:
+		return false
+	}
+}
+
+// Err returns the task's final error. It only reflects a meaningful value
+// once Done reports true; a task that is still running always reports a nil
+// error here, regardless of what it eventually returns.
+func (h *TaskHandle) Err() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.err
@@ -481,6 +503,13 @@ type Manager struct {
 	healthChecks    map[string]func(context.Context) error
 	readinessMu     sync.RWMutex
 	readinessChecks map[string]func(context.Context) error
+	// timingsMu protects the lifecycle timing fields below, following the
+	// existing field-per-concern locking pattern (healthMu, readinessMu).
+	timingsMu    sync.RWMutex
+	initTotal    time.Duration
+	startTotal   time.Duration
+	initTimings  map[string]time.Duration
+	startTimings map[string]time.Duration
 }
 
 var _ Registry = (*Manager)(nil)
@@ -836,11 +865,64 @@ func (m *Manager) ExportDAG() string {
 	return sb.String()
 }
 
+// recordInitTiming stores the total InitModules duration and the per-module
+// init durations captured by runPhase, replacing any previous values. It is
+// safe to call after a partial failure: whatever modules were attempted
+// before the error still have their durations recorded.
+func (m *Manager) recordInitTiming(total time.Duration, perModule map[string]time.Duration) {
+	m.timingsMu.Lock()
+	defer m.timingsMu.Unlock()
+	m.initTotal = total
+	m.initTimings = perModule
+}
+
+// recordStartTiming stores the total StartModules duration and the
+// per-module start durations captured by runPhase, replacing any previous
+// values.
+func (m *Manager) recordStartTiming(total time.Duration, perModule map[string]time.Duration) {
+	m.timingsMu.Lock()
+	defer m.timingsMu.Unlock()
+	m.startTotal = total
+	m.startTimings = perModule
+}
+
+// lifecycleTimings returns a snapshot of the recorded lifecycle timings.
+func (m *Manager) lifecycleTimings() LifecycleTimings {
+	m.timingsMu.RLock()
+	defer m.timingsMu.RUnlock()
+	return LifecycleTimings{
+		InitModules:  m.initTotal,
+		StartModules: m.startTotal,
+		ModuleInit:   sortedModuleTimings(m.initTimings),
+		ModuleStart:  sortedModuleTimings(m.startTimings),
+	}
+}
+
+// sortedModuleTimings converts a name -> duration map into a slice sorted by
+// module name, so that lifecycle timings marshal deterministically like
+// every other diagnostics field. It returns nil for an empty or nil input so
+// the field is omitted from JSON via omitempty rather than rendered as an
+// empty array before any phase has run.
+func sortedModuleTimings(in map[string]time.Duration) []ModuleTiming {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]ModuleTiming, 0, len(in))
+	for name, d := range in {
+		out = append(out, ModuleTiming{Name: name, DurationNs: d})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
 // runPhase executes a lifecycle phase (e.g. InitModules or StartModules)
 // over ordered modules. It returns the number of modules successfully
-// processed and the first error encountered. phase names the parent span and
-// appears in the cancellation message; moduleSpanPrefix names each per-module
-// span; action appears in error messages ("init", "start", etc.).
+// processed, a map of per-module wall-clock durations for the modules that
+// were attempted (keyed by module name, populated regardless of whether the
+// phase ultimately succeeded), and the first error encountered. phase names
+// the parent span and appears in the cancellation message; moduleSpanPrefix
+// names each per-module span; action appears in error messages ("init",
+// "start", etc.).
 func (m *Manager) runPhase(
 	ctx context.Context,
 	phase string,
@@ -848,31 +930,35 @@ func (m *Manager) runPhase(
 	action string,
 	ordered []Module,
 	runFn func(context.Context, Module) error,
-) (int, error) {
+) (int, map[string]time.Duration, error) {
 	ctx, span := m.startSpan(ctx, phase, map[string]any{
 		"modulex.module_count": len(ordered),
 	})
 	defer span.End()
 
+	timings := make(map[string]time.Duration, len(ordered))
 	count := 0
 	for _, mod := range ordered {
 		if err := ctx.Err(); err != nil {
-			return count, fmt.Errorf("%s cancelled: %w", action, err)
+			return count, timings, fmt.Errorf("%s cancelled: %w", action, err)
 		}
 
 		modCtx, modSpan := m.startSpan(ctx, fmt.Sprintf("%s:%s", moduleSpanPrefix, mod.Name()), map[string]any{
 			"modulex.module_name": mod.Name(),
 		})
-		if err := runFn(modCtx, mod); err != nil {
+		modStart := time.Now()
+		err := runFn(modCtx, mod)
+		timings[mod.Name()] = time.Since(modStart)
+		if err != nil {
 			modSpan.RecordError(err)
 			modSpan.End()
 			span.RecordError(err)
-			return count, fmt.Errorf("failed to %s module %q: %w", action, mod.Name(), err)
+			return count, timings, fmt.Errorf("failed to %s module %q: %w", action, mod.Name(), err)
 		}
 		modSpan.End()
 		count++
 	}
-	return count, nil
+	return count, timings, nil
 }
 
 // InitModules sorts the modules topologically based on dependencies,
@@ -891,9 +977,11 @@ func (m *Manager) InitModules(ctx context.Context) error {
 		return m.finalizeInitFailure(ctx, err, nil)
 	}
 
-	initializedCount, initErr := m.runPhase(ctx, "InitModules", "InitModule", "init", ordered, func(ctx context.Context, mod Module) error {
+	phaseStart := time.Now()
+	initializedCount, moduleTimings, initErr := m.runPhase(ctx, "InitModules", "InitModule", "init", ordered, func(ctx context.Context, mod Module) error {
 		return mod.Init(ctx, m)
 	})
+	m.recordInitTiming(time.Since(phaseStart), moduleTimings)
 	if initErr != nil {
 		return m.finalizeInitFailure(ctx, initErr, ordered[:initializedCount])
 	}
@@ -975,7 +1063,9 @@ func (m *Manager) StartModules(ctx context.Context) error {
 	copy(mods, m.orderedMods)
 	m.mu.RUnlock()
 
-	startedCount, startErr := m.runPhase(ctx, "StartModules", "StartModule", "start", mods, m.startModule)
+	phaseStart := time.Now()
+	startedCount, moduleTimings, startErr := m.runPhase(ctx, "StartModules", "StartModule", "start", mods, m.startModule)
+	m.recordStartTiming(time.Since(phaseStart), moduleTimings)
 	if startErr != nil {
 		return m.finalizeFailure(ctx, startErr,
 			func(ctx context.Context) error { return m.rollback(ctx, mods[:startedCount], "start rollback") },
