@@ -156,6 +156,38 @@ func (m *Module) Init(ctx context.Context, reg modulex.Registry) error {
 }
 ```
 
+#### gRPC Adapter
+
+```go
+import (
+    googlegrpc "google.golang.org/grpc"
+    modulexgrpc "github.com/mediusfy/modulex/grpc"
+)
+
+grpcServer := googlegrpc.NewServer(modulexgrpc.ServerOptions(myErrorMapping)...)
+myservicepb.RegisterMyServiceServer(grpcServer, myServiceImpl)
+
+listener, err := net.Listen("tcp", ":50051")
+if err != nil {
+    // handle error
+}
+
+server, err := modulexgrpc.NewServer(grpcServer, listener)
+if err != nil {
+    // handle error
+}
+// server implements modulex.Starter/modulex.Stopper — register it (or a
+// module that delegates to it) so the Manager owns starting and gracefully
+// stopping the gRPC listener.
+```
+
+`grpc/` also provides OpenTelemetry trace-context propagation interceptors, a
+consistent domain-error-to-status mapping layer, and a health integration
+backed by the Manager's real registered health/readiness checks. See
+[`docs/planning/grpc-adapter-guide.md`](./docs/planning/grpc-adapter-guide.md)
+for the full design and a worked example that binds the same domain port to
+a local implementation and a remote gRPC client.
+
 ### 3. InMemory Event Bus (For Testing)
 
 Using the `EventBus` interface, you can write an `InMemoryEventBus` backed by simple Go channels/maps to test your business logic completely offline:
@@ -741,6 +773,7 @@ for a detailed comparison with plain constructor injection, Wire, Fx, and Dig.
 - [Diagnostics Guide](./docs/planning/diagnostics-guide.md)
 - [Error Handling](./docs/planning/error-handling-guide.md)
 - [EventBus Messaging Capabilities Guide](./docs/planning/eventbus-capabilities-guide.md)
+- [gRPC Adapter Guide](./docs/planning/grpc-adapter-guide.md)
 - [Lifecycle Guide](./docs/planning/lifecycle-guide.md)
 - [Migration Guide](./docs/planning/migration-guide.md)
 - [Provenance and Handoff Schema](./docs/planning/provenance-handoff-schema.md)
