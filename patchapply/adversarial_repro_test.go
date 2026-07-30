@@ -2,6 +2,8 @@ package patchapply_test
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -270,5 +272,58 @@ func TestAdversarial_ThirdPartyFileAddedToCreatedDirSurvivesUntilSiblingRemoved(
 		t.Log("confirmed: third-party file placed into a package-created directory " +
 			"was removed by Rollback's directory cleanup (RemoveAll) — this is the " +
 			"documented, narrow edge case, not a violation of a stated guarantee")
+	}
+}
+
+// TestAdversarial_SerializedJournalRefusesToRollbackRatherThanDestroyData is
+// a regression test for a real data-loss bug found in review:
+// JournalEntry.OriginalContent is tagged json:"-" (deliberately, so a
+// Journal summary never leaks raw — possibly secret-containing — file
+// content), which means marshaling a Journal to JSON and unmarshaling it
+// back silently loses OriginalContent for every entry. Before this fix,
+// Rollback would then overwrite an existing file with empty content
+// instead of refusing — confirmed by reproducing the scenario against the
+// pre-fix implementation before this test was written. Rollback must now
+// return ErrJournalNotRestorable and leave the file untouched instead.
+func TestAdversarial_SerializedJournalRefusesToRollbackRatherThanDestroyData(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "important.txt")
+	original := []byte("original important content that must never be silently destroyed")
+	mustWrite(t, path, original)
+
+	j, err := patchapply.Apply(dir, []patchapply.FileChange{
+		{Path: "important.txt", NewContent: []byte("modified content")},
+	}, patchapply.ApplyOptions{})
+	if err != nil {
+		t.Fatalf("Apply failed: %v", err)
+	}
+
+	// Simulate persisting the journal (e.g. to disk, or handing it to
+	// another process/tool) and reloading it later — this is exactly the
+	// lossy round-trip JournalEntry.OriginalContent's json:"-" tag causes.
+	data, err := json.Marshal(j)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	var reloaded patchapply.Journal
+	if err := json.Unmarshal(data, &reloaded); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+
+	err = patchapply.Rollback(dir, reloaded)
+	if err == nil {
+		t.Fatal("Rollback on a JSON-round-tripped Journal succeeded, want ErrJournalNotRestorable")
+	}
+	if !errors.Is(err, patchapply.ErrJournalNotRestorable) {
+		t.Fatalf("Rollback error = %v, want it to wrap patchapply.ErrJournalNotRestorable", err)
+	}
+
+	got := mustRead(t, path)
+	if !bytes.Equal(got, []byte("modified content")) {
+		t.Fatalf("file content changed after a refused Rollback: got %q, want the post-Apply content unchanged (%q)",
+			got, "modified content")
+	}
+	if len(got) == 0 {
+		t.Fatal("DATA LOSS: file was overwritten with empty content by Rollback on a JSON-round-tripped Journal")
 	}
 }

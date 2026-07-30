@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `patchapply.Rollback` no longer silently overwrites an existing file with
+  empty content when given a `Journal` that was serialized (e.g. to JSON)
+  and reloaded: `JournalEntry.OriginalContent` is deliberately excluded from
+  JSON so a persisted Journal summary can never leak raw file content, but
+  that made a round-tripped Journal's original bytes silently collapse to
+  `nil` — indistinguishable from "this path didn't exist before." `Rollback`
+  now detects this (a genuine capture always has non-nil content, even
+  `[]byte{}`, for an existing file) and returns the new
+  `patchapply.ErrJournalNotRestorable` instead of destroying data. `Journal`
+  and `JournalEntry`'s doc comments now say explicitly that a Journal is an
+  in-memory handle, not a durable/portable artifact.
+- `Manager.RegisterHealthCheck`/`RegisterReadinessCheck` now reject a nil
+  check function with the new `ErrHealthCheckNil`/`ErrReadinessCheckNil`
+  sentinels, instead of silently storing it. A registered nil check would
+  panic if any caller invoked it without `httpx`'s existing defensive nil
+  guard.
+- `Manager.ExportDAG` now escapes a module name containing Mermaid-
+  significant characters (a literal `"`, `<`, `>`, `-->`, or `]`) instead of
+  interpolating it verbatim: such a name is rendered via a synthetic node ID
+  with its text safely quoted, rather than as a raw, unescaped node
+  identifier and label, which could otherwise produce a malformed diagram or
+  (in a permissive Mermaid rendering configuration) inject Mermaid/HTML
+  syntax. Output for every already-well-formed module name (letters,
+  digits, `_`, `-`) is byte-identical to before this change.
+- `tools/modboundary`'s `-dbschema` glob and `scripts/check-module-
+  boundary.sh`'s own existence check for migration files both previously
+  matched only one directory level (Go's `filepath.Glob` and a bash glob
+  without `shopt -s globstar` both treat `**` exactly like `*`), silently
+  skipping a nested migrations directory. The Go analyzer now supports
+  genuine recursive `**` matching (a pattern without `**` still matches
+  exactly as before, for full backward compatibility); the shell script
+  enables `shopt -s globstar` and its own `-dbschema` invocation uses
+  `**/migrations/*.sql`.
+
 ### Added
 
 - MOD-56: implement the fifth and final ADR-0031 roadmap item, a scaffolding

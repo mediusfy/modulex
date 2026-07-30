@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -72,6 +73,18 @@ var (
 
 	// ErrInvalidReadinessCheckName is returned when a readiness check name is empty.
 	ErrInvalidReadinessCheckName = errors.New("readiness check name must not be empty")
+
+	// ErrHealthCheckNil is returned when RegisterHealthCheck is given a nil
+	// check function. A registered nil check would panic if any caller
+	// invoked it directly rather than defensively nil-checking first (as
+	// the httpx package does); rejecting it at registration means a nil
+	// check function can never reach that map in the first place.
+	ErrHealthCheckNil = errors.New("health check function must not be nil")
+
+	// ErrReadinessCheckNil is returned when RegisterReadinessCheck is given
+	// a nil check function. See ErrHealthCheckNil for why this is rejected
+	// at registration rather than left to each caller to guard against.
+	ErrReadinessCheckNil = errors.New("readiness check function must not be nil")
 )
 
 // LifecycleState represents the current phase of the Manager's lifecycle.
@@ -777,11 +790,14 @@ func NewManager(opts ...ManagerOption) (*Manager, error) {
 }
 
 // RegisterHealthCheck registers a health (liveness) check function under a
-// unique name.
+// unique name. check must not be nil.
 func (m *Manager) RegisterHealthCheck(name string, check func(context.Context) error) error {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return ErrInvalidHealthCheckName
+	}
+	if check == nil {
+		return ErrHealthCheckNil
 	}
 
 	m.healthMu.Lock()
@@ -805,11 +821,14 @@ func (m *Manager) HealthChecks() map[string]func(context.Context) error {
 }
 
 // RegisterReadinessCheck registers a readiness check function under a unique
-// name.
+// name. check must not be nil.
 func (m *Manager) RegisterReadinessCheck(name string, check func(context.Context) error) error {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return ErrInvalidReadinessCheckName
+	}
+	if check == nil {
+		return ErrReadinessCheckNil
 	}
 
 	m.readinessMu.Lock()
@@ -1053,6 +1072,83 @@ func (m *Manager) Go(ctx context.Context, taskName string, fn func(ctx context.C
 	return handle, nil
 }
 
+// mermaidSafeIDPattern matches a module name that is already safe to use
+// verbatim as both a Mermaid node ID and an unquoted label — this is every
+// name RegisterModule accepts in practice (module names are conventionally
+// kebab-case or similar). Any name outside this pattern is rendered via a
+// synthetic ID plus a quoted, escaped label instead (see mermaidNodeID and
+// mermaidEscapeLabel), so ExportDAG's output for every already-well-formed
+// module name this repository (or any known consumer) has ever used is
+// byte-identical to before this safety check was added.
+var mermaidSafeIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+// mermaidNodeIDs assigns every distinct name in names a Mermaid node
+// identifier, in a single pass so it can safely be called once with the
+// union of every registered module's own name and every name any module's
+// DependsOn references — including a dangling dependency name that does
+// not correspond to a registered module. A name matching
+// mermaidSafeIDPattern keeps itself as its ID; any other name gets a
+// synthetic "n<counter>" identifier from a single shared, monotonically
+// increasing counter, so two different unsafe names (whether both are
+// registered modules, both are dangling dependency references, or one of
+// each) can never collide on the same synthetic ID — unlike assigning
+// synthetic IDs from each name's own, independently-scoped position (e.g.
+// a sorted-module-list index for registered names and a constant sentinel
+// for dangling ones), which would let two unsafe dangling names collide on
+// one shared ID. A module name is arbitrary, caller-supplied text —
+// RegisterModule only requires it to be non-empty — so a name containing
+// Mermaid syntax (e.g. "]", "-->", a newline, or an HTML-like sequence)
+// must never be used as a raw node ID: doing so can produce malformed or
+// misleading diagrams, or, if the resulting Mermaid source is ever
+// rendered in a context that permits inline HTML/script in labels, worse.
+func mermaidNodeIDs(names []string) map[string]string {
+	ids := make(map[string]string, len(names))
+	counter := 0
+	for _, name := range names {
+		if _, exists := ids[name]; exists {
+			continue
+		}
+		if mermaidSafeIDPattern.MatchString(name) {
+			ids[name] = name
+			continue
+		}
+		ids[name] = fmt.Sprintf("n%d", counter)
+		counter++
+	}
+	return ids
+}
+
+// mermaidEscapeLabel escapes name for safe use inside a double-quoted
+// Mermaid label. Mermaid decodes "#quot;"/"#lt;"/"#gt;"-style numeric/named
+// character references inside quoted label text, so using them here embeds
+// the literal characters as visible text rather than as Mermaid or
+// (in a permissive rendering configuration) HTML/script syntax. A literal
+// newline is replaced with a space, since Mermaid's grammar is line-based
+// and an embedded newline would otherwise split the label across two lines
+// of source, corrupting the diagram.
+func mermaidEscapeLabel(name string) string {
+	replacer := strings.NewReplacer(
+		`"`, "#quot;",
+		"<", "#lt;",
+		">", "#gt;",
+		"\n", " ",
+		"\r", " ",
+	)
+	return replacer.Replace(name)
+}
+
+// mermaidNode renders one module name as a Mermaid flowchart node
+// declaration: "id[label]" for an already-safe name (byte-identical to
+// ExportDAG's behavior before Mermaid-safety escaping was added), or
+// "id[\"escaped label\"]" for a name containing Mermaid-significant
+// characters.
+func mermaidNode(id, name string) string {
+	if mermaidSafeIDPattern.MatchString(name) {
+		return fmt.Sprintf("%s[%s]", id, name)
+	}
+	return fmt.Sprintf("%s[%q]", id, mermaidEscapeLabel(name))
+}
+
 // ExportDAG returns a Mermaid-compatible DAG visualization of the registered modules.
 func (m *Manager) ExportDAG() string {
 	m.mu.RLock()
@@ -1064,18 +1160,35 @@ func (m *Manager) ExportDAG() string {
 	}
 	sort.Strings(names)
 
+	// allDeps collects every dependency name (registered or dangling) each
+	// module declares, per module, in the same sorted order rendered below
+	// — computed once here so mermaidNodeIDs can assign IDs for the full
+	// set of names this call will ever reference (registered modules AND
+	// any dangling dependency names) before any node/edge line is written.
+	allDeps := make(map[string][]string, len(names))
+	idInputs := append([]string(nil), names...)
+	for _, name := range names {
+		deps := append([]string(nil), m.modules[name].DependsOn()...)
+		sort.Strings(deps)
+		var trimmed []string
+		for _, dep := range deps {
+			depName := strings.TrimSpace(dep)
+			if depName == "" {
+				continue
+			}
+			trimmed = append(trimmed, depName)
+			idInputs = append(idInputs, depName)
+		}
+		allDeps[name] = trimmed
+	}
+	ids := mermaidNodeIDs(idInputs)
+
 	var sb strings.Builder
 	sb.WriteString("graph TD\n")
 	for _, name := range names {
-		mod := m.modules[name]
-		fmt.Fprintf(&sb, "    %s[%s]\n", name, name)
-		deps := append([]string(nil), mod.DependsOn()...)
-		sort.Strings(deps)
-		for _, dep := range deps {
-			depName := strings.TrimSpace(dep)
-			if depName != "" {
-				fmt.Fprintf(&sb, "    %s --> %s\n", name, depName)
-			}
+		fmt.Fprintf(&sb, "    %s\n", mermaidNode(ids[name], name))
+		for _, depName := range allDeps[name] {
+			fmt.Fprintf(&sb, "    %s --> %s\n", ids[name], ids[depName])
 		}
 	}
 	return sb.String()

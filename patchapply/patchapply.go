@@ -173,6 +173,25 @@ var ErrApprovalRequired = errors.New("patchapply: approval required")
 // and unrelated edits."
 var ErrPriorContentMismatch = errors.New("patchapply: prior content mismatch")
 
+// ErrJournalNotRestorable is returned (wrapped) by [Rollback] when a
+// [JournalEntry] claims a path existed before [Apply] touched it
+// (ExistedBefore is true) but carries no OriginalContent to restore. See
+// the package doc comment's "Journals are in-memory only" section: because
+// [JournalEntry.OriginalContent] is deliberately excluded from JSON (it may
+// contain secret-shaped file content that must never enter a persisted
+// diagnostic artifact), marshaling a Journal to JSON and unmarshaling it
+// back silently collapses OriginalContent to nil for every entry — Rollback
+// would otherwise overwrite an existing file with empty content instead of
+// its real prior bytes, a silent data-loss bug rather than a caught one. A
+// genuine capture via Apply always sets OriginalContent to a non-nil slice
+// for an existing file (os.ReadFile returns a non-nil, zero-length slice
+// for an empty file, never nil — only readCurrent's not-exists path
+// returns nil, paired with ExistedBefore false), so ExistedBefore=true with
+// a nil OriginalContent can only mean the Journal passed to Rollback was
+// reconstructed from something other than Apply's own return value —  most
+// likely a JSON round-trip. Rollback refuses to guess in that case.
+var ErrJournalNotRestorable = errors.New("patchapply: journal entry claims the path existed but has no original content to restore (was this Journal serialized and reloaded? see the package doc comment)")
+
 // FileChange describes one intended mutation to a single file within a
 // target directory: either write NewContent to Path, or delete Path. This
 // is a content-based description of a mutation, not a unified-diff hunk —
@@ -253,6 +272,23 @@ const (
 // "Diagnosable without leakage" section for why this raw content is never
 // included in [Journal.String] or in any default formatting, only in
 // [Rollback]/[Verify]'s own restore/compare logic.
+//
+// # OriginalContent is deliberately excluded from JSON — Journal is
+// in-memory-only
+//
+// OriginalContent is tagged json:"-" so that marshaling a Journal (e.g. to
+// embed a summary in a log line or a provenance artifact) can never leak a
+// file's raw — possibly secret-containing — prior content. This makes a
+// JSON round-trip (marshal, then unmarshal back into a Journal) lossy by
+// design: every entry's OriginalContent comes back nil, indistinguishable
+// from "this path did not exist before Apply." [Rollback] refuses (with
+// [ErrJournalNotRestorable]) to treat a nil OriginalContent as "restore to
+// empty" for any entry whose ExistedBefore is true, specifically to turn
+// that lossy round-trip into a loud, immediate error instead of silently
+// overwriting an existing file with nothing. Treat a Journal as a
+// same-process, in-memory handle to hand directly to [Rollback] or
+// [Verify] later in the same program — not as a durable or portable
+// artifact to serialize, persist to disk, or send to another process.
 type JournalEntry struct {
 	// Path is relative to the Journal's TargetDir, exactly as given in the
 	// originating FileChange.
@@ -263,7 +299,9 @@ type JournalEntry struct {
 	// OriginalContent is the file's exact content before Apply touched
 	// it, or nil if it did not exist. This is what Rollback restores and
 	// Verify compares against — never redact or truncate this field, only
-	// its rendering in error messages and Journal.String.
+	// its rendering in error messages and Journal.String. Excluded from
+	// JSON; see the type doc comment's "OriginalContent is deliberately
+	// excluded from JSON" section before ever serializing a Journal.
 	OriginalContent []byte `json:"-"`
 	// Outcome records what Apply actually did to this path.
 	Outcome EntryOutcome `json:"outcome"`
@@ -280,6 +318,12 @@ type JournalEntry struct {
 // call. TargetDir is the resolved (symlink-free) absolute directory the
 // journal applies to; [Rollback] and [Verify] reject a Journal produced
 // for a different directory.
+//
+// A Journal is an in-memory handle, not a durable or portable artifact —
+// see [JournalEntry]'s doc comment for why serializing one (to JSON or any
+// other format) and reloading it loses the information [Rollback] needs to
+// restore an existing file's content, and how [Rollback] responds to that
+// (a loud [ErrJournalNotRestorable] error, not silent data loss).
 type Journal struct {
 	TargetDir string         `json:"target_dir"`
 	Entries   []JournalEntry `json:"entries"`
@@ -601,7 +645,11 @@ func ensureDir(dir string) (string, error) {
 // immediately before the [Apply] call that produced j. It is exposed as a
 // standalone function (distinct from Apply's own internal partial-failure
 // rollback) for a caller who wants to undo a previously SUCCESSFUL Apply
-// call later, e.g. after review or a failed downstream step.
+// call later, e.g. after review or a failed downstream step. j must be the
+// Journal Apply actually returned (or a value derived from it within the
+// same process) — see [Journal]'s doc comment for why serializing and
+// reloading a Journal is unsafe, and the [ErrJournalNotRestorable] error
+// Rollback returns instead of guessing when it detects that has happened.
 //
 // Rollback is idempotent-ish in the sense that restoring a path that
 // already matches j's recorded original state is a harmless no-op write or
@@ -651,6 +699,14 @@ func restoreEntry(full string, e JournalEntry) error {
 			}
 		}
 		return nil
+	}
+	if e.OriginalContent == nil {
+		// A genuine Apply-produced entry with ExistedBefore true always has
+		// non-nil OriginalContent (even []byte{} for a previously-empty
+		// file) — see ErrJournalNotRestorable's doc comment. Refuse to
+		// silently overwrite full with empty content; that would be a
+		// worse outcome than doing nothing.
+		return fmt.Errorf("%w: %q", ErrJournalNotRestorable, e.Path)
 	}
 	// The path existed before Apply: restore its exact original bytes,
 	// via the same temp-then-rename primitive Apply itself uses.
