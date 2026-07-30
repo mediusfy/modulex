@@ -220,6 +220,27 @@ guarantee") uses the exact same rollback mechanism as the standalone
 `Rollback` function — there is one rollback implementation, not two that
 could drift out of sync with each other.
 
+### A narrow limitation: directories this package creates
+
+When `Apply` creates a new directory chain to write a file that had no
+existing parent directory, `Rollback` removes that entire chain via
+`os.RemoveAll` once every file `Apply` put in it has been individually
+rolled back. If some other, concurrent process places an unrelated file
+into that same directory after `Apply` ran but before `Rollback` does, that
+file is also removed — `Rollback` has no way to distinguish "content this
+package is responsible for" from "content a third party added to a
+directory this package happens to own" once it decides to clean up the
+whole chain. This is a real, confirmed behavior (not just a theoretical
+concern), verified directly against this implementation.
+
+This is a narrow, documented limitation, not a violation of any guarantee
+this package makes: `Apply`/`Rollback` are scoped to a single target
+directory under this package's own control, not a general-purpose
+concurrent-multi-writer filesystem transaction manager. A caller operating
+on a directory that other processes might also write to concurrently
+should not rely on `Rollback`'s directory cleanup being safe against that
+kind of interleaving.
+
 ## Diagnosable without leakage
 
 `Journal.String()` never includes file content at all — only paths,
