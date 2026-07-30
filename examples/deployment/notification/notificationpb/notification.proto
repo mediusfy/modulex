@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package notificationpb;
+
+option go_package = "github.com/mediusfy/modulex/examples/deployment/notification/notificationpb";
+
+// Notification exposes the notification example's ports.Sender over gRPC.
+// Its single RPC mirrors ports.Sender.Send exactly: a message in, nothing
+// but an error out. This lets the same ports.Sender/ports.ServiceKey be
+// bound to either a local implementation or this gRPC service at the
+// composition root, with no change to the domain port itself.
+service Notification {
+  rpc Send(SendRequest) returns (SendResponse);
+}
+
+// SendRequest carries the notification message, matching
+// ports.Sender.Send's message parameter.
+message SendRequest {
+  string message = 1;
+}
+
+// SendResponse is intentionally empty: ports.Sender.Send returns only an
+// error, so success carries no payload beyond an OK gRPC status.
+message SendResponse {}
