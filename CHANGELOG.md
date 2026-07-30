@@ -127,6 +127,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and validated by its own regression test so the schema and the example
   can never drift apart. See
   `docs/planning/agent-repository-contract-guide.md`.
+- New `agentdocs` package (MOD-67): a standalone leaf package (depending
+  only on `contract`) implementing ADR-0032's "Portability" section —
+  `agentdocs.Generate(contract.Contract, target)` renders one contract into
+  provider-specific agent instruction documents for four targets
+  (`TargetAGENTS`, `TargetCLAUDE`, `TargetKimi`, `TargetCodex`), each
+  identifying its source contract and schema version, and each carrying a
+  command matrix (sorted by class then name), focused/full verification
+  guidance, a standalone safety-policy summary (protected paths, required
+  credential names, and the approval-boundary rules from
+  `docs/planning/agent-safety-policy.md`), and handoff guidance when
+  `Contract.HandoffFormat` is set. Every contract slice is copied and
+  sorted before rendering so `Generate` is byte-identical across repeated
+  calls for the same input and never mutates the caller's `Contract`.
+  `agentdocs.Drift(contract.Contract, target, existingContent)` reports
+  whether a checked-in file (e.g. `AGENTS.md`) is stale relative to the
+  contract, without reading or writing any file itself. See
+  `docs/planning/agent-instruction-generation-guide.md`.
 
 ### Changed
 
