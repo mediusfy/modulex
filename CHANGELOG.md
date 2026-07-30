@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- MOD-54: split `EventBus`'s bundled publish/subscribe surface into explicit,
+  additive messaging capability interfaces: `Publisher` (`Publish`),
+  `Subscriber` (`Subscribe`), and `DurableConsumer` (`SubscribeDurable`).
+  `EventBus` itself, and every existing adapter's exported API
+  (`nats.EventBus`, `nats.JetStreamEventBus`, `rabbitmq.EventBus`,
+  `watermill.EventBus`), are unchanged — any type implementing `EventBus`
+  already satisfies `Publisher` and `Subscriber` for free, since Go
+  interfaces are structural. `DurableConsumer` is new: it documents
+  acknowledgement, retry, replay, ordering, consumer identity, and
+  dead-letter semantics explicitly, using a `DurableHandler` that returns an
+  `AckDecision` (`Ack`/`Nack`/`DeadLetter`) instead of `EventHandler`'s bare
+  `error`, so a caller can tell from the type system (and check via type
+  assertion) whether an adapter actually provides durable delivery.
+  `nats.JetStreamEventBus` now implements `DurableConsumer` using a real
+  JetStream pull-based durable consumer (explicit ack/nack/term, configurable
+  max-deliver/ack-wait/replay policy, and dead-letter republish); its
+  existing `Publish`/`Subscribe`/`Close`/`NewJetStreamEventBus` signatures
+  are unchanged. A panicking `DurableHandler` invocation is recovered and
+  treated as `Nack` (logged, then redelivered) rather than crashing the
+  process hosting the durable consume loop. See
+  [`docs/planning/eventbus-capabilities-guide.md`](docs/planning/eventbus-capabilities-guide.md)
+  for the full design and a migration note (existing `EventBus` usage needs
+  no changes).
+
 ### Fixed
 
 - `Manager.StopModules` (MOD-58) now rejects a concurrent call that lands

@@ -290,3 +290,9 @@ func (r *EventBus) Close(ctx context.Context) error {
 		return ctx.Err()
 	}
 }
+
+var (
+	_ modulex.EventBus   = (*EventBus)(nil)
+	_ modulex.Publisher  = (*EventBus)(nil)
+	_ modulex.Subscriber = (*EventBus)(nil)
+)

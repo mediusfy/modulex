@@ -148,3 +148,9 @@ func (w *EventBus) Close(ctx context.Context) error {
 		return fmt.Errorf("watermill eventbus close timed out: %w", ctx.Err())
 	}
 }
+
+var (
+	_ modulex.EventBus   = (*EventBus)(nil)
+	_ modulex.Publisher  = (*EventBus)(nil)
+	_ modulex.Subscriber = (*EventBus)(nil)
+)
