@@ -160,6 +160,13 @@ pull-based durable consumer:
   (same as any JetStream publish) or the republish fails — the original
   delivery is still terminated in that case so it is not redelivered
   forever, and the failure is logged.
+- **Panic safety**: a `DurableHandler` invocation that panics is recovered
+  and treated exactly like an explicit `Nack` — logged, then redelivered
+  subject to the consumer's normal retry policy. Without this, an
+  unrecovered panic inside the consume loop's goroutine would crash the
+  entire process, not just that one subscription — too high a blast radius
+  for a single bad message or a buggy handler path. This mirrors the core
+  `Manager`'s own `PanicPolicyLog` default for supervised tasks.
 
 See `nats/jetstream.go` for the full implementation and `nats/jetstream_test.go`
 for contract tests covering ack, nack/retry with delivery metadata, an

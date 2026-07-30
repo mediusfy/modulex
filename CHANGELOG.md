@@ -26,7 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   JetStream pull-based durable consumer (explicit ack/nack/term, configurable
   max-deliver/ack-wait/replay policy, and dead-letter republish); its
   existing `Publish`/`Subscribe`/`Close`/`NewJetStreamEventBus` signatures
-  are unchanged. See
+  are unchanged. A panicking `DurableHandler` invocation is recovered and
+  treated as `Nack` (logged, then redelivered) rather than crashing the
+  process hosting the durable consume loop. See
   [`docs/planning/eventbus-capabilities-guide.md`](docs/planning/eventbus-capabilities-guide.md)
   for the full design and a migration note (existing `EventBus` usage needs
   no changes).

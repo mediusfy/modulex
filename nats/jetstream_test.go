@@ -322,6 +322,60 @@ func TestJetStreamEventBus_SubscribeDurable_NackRedeliversWithDeliveryMetadata(t
 	assert.Equal(t, first.Payload, second.Payload)
 }
 
+// TestJetStreamEventBus_SubscribeDurable_PanicRecoveredAndTreatedAsNack is a
+// regression test written during independent review (not part of the
+// original implementation): an unrecovered panic in a goroutine crashes the
+// entire process, not just that goroutine, so a single panicking
+// DurableHandler invocation must never be allowed to take down the whole
+// host process. This asserts the panic is recovered, logged, and treated
+// exactly like an explicit Nack (the message is redelivered), and that the
+// consume loop keeps running afterward rather than silently dying.
+func TestJetStreamEventBus_SubscribeDurable_PanicRecoveredAndTreatedAsNack(t *testing.T) {
+	s := startJetStreamEmbeddedServer(t)
+	conn, err := nats.Connect(s.ClientURL())
+	require.NoError(t, err)
+	t.Cleanup(conn.Close)
+	js, err := conn.JetStream()
+	require.NoError(t, err)
+
+	eb := natsadapter.NewJetStreamEventBus(js,
+		natsadapter.WithDurableAckWait(200*time.Millisecond),
+		natsadapter.WithDurableFetchWait(150*time.Millisecond),
+		natsadapter.WithDurableMaxDeliver(5),
+	)
+	t.Cleanup(func() { _ = eb.Close(context.Background()) })
+
+	topic := durableTestSubject(t, js)
+	require.NoError(t, eb.Publish(context.Background(), topic, []byte("payload")))
+
+	var attempt int32
+	acked := make(chan modulex.DurableMessage, 1)
+	handler := func(_ context.Context, msg modulex.DurableMessage) modulex.AckDecision {
+		n := atomic.AddInt32(&attempt, 1)
+		if n == 1 {
+			panic("simulated handler panic on first delivery")
+		}
+		acked <- msg
+		return modulex.Ack
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	require.NoError(t, eb.SubscribeDurable(ctx, topic, handler, modulex.WithConsumerName("panic-consumer")))
+
+	// If the panic were not recovered, the whole test binary would crash
+	// here (an unrecovered goroutine panic terminates the process) rather
+	// than this select ever completing.
+	select {
+	case msg := <-acked:
+		assert.Equal(t, []byte("payload"), msg.Payload)
+		assert.True(t, msg.Redelivered, "message should have been redelivered after the panicking first attempt was treated as Nack")
+		assert.Equal(t, 2, msg.DeliveryCount)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for redelivery after the panicking handler invocation")
+	}
+}
+
 func TestJetStreamEventBus_SubscribeDurable_UnrecognizedDecisionIsTreatedAsNack(t *testing.T) {
 	s := startJetStreamEmbeddedServer(t)
 	conn, err := nats.Connect(s.ClientURL())

@@ -364,6 +364,31 @@ func (j *JetStreamEventBus) durableConsumeLoop(ctx context.Context, topic, consu
 	}
 }
 
+// invokeDurableHandler calls handler and recovers a panic from it, treating
+// a panic exactly like an explicit modulex.Nack: logged, with the message
+// redelivered subject to the consumer's normal retry policy. Without this,
+// a single panicking handler invocation would crash the entire process
+// hosting durableConsumeLoop's goroutine (an unrecovered panic in a
+// goroutine terminates the whole program, not just that goroutine) — too
+// high a blast radius for one bad message or one buggy handler path. This
+// mirrors the core Manager's own PanicPolicyLog default for supervised
+// tasks (see modulex.go): a durable consumer, whose entire purpose is
+// resilient message processing, should be at least as forgiving of a
+// panicking callback as the task supervisor already is.
+func (j *JetStreamEventBus) invokeDurableHandler(ctx context.Context, topic, consumerName string, handler modulex.DurableHandler, dm modulex.DurableMessage) (decision modulex.AckDecision) {
+	defer func() {
+		if r := recover(); r != nil {
+			j.logger.ErrorContext(ctx, "durable handler panicked, nacking for retry",
+				slog.String(logKeyTopic, topic),
+				slog.String(logKeyConsumer, consumerName),
+				slog.Any("panic", r),
+			)
+			decision = modulex.Nack
+		}
+	}()
+	return handler(ctx, dm)
+}
+
 // handleDurableMessage invokes handler for one delivered message and
 // translates its AckDecision into the corresponding JetStream ack call.
 func (j *JetStreamEventBus) handleDurableMessage(ctx context.Context, topic, consumerName string, msg *nats.Msg, handler modulex.DurableHandler) {
@@ -378,7 +403,7 @@ func (j *JetStreamEventBus) handleDurableMessage(ctx context.Context, topic, con
 		msgCtx = otel.GetTextMapPropagator().Extract(ctx, propagation.HeaderCarrier(msg.Header))
 	}
 
-	switch decision := handler(msgCtx, dm); decision {
+	switch decision := j.invokeDurableHandler(msgCtx, topic, consumerName, handler, dm); decision {
 	case modulex.Ack:
 		if err := msg.Ack(); err != nil {
 			j.logger.ErrorContext(msgCtx, "failed to ack durable message",
