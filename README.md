@@ -740,6 +740,7 @@ for a detailed comparison with plain constructor injection, Wire, Fx, and Dig.
 - [Comparison with Alternatives](./docs/planning/comparison-with-alternatives.md)
 - [Diagnostics Guide](./docs/planning/diagnostics-guide.md)
 - [Error Handling](./docs/planning/error-handling-guide.md)
+- [EventBus Messaging Capabilities Guide](./docs/planning/eventbus-capabilities-guide.md)
 - [Lifecycle Guide](./docs/planning/lifecycle-guide.md)
 - [Migration Guide](./docs/planning/migration-guide.md)
 - [Provenance and Handoff Schema](./docs/planning/provenance-handoff-schema.md)
