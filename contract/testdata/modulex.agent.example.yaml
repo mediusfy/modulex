@@ -1,0 +1,149 @@
+# Example modulex.agent.yaml for github.com/mediusfy/modulex itself.
+#
+# This file is both documentation and a regression test (see
+# contract_test.go's TestExampleContract_IsValid): it is loaded, unmarshaled,
+# and validated on every test run, so the schema and this worked example can
+# never silently drift apart.
+#
+# No secret VALUES appear anywhere below — only the NAMES of credentials
+# this repository's workflows need (required_credentials). See
+# docs/planning/agent-safety-policy.md and
+# docs/planning/agent-repository-contract-guide.md.
+
+schema_version: "1.0.0"
+
+projects:
+  - name: modulex
+    path: .
+    module_path: github.com/mediusfy/modulex
+    description: >-
+      Core lifecycle/dependency-injection library: Manager, module wiring,
+      supervised tasks, health/readiness, boundary analysis, and the
+      provenance/discovery/verify/contract agent-support packages.
+    composition_roots:
+      - examples/bootstrap
+      - examples/deployment
+      - examples/hexagonal
+      - examples/quickstart
+      - examples/external-consumer
+
+instructions:
+  rule: >-
+    AGENTS.md is the only instruction file in this repository today, so
+    there is no precedence conflict to resolve. It defers to
+    docs/planning/agent-safety-policy.md for safety rules; where the two
+    disagree, agent-safety-policy.md wins.
+  files:
+    - path: AGENTS.md
+      priority: 1
+      notes: >-
+        Repository-wide instructions: CodeGraph usage, build/lint/test
+        commands, and the pre-push gate list.
+
+boundaries:
+  - name: core-no-adapter-deps
+    description: >-
+      The core modulex package must not import any messaging or
+      observability adapter package (nats, rabbitmq, watermill, otel,
+      chi, httpx are all optional, separately importable).
+    paths:
+      - modulex.go
+      - wire.go
+      - diagnostics.go
+    rule: enforced by `make check-consumer-boundary` (scripts/check-consumer-boundary.sh)
+  - name: feature-module-boundary
+    description: >-
+      examples/deployment's feature modules must not reach into each
+      other's internal packages.
+    paths:
+      - examples/deployment
+    rule: enforced by `make check-module-boundary` (tools/modboundary)
+
+commands:
+  - name: go-test
+    command: go test ./...
+    class: safe
+    reason: read-only; compiles and runs tests with no side effects
+  - name: gofmt-w
+    command: gofmt -s -w .
+    class: mutating
+    reason: rewrites tracked source files in place
+  - name: go-mod-download
+    command: go mod download
+    class: networked
+    reason: fetches module content from the configured module proxy
+  - name: git-clean-f
+    command: git clean -f
+    class: destructive
+    reason: >-
+      irreversibly deletes untracked files; requires explicit human
+      approval per agent-safety-policy.md
+  - name: make-release
+    command: make release VERSION=vX.Y.Z
+    class: approval_required
+    reason: >-
+      tags and pushes a release; tagging/publishing a release always
+      requires explicit human approval per agent-safety-policy.md
+
+verification:
+  focused:
+    - name: gofmt-check
+      command: gofmt -s -l .
+      reason: fast formatting check, cheap enough to run on every change
+      required_tool: gofmt
+  full:
+    - name: build
+      command: make build
+      reason: compiles all packages and examples; required before any push or release
+      required_tool: go
+    - name: test
+      command: make test
+      reason: runs the full test suite; required before any push or release
+      required_tool: go
+    - name: test-arch
+      command: make test-arch
+      reason: >-
+        runs the full test suite under the race detector; required
+        before any push or release
+      required_tool: go
+    - name: lint
+      command: make lint
+      reason: runs golangci-lint across the repository; required before any push or release
+      required_tool: golangci-lint
+    - name: check-consumer-boundary
+      command: make check-consumer-boundary
+      reason: verifies the core package has no adapter dependencies
+      required_tool: go
+    - name: check-changelog
+      command: make check-changelog
+      reason: verifies CHANGELOG.md is updated when required (PR diff vs origin/main)
+      required_tool: git
+
+protected_paths:
+  - .github/workflows/*.yml
+  - go.mod
+  - CHANGELOG.md
+  - SECURITY.md
+  - CODEOWNERS
+  - .github/CODEOWNERS
+
+generated_paths:
+  - coverage.out
+
+required_tools:
+  - go
+  - git
+  - golangci-lint
+
+optional_services:
+  - name: SonarCloud
+    description: >-
+      static analysis and quality-gate reporting; not required for local
+      development
+  - name: govulncheck-database
+    description: network access to the Go vulnerability database for `make vuln`
+
+required_credentials:
+  - GITHUB_TOKEN
+
+handoff_format: "provenance.Envelope v1.0.0"
