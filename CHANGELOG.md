@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `Manager.StopModules` (MOD-58) now rejects a concurrent call that lands
+  while `InitModules` or `StartModules` is still running on another
+  goroutine (`StateInitializing`/`StateStarting`), returning
+  `ErrInvalidLifecycleState`. Previously it would race its own shutdown
+  (task cancellation, event bus close) against the in-flight phase; once
+  that phase completed it would silently overwrite `StateStopped` with
+  `StateInitialized`/`StateRunning`, breaking the documented
+  `StopModules` idempotency guarantee. Cancel the context passed to the
+  in-flight `InitModules`/`StartModules` call instead, then call
+  `StopModules` once it returns.
 - `app.Run` now stops already-initialized modules if `InitModules` or
   `StartModules` fails partway through, rejects `nil` modules with an error
   naming the offending index, and includes the module's name when
