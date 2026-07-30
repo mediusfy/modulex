@@ -166,6 +166,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   indexes that adopt its marker-file convention or that a caller supplies
   a custom `RootReader` for. See
   `docs/planning/semantic-index-diagnostics-guide.md`.
+- New `approval` package (MOD-69): a standalone, stdlib-only leaf package
+  implementing P2 of ADR-0032's roadmap — "Add an approval broker for
+  elevated agent tools." `approval.Broker` is a thread-safe, in-memory,
+  live decision mechanism for whether an elevated action (push, release,
+  deletion, infrastructure change, database migration, Jira/PR mutation)
+  is currently authorized — distinct from `provenance.Approval`, which is
+  only a static audit record with no scope or expiry. `NewBroker` starts
+  with zero grants, so nothing is approved by default; `Broker.Grant`
+  issues a scoped, unguessable (`crypto/rand`-generated), expiring,
+  single-use `Grant` for an exact `Scope{Action, Resource}` pair, rejecting
+  a non-positive TTL, empty action, or empty approver outright.
+  `Broker.Check`/`Broker.CheckToken` fail closed on every path except an
+  exact, unexpired, unused scope/token match — an unknown scope, an
+  expired grant, an already-consumed grant, or a mismatched action or
+  resource are all denied identically, and a matched single-use grant is
+  consumed atomically under the broker's lock so two concurrent callers
+  can never both consume the same grant. `Broker.DryRunCheck`/
+  `DryRunCheckToken` preview a decision without consuming a grant.
+  `Grant.Token` is treated as a bearer credential: it is excluded from
+  JSON encoding and from `Grant.String()`/default `%v`/`%+v` formatting in
+  favor of `TokenHash` (a SHA-256 digest), and `Grant.ToProvenanceApproval`
+  converts a grant to a `provenance.Approval` for handoff-artifact
+  continuity. `RequiresApproval(contract.Contract, commandName)` derives
+  approval policy from a contract's existing `CommandDecl.Class` (true for
+  `ClassApprovalRequired`/`ClassDestructive`) without any new field on
+  `contract.Contract`, returning an error for an unrecognized command that
+  callers must treat as fail-closed. This package has no persistence layer
+  (a process restart invalidates all grants, by design) and is not yet
+  wired into any CLI or MCP server. See
+  `docs/planning/agent-approval-broker-guide.md`.
 
 ### Changed
 
