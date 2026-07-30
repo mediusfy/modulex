@@ -45,6 +45,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   service values, check function bodies, or task closures. `TaskHandle` gained
   non-blocking `Done` and `Err` accessors to support this. See
   `docs/planning/diagnostics-guide.md`.
+- New `provenance` package (MOD-66): a standalone, dependency-free schema
+  (`Envelope`, versioned via `SchemaVersion`) for recording agent
+  provenance/handoff data — repository state, agent identity, changed files,
+  command results, verification results, approvals, and rollback status.
+  `Status` distinguishes pass/fail/skipped/unavailable/approval-required
+  rather than a bare bool; `Envelope.Redact` scrubs common secret-shaped
+  patterns from free-text fields and `Envelope.Validate` rejects both
+  missing required fields and any unredacted secret-shaped value left
+  behind. See `docs/planning/provenance-handoff-schema.md` and
+  `provenance/testdata/sample-handoff.json` for a full example.
 - `otel.WithInsecure` provider option and `OTEL_EXPORTER_OTLP_INSECURE`
   environment variable to explicitly force TLS on/off for the OTLP exporter.
   Endpoints are now scheme-sanitized, and loopback hosts default to insecure

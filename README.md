@@ -736,6 +736,7 @@ for a detailed comparison with plain constructor injection, Wire, Fx, and Dig.
 - [Error Handling](./docs/planning/error-handling-guide.md)
 - [Lifecycle Guide](./docs/planning/lifecycle-guide.md)
 - [Migration Guide](./docs/planning/migration-guide.md)
+- [Provenance and Handoff Schema](./docs/planning/provenance-handoff-schema.md)
 - [Support](./SUPPORT.md)
 - [Security](./SECURITY.md)
 - [Contributing](./CONTRIBUTING.md)
