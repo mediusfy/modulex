@@ -730,6 +730,7 @@ for a detailed comparison with plain constructor injection, Wire, Fx, and Dig.
 
 ## Documentation
 
+- [Agent Discovery and Command Classification](./docs/planning/agent-discovery-guide.md)
 - [Compatibility Policy](./COMPATIBILITY.md)
 - [Comparison with Alternatives](./docs/planning/comparison-with-alternatives.md)
 - [Diagnostics Guide](./docs/planning/diagnostics-guide.md)
