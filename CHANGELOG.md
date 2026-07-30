@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- MOD-57: document the durable-consumer technology choice and semantic
+  contract in [ADR-0033](docs/adr/adr-0033-durable-consumer-jetstream.md)
+  (NATS JetStream over Kafka/Redpanda — zero new dependency, already-used
+  infrastructure, direct semantic fit for ack/retry/replay/consumer-identity/
+  dead-letter), and add
+  [`docs/planning/durable-consumer-operations-guide.md`](docs/planning/durable-consumer-operations-guide.md)
+  covering production configuration (ack-wait/max-deliver/batch-size/
+  fetch-wait tuning tradeoffs) and operational failure modes (broker
+  unreachable, ack-wait exceeded under load, max-deliver exhaustion and why
+  dead-lettering is a handler decision rather than automatic, handler
+  panics, shutdown mid-processing, and monitoring recommendations). No code
+  changes: MOD-54 already delivered the `nats.JetStreamEventBus`
+  `DurableConsumer` implementation and its integration test suite (success,
+  nack/redelivery, panic recovery, dead-letter, consumer-identity
+  resumption, replay policy, cancellation, and shutdown), which this ticket
+  formalizes and documents rather than re-implementing.
 - MOD-55: add an optional `grpc` package implementing the third ADR-0031
   roadmap item, gRPC-only (Connect is out of scope — see the package doc
   comment and `docs/planning/grpc-adapter-guide.md` for the scoping
