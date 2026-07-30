@@ -321,6 +321,222 @@ type EventBus interface {
 	Close(ctx context.Context) (err error)
 }
 
+// Publisher is the narrow capability of publishing a payload to a topic. It
+// makes no promise about delivery durability beyond what the concrete
+// adapter documents in its own doc comments: a Publisher may be backed by an
+// at-most-once fire-and-forget transport (core NATS) or an acknowledged,
+// durable one (JetStream) — the interface itself does not distinguish them.
+//
+// Every EventBus implementation already satisfies Publisher for free, since
+// Go interfaces are structural and EventBus.Publish has this exact
+// signature. Publisher exists so code that only needs to publish can depend
+// on the narrower capability instead of the full EventBus.
+type Publisher interface {
+	Publish(ctx context.Context, topic string, payload []byte) (err error)
+}
+
+// Subscriber is the narrow capability of registering a fire-and-forget
+// handler for a topic. Subscriber makes NO durability guarantee: whether a
+// delivered message is retried, redelivered, or silently dropped on handler
+// error is entirely adapter-defined (see each adapter's Subscribe doc
+// comment for its specific policy). A caller that needs at-least-once
+// delivery, explicit acknowledgement, replay, or dead-letter semantics must
+// use DurableConsumer instead — Subscriber alone never implies any of that.
+//
+// Every EventBus implementation already satisfies Subscriber for free, since
+// Go interfaces are structural and EventBus.Subscribe has this exact
+// signature.
+type Subscriber interface {
+	Subscribe(ctx context.Context, topic string, handler EventHandler) (err error)
+}
+
+// AckDecision is the disposition a DurableHandler assigns to a message it
+// was given, replacing the bare "error or nil" signal EventHandler uses.
+// EventHandler's plain error return cannot distinguish "please retry this
+// message" from "give up on this message without retrying" from "this
+// message can never succeed, route it to a dead letter" — a durable
+// consumer with real ack/nack/dead-letter semantics needs to express all
+// three, so DurableHandler returns AckDecision instead of error.
+type AckDecision int
+
+const (
+	// Ack acknowledges the message as successfully processed. A conforming
+	// DurableConsumer will not redeliver it.
+	Ack AckDecision = iota
+
+	// Nack indicates processing failed but should be retried. A conforming
+	// DurableConsumer redelivers the message, subject to whatever
+	// retry/backoff/max-attempts policy it documents.
+	Nack
+
+	// DeadLetter indicates processing failed terminally: the message must
+	// not be redelivered again. A conforming DurableConsumer routes it to
+	// whatever dead-letter mechanism it documents (a separate subject or
+	// stream, a broker-native DLQ, or simply marking it permanently failed)
+	// instead of retrying it.
+	DeadLetter
+)
+
+// String returns a lower_snake_case name for d, or "unknown" for an
+// out-of-range value.
+func (d AckDecision) String() string {
+	switch d {
+	case Ack:
+		return "ack"
+	case Nack:
+		return "nack"
+	case DeadLetter:
+		return "dead_letter"
+	default:
+		return "unknown"
+	}
+}
+
+// DurableMessage carries the payload and delivery metadata for one message
+// given to a DurableHandler.
+type DurableMessage struct {
+	// Payload is the message body.
+	Payload []byte
+
+	// Redelivered reports whether this delivery attempt is a retry of a
+	// message previously delivered (to this consumer or an earlier attempt
+	// by the same durable consumer identity).
+	Redelivered bool
+
+	// DeliveryCount is the number of times this message has been delivered
+	// to this durable consumer identity, starting at 1 for the first
+	// delivery. An adapter that cannot track delivery count reports 0.
+	DeliveryCount int
+}
+
+// DurableHandler processes one message delivered by a DurableConsumer and
+// returns the AckDecision it should receive. See AckDecision for why this
+// differs from EventHandler's bare error return.
+type DurableHandler func(ctx context.Context, msg DurableMessage) (decision AckDecision)
+
+// ReplayPolicy selects where a brand-new DurableConsumer subscription
+// starts reading from a topic. It only affects the first time a given
+// ConsumerName (see DurableSubscribeOptions) is used; a durable consumer
+// identity with prior acknowledged progress resumes from that position
+// instead of replaying, regardless of ReplayPolicy.
+type ReplayPolicy int
+
+const (
+	// ReplayAll starts from the oldest message the adapter has retained.
+	ReplayAll ReplayPolicy = iota
+
+	// ReplayNew delivers only messages published after the subscription is
+	// established; nothing previously retained is replayed.
+	ReplayNew
+)
+
+// String returns a lower_snake_case name for p, or "unknown" for an
+// out-of-range value.
+func (p ReplayPolicy) String() string {
+	switch p {
+	case ReplayAll:
+		return "replay_all"
+	case ReplayNew:
+		return "replay_new"
+	default:
+		return "unknown"
+	}
+}
+
+// DurableSubscribeOptions configures a DurableConsumer subscription. Use the
+// With* option functions below to set fields; the zero value is not a valid
+// configuration (ConsumerName is required).
+type DurableSubscribeOptions struct {
+	// ConsumerName identifies the durable consumer/consumer-group identity
+	// (see the "Consumer identity" semantic on DurableConsumer). Required;
+	// an adapter rejects an empty ConsumerName.
+	ConsumerName string
+
+	// Replay selects where a brand-new ConsumerName starts reading from.
+	// See ReplayPolicy.
+	Replay ReplayPolicy
+}
+
+// DurableSubscribeOption configures a DurableSubscribeOptions value.
+type DurableSubscribeOption func(*DurableSubscribeOptions)
+
+// WithConsumerName sets the durable consumer/consumer-group identity for a
+// DurableConsumer subscription. See the "Consumer identity" semantic on
+// DurableConsumer.
+func WithConsumerName(name string) DurableSubscribeOption {
+	return func(o *DurableSubscribeOptions) {
+		o.ConsumerName = name
+	}
+}
+
+// WithReplayPolicy sets where a brand-new consumer identity starts reading
+// from. See ReplayPolicy and the "Replay" semantic on DurableConsumer.
+func WithReplayPolicy(p ReplayPolicy) DurableSubscribeOption {
+	return func(o *DurableSubscribeOptions) {
+		o.Replay = p
+	}
+}
+
+// DurableConsumer is the capability of consuming a topic with the stronger
+// guarantees Subscriber deliberately does not promise: explicit
+// acknowledgement, redelivery, replay, consumer identity, and dead-letter
+// routing. Not every EventBus adapter implements DurableConsumer — callers
+// that need these guarantees should type-assert for it rather than assuming
+// any EventBus or Subscriber provides them.
+//
+// DurableConsumer deliberately does not embed Subscriber. A durable handler
+// needs to express more than "error or nil" (see AckDecision), so it uses
+// the distinct DurableHandler signature rather than EventHandler; the two
+// therefore cannot share one Subscribe method identity. An adapter is free
+// to implement both Subscriber and DurableConsumer (e.g. by also embedding
+// a plain EventBus), but the capabilities are independent and are checked
+// independently via type assertion.
+//
+// DurableConsumer documents the six semantics named by MOD-54, three as the
+// SubscribeDurable method contract and three as documented properties a
+// correct implementation must uphold:
+//
+//   - Acknowledgement (method contract): DurableHandler returns an
+//     AckDecision — Ack, Nack, or DeadLetter — for every message it is
+//     given. The adapter is responsible for translating that decision into
+//     its broker's native ack mechanism.
+//   - Consumer identity (method contract, via DurableSubscribeOptions):
+//     ConsumerName names a durable consumer/consumer-group. Reusing the same
+//     ConsumerName resumes from its last acknowledged position rather than
+//     starting over, including across process restarts. Multiple concurrent
+//     subscriptions sharing one ConsumerName load-balance messages across
+//     them (a competing-consumers group) rather than each receiving every
+//     message.
+//   - Replay (method contract, via DurableSubscribeOptions): ReplayPolicy
+//     selects where a brand-new ConsumerName starts reading from — from the
+//     oldest retained message (ReplayAll) or only new ones (ReplayNew).
+//   - Retry (documented property): on Nack, the adapter redelivers the
+//     message subject to its own documented retry/backoff/max-attempts
+//     policy. This is adapter-defined rather than a method because retry
+//     configuration (backoff curves, max attempts, poison-message
+//     thresholds) varies too much across brokers to usefully standardize at
+//     this interface's level; see the implementing adapter's doc comment for
+//     its specific policy.
+//   - Ordering (documented property): within a single SubscribeDurable call
+//     (one ConsumerName, one subscription), an implementation must process
+//     and resolve (ack/nack/dead-letter) messages in the order the broker
+//     delivered them before fetching the next one, so relative order is
+//     preserved for that subscription. Ordering across multiple concurrent
+//     subscriptions sharing one ConsumerName (a competing-consumers group)
+//     is NOT guaranteed, since the broker may deliver to whichever
+//     subscription is next available.
+//   - Dead-letter (documented property): on DeadLetter, the adapter must
+//     never redeliver the message again through the normal retry path. How
+//     it is routed instead (a separate subject/stream, a broker-native DLQ,
+//     or simply discarded after being marked permanently failed) is
+//     adapter-defined; see the implementing adapter's doc comment.
+type DurableConsumer interface {
+	// SubscribeDurable registers handler as the durable consumer for topic
+	// under the identity and options given. opts must include
+	// WithConsumerName; an adapter rejects a call without one.
+	SubscribeDurable(ctx context.Context, topic string, handler DurableHandler, opts ...DurableSubscribeOption) (err error)
+}
+
 // Module represents a self-contained feature module that complies with Hexagonal Architecture.
 // It acts as the composition root of the feature, instantiating services and adapters,
 // and wiring them through the central registry.
