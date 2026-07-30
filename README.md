@@ -771,6 +771,7 @@ for a detailed comparison with plain constructor injection, Wire, Fx, and Dig.
 - [Compatibility Policy](./COMPATIBILITY.md)
 - [Comparison with Alternatives](./docs/planning/comparison-with-alternatives.md)
 - [Diagnostics Guide](./docs/planning/diagnostics-guide.md)
+- [Durable Consumer Operations Guide](./docs/planning/durable-consumer-operations-guide.md)
 - [Error Handling](./docs/planning/error-handling-guide.md)
 - [EventBus Messaging Capabilities Guide](./docs/planning/eventbus-capabilities-guide.md)
 - [gRPC Adapter Guide](./docs/planning/grpc-adapter-guide.md)
