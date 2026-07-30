@@ -144,6 +144,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whether a checked-in file (e.g. `AGENTS.md`) is stale relative to the
   contract, without reading or writing any file itself. See
   `docs/planning/agent-instruction-generation-guide.md`.
+- New `semindex` package (MOD-71): a standalone, dependency-free leaf
+  package implementing P2 of ADR-0032's roadmap — "Add CodeGraph/TokenSave
+  index-root validation and diagnostics." `semindex.Diagnose(worktreeRoot,
+  indexDir, name, reader)` compares a semantic index's declared root
+  (read via a caller-supplied `RootReader`, or the package's own
+  `DefaultMarkerReader` for indexes adopting the new `.modulex-index-root`
+  marker-file convention) against the active worktree root, resolving
+  symlinks on both sides before comparing so platform differences (e.g.
+  `/tmp` vs. `/private/tmp` on macOS) never produce a false-positive
+  mismatch. Results are a four-state `Status`
+  (`StatusOK`/`StatusMismatch`/`StatusMissing`/`StatusUnverifiable`) rather
+  than a boolean, so "the root couldn't be determined" is never confused
+  with "it matches." `semindex.ResolveWorktreeRoot` prefers `git
+  rev-parse --show-toplevel` with a caller-supplied fallback.
+  `semindex.EvaluateSeverity(diagnosis, policy)` turns a non-OK diagnosis
+  into a warn/block decision from a simple `Policy` struct, without
+  requiring a `contract.Contract`. This package cannot inspect real
+  CodeGraph/TokenSave index formats directly (undocumented, tool-owned,
+  and out of scope for Modulex's dependency graph) — it only validates
+  indexes that adopt its marker-file convention or that a caller supplies
+  a custom `RootReader` for. See
+  `docs/planning/semantic-index-diagnostics-guide.md`.
 
 ### Changed
 
