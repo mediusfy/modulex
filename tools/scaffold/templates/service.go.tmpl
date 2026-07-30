@@ -1,0 +1,41 @@
+package service
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"{{.DomainImport}}"
+	"{{.PortsImport}}"
+)
+
+// service implements ports.Service via constructor-injected dependencies —
+// the generated default. See ports.ServiceKey's doc comment for the
+// optional typed-service-location alternative.
+type service struct {
+	repo ports.Repository
+}
+
+// New constructs a ports.Service using constructor injection: the caller
+// supplies its ports.Repository dependency directly, rather than resolving
+// it from a registry. module.go's Init calls New exactly like this; prefer
+// the same pattern anywhere else this Service is needed.
+func New(repo ports.Repository) ports.Service {
+	return &service{repo: repo}
+}
+
+func (s *service) Create{{.TypeName}}(ctx context.Context, name string) (*domain.{{.TypeName}}, error) {
+	item := &domain.{{.TypeName}}{
+		ID:        fmt.Sprintf("{{.IDPrefix}}-%d", time.Now().UnixNano()),
+		Name:      name,
+		CreatedAt: time.Now(),
+	}
+	if err := s.repo.Save(ctx, item); err != nil {
+		return nil, fmt.Errorf("failed to save {{.ModuleName}}: %w", err)
+	}
+	return item, nil
+}
+
+func (s *service) List{{.TypeName}}s(ctx context.Context) ([]domain.{{.TypeName}}, error) {
+	return s.repo.FindAll(ctx)
+}

@@ -1,0 +1,31 @@
+package service_test
+
+import (
+	"context"
+	"testing"
+
+	"{{.AdaptersImport}}"
+	"{{.ServiceImport}}"
+)
+
+func TestServiceCreateAndList(t *testing.T) {
+	repo := adapters.NewInMemoryRepository()
+	svc := service.New(repo)
+	ctx := context.Background()
+
+	created, err := svc.Create{{.TypeName}}(ctx, "example")
+	if err != nil {
+		t.Fatalf("Create{{.TypeName}}: %v", err)
+	}
+	if created.Name != "example" {
+		t.Errorf("Create{{.TypeName}}: Name = %q, want %q", created.Name, "example")
+	}
+
+	items, err := svc.List{{.TypeName}}s(ctx)
+	if err != nil {
+		t.Fatalf("List{{.TypeName}}s: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != created.ID {
+		t.Errorf("List{{.TypeName}}s: got %+v, want a single item matching %+v", items, created)
+	}
+}
