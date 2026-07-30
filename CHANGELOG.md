@@ -81,6 +81,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   human-approval boundary for AI coding agents (Claude, Kimi, OpenAI/Codex,
   generic MCP clients, no-hook environments) working in this repository.
   Linked from `AGENTS.md`.
+- New `verify` package (MOD-63): a standalone leaf package (depending only on
+  `provenance` and `discovery`) implementing step 5 of ADR-0032's "Standard
+  agent workflow" — `verify.PlanFor(changedFiles)` maps changed paths to
+  focused checks (per-package `go test`/`go vet`, example builds, changed
+  scripts, `go.mod`/`go.sum` compatibility checks, etc.) via a first-match
+  rule table, falling back to the full gate set rather than recommending
+  nothing for an unmapped path; `verify.FullGates` is the fixed,
+  unconditional list of this repository's required gates (`make build`,
+  `test`, `test-arch`, `lint`, `check-consumer-boundary`,
+  `check-module-boundary`, `check-api-compat`, `check-changelog`), always
+  present in a `Plan` regardless of what changed. `verify.Run` executes a
+  `[]CheckSpec` against a `discovery.Repository`'s `Tools` and an explicit
+  `allowNetwork` flag, producing exactly one `provenance.VerificationResult`
+  per input check — a missing required tool reports `StatusUnavailable`
+  (without ever invoking the command) and a networked check without
+  `allowNetwork` reports `StatusSkipped`, both with a `Reason`, so a missing
+  tool or skipped check is never confused with success.
+  `verify.RenderText` renders results as a human-readable summary grouped by
+  category. Since `changedFiles` may come from an untrusted diff,
+  `PlanFor` never builds a `CheckSpec.Command` from a path containing shell
+  metacharacters or a `..` traversal segment — such a path falls back to the
+  full gate set instead, preventing shell injection into the commands
+  `Run` later executes via `sh -c`. See
+  `docs/planning/agent-verification-guide.md`.
 
 ### Changed
 
