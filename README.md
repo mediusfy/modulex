@@ -731,6 +731,7 @@ for a detailed comparison with plain constructor injection, Wire, Fx, and Dig.
 ## Documentation
 
 - [Agent Approval Broker Guide](./docs/planning/agent-approval-broker-guide.md)
+- [Agent Atomic Patch Guide](./docs/planning/agent-atomic-patch-guide.md)
 - [Agent Discovery and Command Classification](./docs/planning/agent-discovery-guide.md)
 - [Agent Instruction Generation Guide](./docs/planning/agent-instruction-generation-guide.md)
 - [Agent Repository Contract Guide](./docs/planning/agent-repository-contract-guide.md)
