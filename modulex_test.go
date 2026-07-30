@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -334,6 +335,11 @@ func TestRegisterHealthCheckValidation(t *testing.T) {
 			act:        func(_ *testing.T, manager *modulex.Manager) error { return manager.RegisterHealthCheck(" ", nil) },
 			wantErrSub: "health check name must not be empty",
 		},
+		{
+			name:       "nil health check function",
+			act:        func(_ *testing.T, manager *modulex.Manager) error { return manager.RegisterHealthCheck("db", nil) },
+			wantErrSub: "health check function must not be nil",
+		},
 	}
 
 	for _, tt := range tests {
@@ -343,6 +349,24 @@ func TestRegisterHealthCheckValidation(t *testing.T) {
 			assert.ErrorContains(t, err, tt.wantErrSub)
 		})
 	}
+}
+
+// TestRegisterHealthCheckNilRejectedNeverStored is a regression test: a nil
+// health check must not merely produce an error, it must never reach
+// Manager.healthChecks at all, so that no caller iterating HealthChecks()
+// can ever observe (and potentially call, causing a nil-func-call panic) a
+// registered nil check. Previously RegisterHealthCheck accepted a nil check
+// with no error at all -- httpx worked around this defensively, but any
+// consumer that did not would panic when invoking a stored nil check.
+func TestRegisterHealthCheckNilRejectedNeverStored(t *testing.T) {
+	manager := newTestManager(nil)
+
+	err := manager.RegisterHealthCheck("db", nil)
+	require.ErrorIs(t, err, modulex.ErrHealthCheckNil)
+
+	checks := manager.HealthChecks()
+	_, exists := checks["db"]
+	assert.False(t, exists, "a rejected nil health check must not appear in HealthChecks()")
 }
 
 func TestHealthChecksDefaultsToEmptyMap(t *testing.T) {
@@ -402,6 +426,13 @@ func TestRegisterReadinessCheckValidation(t *testing.T) {
 			act:        func(_ *testing.T, manager *modulex.Manager) error { return manager.RegisterReadinessCheck(" ", nil) },
 			wantErrSub: "readiness check name must not be empty",
 		},
+		{
+			name: "nil readiness check function",
+			act: func(_ *testing.T, manager *modulex.Manager) error {
+				return manager.RegisterReadinessCheck("cache", nil)
+			},
+			wantErrSub: "readiness check function must not be nil",
+		},
 	}
 
 	for _, tt := range tests {
@@ -411,6 +442,19 @@ func TestRegisterReadinessCheckValidation(t *testing.T) {
 			assert.ErrorContains(t, err, tt.wantErrSub)
 		})
 	}
+}
+
+// TestRegisterReadinessCheckNilRejectedNeverStored mirrors
+// TestRegisterHealthCheckNilRejectedNeverStored for RegisterReadinessCheck.
+func TestRegisterReadinessCheckNilRejectedNeverStored(t *testing.T) {
+	manager := newTestManager(nil)
+
+	err := manager.RegisterReadinessCheck("cache", nil)
+	require.ErrorIs(t, err, modulex.ErrReadinessCheckNil)
+
+	checks := manager.ReadinessChecks()
+	_, exists := checks["cache"]
+	assert.False(t, exists, "a rejected nil readiness check must not appear in ReadinessChecks()")
 }
 
 func TestReadinessChecksDefaultsToEmptyMap(t *testing.T) {
@@ -2219,4 +2263,33 @@ func TestExportDAGDeterministic(t *testing.T) {
 		"    alpha --> zeta\n"+
 		"    mu[mu]\n"+
 		"    zeta[zeta]\n", want)
+}
+
+// TestExportDAGEscapesMermaidSignificantModuleNames is a regression test:
+// RegisterModule only requires a module's name to be non-empty, so a name
+// containing Mermaid-significant characters (quotes, angle brackets, "-->",
+// a literal "]") must never be interpolated into ExportDAG's output
+// verbatim — doing so could produce a malformed diagram, or, in a
+// permissive Mermaid rendering configuration, inject Mermaid directives
+// (e.g. a "click" callback) or HTML/script via a quoted label. This
+// asserts such a name is rendered via a synthetic node ID with its content
+// safely quoted and escaped, never as a raw, unescaped node ID or label.
+func TestExportDAGEscapesMermaidSignificantModuleNames(t *testing.T) {
+	t.Parallel()
+
+	manager := newTestManager(NewInMemoryEventBus())
+
+	evilName := `evil"] --> click evil "javascript:alert(1)`
+	require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: evilName})))
+	require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "normal", deps: []string{evilName}})))
+
+	dag := manager.ExportDAG()
+
+	require.NotContains(t, dag, evilName, "the raw, unescaped module name must never appear verbatim in the output")
+
+	quotedNode := regexp.MustCompile(`(?m)^    n\d+\["[^"]*"\]$`)
+	require.True(t, quotedNode.MatchString(dag), "expected a synthetic-ID node with a well-formed, fully-quoted label, got:\n%s", dag)
+
+	require.Contains(t, dag, "normal --> n0", "the edge to the Mermaid-significant dependency name must reference its synthetic ID")
+	require.NotContains(t, dag, `"`+evilName, "no raw double-quote from the module name should survive escaping")
 }

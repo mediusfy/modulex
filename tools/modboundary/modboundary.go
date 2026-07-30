@@ -75,7 +75,7 @@ var (
 func init() {
 	Analyzer.Flags.StringVar(&rootFlag, "root", "", "import path prefix under which direct child directories are independent feature modules (required)")
 	Analyzer.Flags.StringVar(&allowFlag, "allow", "ports", "comma-separated list of subpackage names that may be imported across module boundaries")
-	Analyzer.Flags.StringVar(&dbSchemaFlag, "dbschema", "", "glob pattern for SQL migration files to extract and check cross-module table references (e.g. \"*/migrations/*.sql\")")
+	Analyzer.Flags.StringVar(&dbSchemaFlag, "dbschema", "", "glob pattern for SQL migration files to extract and check cross-module table references; \"**\" recurses into subdirectories at any depth, e.g. \"**/migrations/*.sql\" (a plain \"*/migrations/*.sql\" without \"**\" only matches one directory level, as before)")
 	Analyzer.Flags.StringVar(&sqlTablesFlag, "sqltables", "schema_migrations,goose_db_version,golang_migrations", "comma-separated list of shared table names exempt from cross-module checks")
 }
 
@@ -222,9 +222,77 @@ func isLikelySQLReference(lower, table string) bool {
 	return strings.Contains(lower, table)
 }
 
+// globToRegexp translates a shell-style glob pattern into an anchored
+// regular expression matching a "/"-separated relative path, with "**"
+// given genuine recursive-directory semantics that neither Go's
+// path/filepath.Match/Glob nor a plain shell (without "shopt -s globstar")
+// provide on their own: a "**" path segment matches zero or more entire
+// path segments (so "**/migrations/*.sql" matches "migrations/x.sql" at
+// the root AND "a/b/c/migrations/x.sql" at any depth), while a lone "*"
+// still matches only within a single segment (never crossing "/"), exactly
+// matching filepath.Match's existing behavior for a pattern that contains
+// no "**" — this is what keeps an existing one-level pattern like
+// "*/migrations/*.sql" resolving to precisely the same matches it always
+// has, for full backward compatibility with any caller already using this
+// flag as documented.
+func globToRegexp(pattern string) (*regexp.Regexp, error) {
+	segments := strings.Split(filepath.ToSlash(pattern), "/")
+
+	// Translate every non-"**" segment first, so the join step below only
+	// has to decide what separator (a literal "/", or nothing — a "**"
+	// group supplies its own trailing "/" when it matches at least one
+	// segment) belongs between two adjacent translated pieces.
+	type piece struct {
+		text         string
+		isDoubleStar bool
+	}
+	pieces := make([]piece, len(segments))
+	for i, seg := range segments {
+		if seg == "**" {
+			// Matches zero or more entire path segments, each followed by
+			// its "/" — the group is optional so "**" can also match zero
+			// segments (letting "**/migrations/*.sql" match a migrations
+			// directory directly under the walked root, not only a nested
+			// one).
+			pieces[i] = piece{text: `(?:.+/)?`, isDoubleStar: true}
+			continue
+		}
+		var b strings.Builder
+		for _, r := range seg {
+			switch r {
+			case '*':
+				b.WriteString(`[^/]*`)
+			case '?':
+				b.WriteString(`[^/]`)
+			default:
+				b.WriteString(regexp.QuoteMeta(string(r)))
+			}
+		}
+		pieces[i] = piece{text: b.String()}
+	}
+
+	var out strings.Builder
+	out.WriteString("^")
+	for i, p := range pieces {
+		if i > 0 && !pieces[i-1].isDoubleStar {
+			// The previous piece was a normal segment (not "**"), so the
+			// "/" that separated these two pattern segments still needs to
+			// be emitted literally. When the previous piece WAS "**", its
+			// own "(?:.+/)?" group already accounts for that separator.
+			out.WriteString("/")
+		}
+		out.WriteString(p.text)
+	}
+	out.WriteString("$")
+	return regexp.Compile(out.String())
+}
+
 // loadSchemaTables scans SQL migration files matching dbschemaGlob under the
 // root directory and returns a map of table name to owning module name (the
-// first path segment below root).
+// first path segment below root). dbschemaGlob may use "**" for genuine
+// recursive-directory matching (see globToRegexp); a pattern without "**"
+// matches exactly as filepath.Glob always has, so an existing one-level
+// pattern such as "*/migrations/*.sql" is unaffected.
 func loadSchemaTables(pass *analysis.Pass, root, dbschemaGlob string, allowedTables map[string]bool) (map[string]string, error) {
 	tables := make(map[string]string)
 
@@ -244,9 +312,32 @@ func loadSchemaTables(pass *analysis.Pass, root, dbschemaGlob string, allowedTab
 	// the last segment of the root import path, or we anchor at the package dir.
 	moduleRoot := findModuleRoot(dir, root)
 
-	matches, err := filepath.Glob(filepath.Join(moduleRoot, dbschemaGlob))
+	matcher, err := globToRegexp(dbschemaGlob)
 	if err != nil {
 		return nil, err
+	}
+	var matches []string
+	walkErr := filepath.WalkDir(moduleRoot, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, relErr := filepath.Rel(moduleRoot, path)
+		if relErr != nil {
+			return nil
+		}
+		if matcher.MatchString(filepath.ToSlash(rel)) {
+			matches = append(matches, path)
+		}
+		return nil
+	})
+	if walkErr != nil {
+		if os.IsNotExist(walkErr) {
+			return tables, nil
+		}
+		return nil, walkErr
 	}
 
 	createRE := regexp.MustCompile(`(?i)CREATE\s+(TABLE|VIEW)\s+(\S+)`)
