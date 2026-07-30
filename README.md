@@ -778,6 +778,7 @@ for a detailed comparison with plain constructor injection, Wire, Fx, and Dig.
 - [Lifecycle Guide](./docs/planning/lifecycle-guide.md)
 - [Migration Guide](./docs/planning/migration-guide.md)
 - [Provenance and Handoff Schema](./docs/planning/provenance-handoff-schema.md)
+- [Scaffolding and Test Harness Guide](./docs/planning/scaffolding-and-test-harness-guide.md)
 - [Semantic Index Diagnostics Guide](./docs/planning/semantic-index-diagnostics-guide.md)
 - [Support](./SUPPORT.md)
 - [Security](./SECURITY.md)
