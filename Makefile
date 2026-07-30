@@ -1,4 +1,4 @@
-.PHONY: deps test test-arch fmt lint build vuln check-consumer-boundary check-module-boundary check-api-compat check-changelog release publish-godev help
+.PHONY: deps test test-arch fmt lint build vuln check-consumer-boundary check-module-boundary check-api-compat check-changelog release publish-godev proto-gen help
 
 help:
 	@echo "Available targets:"
@@ -15,6 +15,7 @@ help:
 	@echo "  check-changelog         - Verify CHANGELOG.md is updated when required (PR diff vs origin/main)"
 	@echo "  release                 - Tag, push, and create a GitHub release (VERSION required)"
 	@echo "  publish-godev           - Manually request go.dev to re-index the module"
+	@echo "  proto-gen               - Regenerate notificationpb from its .proto (requires protoc; not part of build/test/CI)"
 
 deps:
 	go mod download
@@ -60,6 +61,15 @@ endif
 	@echo "Creating release $(VERSION)..."
 	git tag -a "$(VERSION)" -m "Release $(VERSION)"
 	git push origin "$(VERSION)"
+
+proto-gen:
+	@command -v protoc >/dev/null 2>&1 || { echo "protoc not found on PATH; see docs/planning/grpc-adapter-guide.md"; exit 1; }
+	@command -v protoc-gen-go >/dev/null 2>&1 || { echo "protoc-gen-go not found on PATH (go install google.golang.org/protobuf/cmd/protoc-gen-go@latest)"; exit 1; }
+	@command -v protoc-gen-go-grpc >/dev/null 2>&1 || { echo "protoc-gen-go-grpc not found on PATH (go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest)"; exit 1; }
+	protoc --go_out=. --go_opt=paths=source_relative \
+		--go-grpc_out=. --go-grpc_opt=paths=source_relative \
+		examples/deployment/notification/notificationpb/notification.proto
+	@echo "Regenerated notificationpb. Review and commit the .pb.go/_grpc.pb.go changes."
 
 publish-godev:
 	@echo "Requesting proxy.golang.org to index the latest version..."

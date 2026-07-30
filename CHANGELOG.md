@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- MOD-55: add an optional `grpc` package implementing the third ADR-0031
+  roadmap item, gRPC-only (Connect is out of scope — see the package doc
+  comment and `docs/planning/grpc-adapter-guide.md` for the scoping
+  rationale). `grpc.Server` adapts a `*grpc.Server` into
+  `modulex.Starter`/`modulex.Stopper` for Manager-owned lifecycle, with a
+  bounded graceful shutdown (`GracefulStop`, falling back to a hard `Stop` if
+  it doesn't complete before a configurable timeout). Trace context
+  propagates over gRPC metadata via `TraceUnaryClientInterceptor`/
+  `TraceUnaryServerInterceptor` and streaming counterparts, using the same
+  `otel.GetTextMapPropagator()` mechanism the `nats`/`rabbitmq` adapters use
+  for message headers. `UnaryServerErrorInterceptor` and `TranslateError`
+  provide consistent, two-way domain-error-to-`codes.Code` mapping.
+  `HealthServer` implements `grpc_health_v1.HealthServer` by evaluating a
+  `modulex.Manager`'s actual registered health/readiness checks on every
+  call, rather than reporting a hardcoded status. `google.golang.org/grpc`
+  and `google.golang.org/protobuf` move from indirect to direct dependencies
+  of this module (both were already pulled in transitively by the OTLP gRPC
+  trace exporter); the core `modulex`/`wire` packages remain free of any
+  gRPC/protobuf import, verified by `make check-consumer-boundary`. The
+  `examples/deployment/notification` example gains a gRPC-based sibling to
+  its existing HTTP remote example, binding the same `ports.Sender`/
+  `ports.ServiceKey` to a local implementation in one process and a remote
+  gRPC client in another. See
+  [`docs/planning/grpc-adapter-guide.md`](docs/planning/grpc-adapter-guide.md)
+  for the full design, the error-mapping table, and a walkthrough of the
+  example.
+
 - MOD-54: split `EventBus`'s bundled publish/subscribe surface into explicit,
   additive messaging capability interfaces: `Publisher` (`Publish`),
   `Subscriber` (`Subscribe`), and `DurableConsumer` (`SubscribeDurable`).
