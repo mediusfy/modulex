@@ -11,13 +11,22 @@ Kimi, OpenAI/Codex, generic MCP clients, and no-hook environments alike.
 
 ## Commands
 
-- **Build all**: `make build` (builds Go services + frontend)
-- **Lint all**: `make lint` (runs Go + frontend linters)
-- **Test all**: `make test` (runs Go + frontend tests)
-- **Run tests**: `go test ./...` in subdirectories or use `make test`
-- **Lint Go**: `golangci-lint run ./...`
-- **Format Go**: `gofmt -w .`
-- **Install dependencies**: `make deps` (run inside `platform/` or root)
+Modulex is a Go module monorepo (core `modulex` package plus adapter
+sub-packages `chi`, `nats`, `rabbitmq`, `watermill`, `otel`, `grpc`, and
+standalone leaf packages such as `discovery`, `provenance`, `verify`,
+`contract`, `agentdocs`, `semindex`, `approval`, `patchapply`, `modtest`).
+There is no frontend or web service in this repository. See `make help`
+for the full target list; the ones used most often:
+
+- **Build**: `make build` (compiles all packages and examples)
+- **Test**: `make test` / **race + arch**: `make test-arch`
+- **Lint**: `make lint`
+- **Format**: `make fmt`
+- **Install dependencies**: `make deps`
+- **Vulnerability scan**: `make vuln`
+- **Boundary checks**: `make check-consumer-boundary`, `make check-module-boundary`
+- **API compatibility report**: `make check-api-compat`
+- **Changelog check**: `make check-changelog`
 
 ## CodeGraph
 
@@ -31,10 +40,10 @@ When investigating code, prefer querying CodeGraph over raw `grep`/`find`. Usefu
 
 ```bash
 # Find symbols by name
-codegraph query "StartWorkloadTestRun"
+codegraph query "Manager"
 
 # Find definitions in a file
-codegraph query --file web/backend/internal/k8s/testrun_session.go "TestRunStatus"
+codegraph query --file modulex.go "StartModules"
 
 # Show index status
 codegraph status

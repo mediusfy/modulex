@@ -457,7 +457,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `28-07-code_review.md` at the repository root: documented the v0.5.0
+- `docs/reviews/28-07-code_review.md`: documented the v0.5.0
   code-review findings and their resolutions.
 - `docs/adr/adr-0031-modulex-value-and-specialization-roadmap.md`.
 - `docs/adr/adr-0032-agent-first-development-experience.md`.

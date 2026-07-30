@@ -124,7 +124,11 @@ not claim compile-time architectural enforcement that it does not provide.
 ### Go compatibility and release engineering
 
 - [x] Select the oldest Go version required by actual language features and dependencies.
-- [x] Test the minimum supported Go version and current supported Go releases in CI.
+- [ ] Test the minimum supported Go version and current supported Go releases in CI.
+  - `go.mod` currently declares `go 1.25.0`, but `ci.yml`'s matrix only
+    tests `1.26.x` and `stable` — the declared minimum is never actually
+    tested. Fix by either bumping `go.mod` to `1.26.0` (matching what CI
+    tests) or adding `1.25.x` to the CI matrix.
 - [x] Run `gofmt`, `go vet`, `golangci-lint`, `go test -race`, and build verification in CI.
 - [x] Add vulnerability scanning.
 - [x] Add API compatibility checks.
