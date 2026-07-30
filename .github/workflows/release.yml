@@ -24,6 +24,8 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
@@ -61,6 +63,29 @@ jobs:
 
       - name: Test
         run: go test -race -count=1 ./...
+
+      - name: Verify core package has no adapter dependencies
+        run: make check-consumer-boundary
+
+      - name: Run the optional modboundary analyzer on examples/deployment
+        run: make check-module-boundary
+
+      - name: Verify nested modules (tools/modboundary, tools/scaffold, examples/external-consumer)
+        run: make check-nested-modules
+
+      - name: Report API changes since the latest tag
+        run: make check-api-compat
+
+      - name: Verify CHANGELOG.md documents this release
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          version_no_v="${VERSION#v}"
+          if ! grep -q "^## \[$version_no_v\]" CHANGELOG.md; then
+            echo "error: CHANGELOG.md has no '## [$version_no_v]' section for $VERSION" >&2
+            exit 1
+          fi
+          echo "ok: CHANGELOG.md documents $VERSION"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@c12583777ecdfd3be55c69cf75464299dc01057e # v3
