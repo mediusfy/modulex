@@ -31,6 +31,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- New `discovery` package (MOD-64): a standalone, dependency-free (besides
+  `provenance`) leaf package implementing step 1 of ADR-0032's "Standard
+  agent workflow" — `discovery.Discover(root)` scans a repository for Go
+  modules (correctly stopping at nested module boundaries, mirroring `go
+  list ./...`), composition roots (`examples/` children plus any directory
+  with a `func main()`), well-known agent-instruction files, `Makefile`
+  targets, CI workflow files, semantic-index presence (`.codegraph`,
+  `.git`, `.tokensave`), available tools on `PATH`, and git dirty-worktree
+  state — all without depending on global/user-scoped state and without
+  ever executing a discovered binary. `discovery.ClassifyCommand` reuses
+  `provenance.CommandClass` to classify a command string against an
+  extensible, first-match-wins rule table built from
+  `docs/planning/agent-safety-policy.md`, with an explicit
+  approval-required fail-safe default for unrecognized commands and a
+  documented tie-break for commands (like `make publish-godev`) that are
+  both networked and externally visible. See
+  `docs/planning/agent-discovery-guide.md`.
 - `Manager.ModuleContract` (MOD-60): returns a machine-readable
   `ModuleContract` (`ModuleContractEntry` per module) describing registered
   modules and their dependency edges, independent of the existing Mermaid
