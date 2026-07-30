@@ -80,6 +80,38 @@ func TestRemoteComposition(t *testing.T) {
 	assert.Equal(t, "hello from consumer", recorder.lastMessage)
 }
 
+func TestRemoteGRPCComposition(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	// Standalone notification service, served over gRPC on an ephemeral port,
+	// exactly as examples/deployment/remote/notification-grpc-server/main.go
+	// does.
+	serverMgr, err := modulex.NewManager(modulex.WithLogger(logger))
+	require.NoError(t, err)
+	serverMod := notification.NewGRPCServerModule("127.0.0.1:0")
+	require.NoError(t, serverMgr.RegisterModule(notification.NewModule()))
+	require.NoError(t, serverMgr.RegisterModule(serverMod))
+
+	ctx := context.Background()
+	require.NoError(t, serverMgr.InitModules(ctx))
+	require.NoError(t, serverMgr.StartModules(ctx))
+	t.Cleanup(func() { _ = serverMgr.StopModules(context.Background()) })
+
+	// Consumer process with a remote notification module that proxies to the
+	// standalone service over gRPC, exactly as
+	// examples/deployment/remote/grpc-consumer/main.go does.
+	consumerMgr, err := modulex.NewManager(modulex.WithLogger(logger))
+	require.NoError(t, err)
+	remoteMod, err := notification.NewGRPCRemoteModule(serverMod.Addr().String())
+	require.NoError(t, err)
+	require.NoError(t, consumerMgr.RegisterModule(remoteMod))
+	require.NoError(t, consumerMgr.RegisterModule(consumer.NewModule()))
+
+	require.NoError(t, consumerMgr.InitModules(ctx))
+	require.NoError(t, consumerMgr.StartModules(ctx))
+	require.NoError(t, consumerMgr.StopModules(ctx))
+}
+
 func TestNotificationModuleWithoutRouter(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
