@@ -196,6 +196,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (a process restart invalidates all grants, by design) and is not yet
   wired into any CLI or MCP server. See
   `docs/planning/agent-approval-broker-guide.md`.
+- New `patchapply` package (MOD-70): a standalone leaf package (depending
+  only on `approval` and `provenance`, stdlib otherwise) implementing P2 of
+  ADR-0032's roadmap — "Add atomic patch application and rollback
+  journaling." `patchapply.Apply(targetDir, []FileChange, ApplyOptions)`
+  applies a batch of content-based file mutations (write new content to a
+  path, or delete a path — not unified-diff/patch-file parsing) as a single
+  all-or-nothing transaction: every path is validated to stay within
+  `targetDir` (rejecting an absolute path, a `..` traversal, or a path that
+  resolves outside `targetDir` via a symlink planted anywhere in its
+  existing directory chain), any batch containing a `Delete: true` entry is
+  refused outright unless an approved `approval.Broker`/`Scope` is
+  supplied, and every file's current on-disk content is checked against an
+  optional `FileChange.ExpectedPriorContent` — all before a single byte is
+  written — so a batch that would clobber an unrelated dirty-worktree edit
+  fails closed instead of silently overwriting it. Writes use a
+  temp-file-then-`os.Rename` pattern in the target file's own directory for
+  per-file atomicity; if any individual write/delete in the batch fails
+  partway through, `Apply` immediately rolls back everything already
+  applied earlier in the same call using the returned `Journal`, so a
+  caller only ever observes full success or a full revert, never a
+  partially-applied batch. `patchapply.Rollback(targetDir, Journal)` undoes
+  a previously successful `Apply` call standalone, and
+  `patchapply.Verify(targetDir, Journal)` re-reads every touched file to
+  confirm the directory exactly matches its pre-`Apply` state, naming any
+  drifted file. `Journal.String()` never includes file content, and the
+  few error paths that do preview content (an `ExpectedPriorContent`
+  mismatch, a `Verify` drift report) redact secret-shaped values first,
+  using a locally copied subset of `provenance`'s secret-pattern detection.
+  See `docs/planning/agent-atomic-patch-guide.md`.
 
 ### Changed
 
