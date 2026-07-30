@@ -1134,6 +1134,88 @@ func TestLifecycleStateTransitions(t *testing.T) {
 	}
 }
 
+// TestStopModulesRejectedDuringConcurrentStartModules is a regression test
+// for a race where StopModules, called while StartModules was still running
+// on another goroutine (StateStarting), would tear down tasks and the event
+// bus and set StateStopped, only to have the in-flight StartModules call
+// overwrite that with StateRunning once it finished -- silently breaking the
+// documented StopModules idempotency guarantee and closing the event bus
+// while a module's Start was still executing. StopModules must instead
+// reject the call with ErrInvalidLifecycleState while StartModules is in
+// progress, and the manager's state must not be corrupted once StartModules
+// completes.
+func TestStopModulesRejectedDuringConcurrentStartModules(t *testing.T) {
+	manager := newTestManager(nil)
+
+	started := make(chan struct{})
+	resume := make(chan struct{})
+
+	mod := newMockModule(t, mockModuleConfig{
+		name: "module-a",
+		onStart: func() {
+			close(started)
+			<-resume
+		},
+	})
+	require.NoError(t, manager.RegisterModule(mod))
+	require.NoError(t, manager.InitModules(context.Background()))
+
+	startDone := make(chan error, 1)
+	go func() {
+		startDone <- manager.StartModules(context.Background())
+	}()
+
+	<-started // StartModules is now inside module-a's Start(); state == StateStarting
+
+	stopErr := manager.StopModules(context.Background())
+	assert.ErrorIs(t, stopErr, modulex.ErrInvalidLifecycleState)
+
+	close(resume)
+	require.NoError(t, <-startDone)
+
+	assert.Equal(t, modulex.StateRunning, manager.State())
+	require.NoError(t, manager.StopModules(context.Background()))
+	assert.Equal(t, modulex.StateStopped, manager.State())
+}
+
+// TestStopModulesRejectedDuringConcurrentInitModules is the InitModules
+// analogue of TestStopModulesRejectedDuringConcurrentStartModules: StopModules
+// must reject a call that lands while InitModules is still running on another
+// goroutine (StateInitializing) rather than racing its own shutdown against
+// the in-flight init.
+func TestStopModulesRejectedDuringConcurrentInitModules(t *testing.T) {
+	manager := newTestManager(nil)
+
+	initializing := make(chan struct{})
+	resume := make(chan struct{})
+
+	mod := newMockModule(t, mockModuleConfig{
+		name: "module-a",
+		onInit: func(reg modulex.Registry) {
+			close(initializing)
+			<-resume
+		},
+	})
+	require.NoError(t, manager.RegisterModule(mod))
+
+	initDone := make(chan error, 1)
+	go func() {
+		initDone <- manager.InitModules(context.Background())
+	}()
+
+	<-initializing // InitModules is now inside module-a's Init(); state == StateInitializing
+
+	stopErr := manager.StopModules(context.Background())
+	assert.ErrorIs(t, stopErr, modulex.ErrInvalidLifecycleState)
+
+	close(resume)
+	require.NoError(t, <-initDone)
+
+	assert.Equal(t, modulex.StateInitialized, manager.State())
+	require.NoError(t, manager.StopModules(context.Background()))
+	assert.Equal(t, modulex.StateStopped, manager.State())
+}
+
 func TestInitFailureRollback(t *testing.T) {
 	manager := newTestManager(nil)
 

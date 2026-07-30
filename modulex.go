@@ -1210,6 +1210,18 @@ func (m *Manager) resetTaskCtx() {
 // StopModules is idempotent: calling it multiple times returns nil without
 // re-executing shutdown logic. It is context-aware and joins all shutdown
 // errors so that no failure is silently dropped.
+//
+// StopModules returns ErrInvalidLifecycleState if called while InitModules or
+// StartModules is concurrently in progress on another goroutine (i.e. the
+// manager is in StateInitializing or StateStarting). Those phases iterate
+// modules without holding the manager's state lock, so racing a concurrent
+// StopModules against them cannot be done safely: it would let StopModules
+// tear down tasks and the event bus while a module's Init/Start is still
+// running, and could have the in-progress phase overwrite StateStopped with
+// StateInitialized/StateRunning once it completes, silently breaking the
+// idempotency guarantee above. To cancel an in-flight InitModules or
+// StartModules call, cancel the context passed to it instead; call
+// StopModules once it returns.
 func (m *Manager) StopModules(ctx context.Context) error {
 	m.stateMu.Lock()
 	state := m.state
@@ -1217,8 +1229,11 @@ func (m *Manager) StopModules(ctx context.Context) error {
 	case StateStopped, StateStopping:
 		m.stateMu.Unlock()
 		return nil
-	case StateConfiguring, StateInitializing, StateInitialized, StateStarting, StateRunning:
+	case StateConfiguring, StateInitialized, StateRunning:
 		// proceed with shutdown
+	case StateInitializing, StateStarting:
+		m.stateMu.Unlock()
+		return fmt.Errorf("%w: StopModules called while InitModules/StartModules is in progress (%q); cancel its context and wait for it to return instead", ErrInvalidLifecycleState, state)
 	default:
 		m.stateMu.Unlock()
 		return fmt.Errorf("%w: StopModules called in %q state", ErrInvalidLifecycleState, state)
