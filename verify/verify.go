@@ -16,6 +16,17 @@
 // discovery.ToolStatus (so tool-availability gating uses the same data
 // discovery.Discover already produces, rather than re-probing PATH itself).
 //
+// # changedFiles is untrusted input
+//
+// changedFiles typically comes from a diff (e.g. `git diff --name-only`)
+// and may include paths from an external contribution this agent did not
+// author. PlanFor never uses a changed path to build a CheckSpec.Command
+// unless the path passes isPathSafeForCommand (letters, digits, '_', '-',
+// '.', '/' only, no ".." traversal segment) — a path containing shell
+// metacharacters is routed to fallbackToFullGates instead, so it can never
+// inject shell syntax into a Command that Run later executes via "sh -c".
+// See TestPlanFor_RejectsShellMetacharactersInPath for the regression test.
+//
 // # Focused vs. full: two mandatory outputs, not alternatives
 //
 // PlanFor produces a Plan with two fields:
@@ -75,11 +86,35 @@ package verify
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/mediusfy/modulex/provenance"
 )
+
+// safePathPattern matches the character set every legitimate path in this
+// repository is expected to use: letters, digits, '_', '-', '.', and '/' as
+// a segment separator. changedFiles ultimately comes from a diff (e.g. `git
+// diff --name-only`) and is not necessarily trustworthy — a crafted path
+// (say, from a file added in an external contribution) must never be able
+// to inject shell syntax into a CheckSpec.Command that Run later executes
+// via "sh -c". Any path containing a character outside this set is treated
+// as unmapped and routed to fallbackToFullGates rather than used to build a
+// command string; see isPathSafeForCommand's callers.
+var safePathPattern = regexp.MustCompile(`^[A-Za-z0-9_.\-/]+$`)
+
+// isPathSafeForCommand reports whether path is safe to interpolate into (or
+// use directly as) a CheckSpec.Command string that Run will execute via
+// "sh -c". A path is unsafe if it is empty, contains a character outside
+// safePathPattern, or contains ".." (which could escape the intended
+// directory even though it wouldn't enable shell injection on its own).
+func isPathSafeForCommand(path string) bool {
+	if path == "" || strings.Contains(path, "..") {
+		return false
+	}
+	return safePathPattern.MatchString(path)
+}
 
 // CheckSpec describes one verification check: a human-readable name, the
 // shell command that performs it, the provenance category it belongs to,
@@ -230,6 +265,18 @@ func copyFullGates() []CheckSpec {
 // handle precisely.
 func focusedChecksForFile(path string) []CheckSpec {
 	path = strings.ReplaceAll(path, "\\", "/")
+
+	// A path containing shell-significant characters (or a "..' traversal
+	// segment) is never used to build a command string: doing so would let
+	// a crafted changed-file path inject arbitrary shell syntax into a
+	// CheckSpec.Command that Run executes via "sh -c". Route it to the same
+	// fail-safe fallback used for any other unmapped path instead of
+	// special-casing it as an error, since "recommend the full gate set" is
+	// already the correct, safe response to a path this rule table cannot
+	// confidently interpret.
+	if !isPathSafeForCommand(path) {
+		return fallbackToFullGates(path)
+	}
 
 	switch {
 	case isWorkflowFile(path):

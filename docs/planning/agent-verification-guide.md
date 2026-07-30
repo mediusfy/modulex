@@ -220,6 +220,20 @@ anything else maps to `StatusFail`. Combined stdout+stderr is captured into
 if longer — long enough to see a failure, bounded so a runaway or verbose
 command cannot make a result set grow without limit.
 
+### `changedFiles` is untrusted input
+
+`PlanFor`'s `changedFiles` typically comes from a diff (e.g. `git diff
+--name-only`) and may include a path from an external contribution this
+agent did not author. Because `Run` executes `CheckSpec.Command` via `sh
+-c`, a changed-file path is never used to build a `Command` string unless
+it passes an allow-list check (letters, digits, `_`, `-`, `.`, `/` only, no
+`..` traversal segment) — a path containing shell metacharacters (`` ` ``,
+`$()`, `;`, `&&`, `|`, a literal newline, etc.) is routed to the same
+full-gate fallback used for any other unmapped path, so it can never inject
+shell syntax into a command `Run` will later execute. See
+`TestPlanFor_RejectsShellMetacharactersInPath` in `verify/verify_test.go`
+for the regression test covering this.
+
 ### Why these fields live on `CheckSpec`, not re-derived from `Command`
 
 `CheckSpec.RequiredTool` and `CheckSpec.Networked` are set once, when a

@@ -177,3 +177,79 @@ func TestPlanFor_NoDuplicateChecks(t *testing.T) {
 		seen[key] = true
 	}
 }
+
+// TestPlanFor_RejectsShellMetacharactersInPath is a regression test for a
+// command-injection vulnerability: a changed-file path containing shell
+// metacharacters (e.g. from an untrusted diff, such as a maliciously named
+// file in an external contribution) must never end up embedded in a
+// CheckSpec.Command, since Run executes commands via "sh -c". Every
+// resulting Command must come verbatim from the fixed FullGates list (the
+// fallback path), never contain the raw injected path.
+func TestPlanFor_RejectsShellMetacharactersInPath(t *testing.T) {
+	injectionPaths := []string{
+		"$(touch pwned)/evil.go",
+		"scripts/check-x;touch pwned;.sh",
+		"httpx/`touch pwned`.go",
+		"examples/foo && touch pwned/bar.go",
+		"go.mod; touch pwned",
+		"../../../etc/passwd",
+	}
+
+	for _, p := range injectionPaths {
+		t.Run(p, func(t *testing.T) {
+			plan := PlanFor([]string{p})
+
+			if len(plan.FocusedChecks) == 0 {
+				t.Fatalf("PlanFor(%q): expected fallback-to-full-gates checks, got none", p)
+			}
+
+			fullGateCommands := make(map[string]bool, len(FullGates))
+			for _, g := range FullGates {
+				fullGateCommands[g.Command] = true
+			}
+
+			for _, c := range plan.FocusedChecks {
+				if strings.Contains(c.Command, "touch") || strings.Contains(c.Command, "pwned") {
+					t.Fatalf("PlanFor(%q): Command %q embeds the injected path; want a fixed FullGates command", p, c.Command)
+				}
+				if !fullGateCommands[c.Command] {
+					t.Fatalf("PlanFor(%q): Command %q is not one of the fixed FullGates commands", p, c.Command)
+				}
+			}
+		})
+	}
+}
+
+func TestIsPathSafeForCommand(t *testing.T) {
+	safe := []string{
+		"httpx/httpx.go",
+		"modulex.go",
+		"examples/deployment/module.go",
+		"scripts/check-changelog.sh",
+		"go.mod",
+		"CHANGELOG.md",
+		"docs/planning/agent-verification-guide.md",
+	}
+	for _, p := range safe {
+		if !isPathSafeForCommand(p) {
+			t.Errorf("isPathSafeForCommand(%q) = false, want true", p)
+		}
+	}
+
+	unsafe := []string{
+		"",
+		"$(touch pwned)/evil.go",
+		"scripts/check-x;touch pwned;.sh",
+		"httpx/`touch pwned`.go",
+		"a && b.go",
+		"a | b.go",
+		"a\nb.go",
+		"../../../etc/passwd",
+		"foo/../bar.go",
+	}
+	for _, p := range unsafe {
+		if isPathSafeForCommand(p) {
+			t.Errorf("isPathSafeForCommand(%q) = true, want false", p)
+		}
+	}
+}

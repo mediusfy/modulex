@@ -99,7 +99,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `allowNetwork` reports `StatusSkipped`, both with a `Reason`, so a missing
   tool or skipped check is never confused with success.
   `verify.RenderText` renders results as a human-readable summary grouped by
-  category. See `docs/planning/agent-verification-guide.md`.
+  category. Since `changedFiles` may come from an untrusted diff,
+  `PlanFor` never builds a `CheckSpec.Command` from a path containing shell
+  metacharacters or a `..` traversal segment — such a path falls back to the
+  full gate set instead, preventing shell injection into the commands
+  `Run` later executes via `sh -c`. See
+  `docs/planning/agent-verification-guide.md`.
 
 ### Changed
 
