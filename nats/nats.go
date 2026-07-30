@@ -144,3 +144,9 @@ func (n *EventBus) Close(ctx context.Context) error {
 	n.cancels = nil
 	return nil
 }
+
+var (
+	_ modulex.EventBus   = (*EventBus)(nil)
+	_ modulex.Publisher  = (*EventBus)(nil)
+	_ modulex.Subscriber = (*EventBus)(nil)
+)
