@@ -105,6 +105,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   full gate set instead, preventing shell injection into the commands
   `Run` later executes via `sh -c`. See
   `docs/planning/agent-verification-guide.md`.
+- New `contract` package (MOD-62): a standalone leaf package (depending only
+  on `provenance` and `gopkg.in/yaml.v3`) defining `Contract`, a versioned,
+  YAML-marshalable schema for a repository's declared agent contract
+  (`modulex.agent.yaml`) per ADR-0032's "Canonical repository contract" —
+  projects/Go modules/composition roots, instruction-file precedence,
+  lifecycle/module boundaries, classified commands (reusing
+  `provenance.CommandClass`), focused/full verification checks (shaped to
+  convert to/from `verify.CheckSpec`), protected/generated paths, required
+  tools, optional services, required credential *names* (never values), and
+  a named handoff format. `Contract.Validate` returns every problem found via
+  `errors.Join`: missing required fields, an unknown `CommandDecl.Class`
+  value (explicitly checked, since YAML happily unmarshals any string into
+  the enum), and any free-text field matching a secret-shaped pattern
+  (mirroring `provenance`'s detection) — unlike `provenance.Envelope`, this
+  package has no redaction step, since a checked-in contract file is meant
+  to be hand-edited, so a live-looking credential fails validation outright
+  rather than being silently rewritten. `RenderText` produces a
+  human-readable summary. `contract/testdata/modulex.agent.example.yaml`
+  is a complete, valid example describing this repository itself, loaded
+  and validated by its own regression test so the schema and the example
+  can never drift apart. See
+  `docs/planning/agent-repository-contract-guide.md`.
 
 ### Changed
 
