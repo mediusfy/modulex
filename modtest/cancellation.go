@@ -50,6 +50,10 @@ func setupForPhase(t TB, mod modulex.Module, phase Phase) modulex.Registry {
 func requirePhaseSupported(t TB, mod modulex.Module, phase Phase) {
 	t.Helper()
 	switch phase {
+	case PhaseInit:
+		// Init is part of the required modulex.Module interface, not an
+		// optional one — every mod already satisfies it, so there is
+		// nothing to check.
 	case PhaseStart:
 		if _, ok := mod.(modulex.Starter); !ok {
 			t.Fatalf("modtest: module %q does not implement modulex.Starter; cannot test PhaseStart", mod.Name())
@@ -58,6 +62,8 @@ func requirePhaseSupported(t TB, mod modulex.Module, phase Phase) {
 		if _, ok := mod.(modulex.Stopper); !ok {
 			t.Fatalf("modtest: module %q does not implement modulex.Stopper; cannot test PhaseStop", mod.Name())
 		}
+	default:
+		panic("unhandled default case")
 	}
 }
 
