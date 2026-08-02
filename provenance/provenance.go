@@ -330,6 +330,17 @@ func redactString(s string) (string, bool) {
 	return s, changed
 }
 
+// RedactSecrets replaces every secret-shaped match in s with the redaction
+// marker ("[REDACTED]"), reporting whether any replacement was made. It is
+// the exported form of the same best-effort, pattern-based detection Redact
+// uses internally (see secretPatterns' doc comment for what it does and does
+// not catch), exposed so other packages needing secret-shaped-value
+// detection (e.g. review's diff secret scan, Jira MOD-65) reuse this one
+// pattern set instead of maintaining a second, divergent copy.
+func RedactSecrets(s string) (string, bool) {
+	return redactString(s)
+}
+
 // Redact scrubs secret-shaped values from every free-text field in the
 // envelope (command args/output/reason, verification message/reason,
 // approval notes, rollback notes), replacing matches in place with

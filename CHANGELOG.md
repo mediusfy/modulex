@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- New `review` package: `review.Review` runs an "agent diff review" —
+  boundary (`check-consumer-boundary`, `check-module-boundary`), API
+  compatibility (`check-api-compat`), and changelog (`check-changelog`)
+  checks via `verify.Run`, plus a new diff-native secret scan
+  (`review.ScanSecrets`) over the lines added between two refs, each
+  labeled with the `provenance.VerificationCategory` that describes it
+  (`VerificationBoundary`, `VerificationCompatibility`,
+  `VerificationChangelog`, `VerificationSecretScan`). Implements ADR-0032
+  P1, "Add diff review for boundaries, secrets, API compatibility, and
+  changelog obligations" (Jira MOD-65). See
+  `docs/planning/agent-diff-review-guide.md`.
+- `provenance.RedactSecrets`: the exported form of the secret-shaped-value
+  detection `provenance.Envelope.Redact` already used internally, added so
+  `review.ScanSecrets` reuses the same pattern set instead of duplicating
+  it.
+
 ## [0.6.0] - 2026-07-30
 
 ### Fixed

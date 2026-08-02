@@ -199,6 +199,53 @@ func TestRedact_RemovesSecretAndValidatePasses(t *testing.T) {
 	}
 }
 
+func TestRedactSecrets(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		wantFound bool
+		wantGone  string // substring that must not survive redaction; ignored if ""
+	}{
+		{
+			name:      "no secret",
+			input:     "just an ordinary log line",
+			wantFound: false,
+		},
+		{
+			name:      "GitHub token",
+			input:     "using token ghp_1234567890abcdefghijklmnopqrstuvwxyz",
+			wantFound: true,
+			wantGone:  "ghp_1234567890",
+		},
+		{
+			name:      "generic key assignment",
+			input:     "api_key=supersecretvalue123",
+			wantFound: true,
+			wantGone:  "supersecretvalue123",
+		},
+		{
+			name:      "empty string",
+			input:     "",
+			wantFound: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, found := RedactSecrets(tt.input)
+			if found != tt.wantFound {
+				t.Fatalf("RedactSecrets(%q) found = %v, want %v", tt.input, found, tt.wantFound)
+			}
+			if tt.wantGone != "" && strings.Contains(got, tt.wantGone) {
+				t.Fatalf("RedactSecrets(%q) = %q, still contains %q", tt.input, got, tt.wantGone)
+			}
+			if tt.wantFound && !strings.Contains(got, redactionMarker) {
+				t.Fatalf("RedactSecrets(%q) = %q, want it to contain the redaction marker", tt.input, got)
+			}
+		})
+	}
+}
+
 func TestValidate_SkippedOrUnavailableRequiresReason(t *testing.T) {
 	tests := []struct {
 		name    string

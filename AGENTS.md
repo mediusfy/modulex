@@ -14,7 +14,8 @@ Kimi, OpenAI/Codex, generic MCP clients, and no-hook environments alike.
 Modulex is a Go module monorepo (core `modulex` package plus adapter
 sub-packages `chi`, `nats`, `rabbitmq`, `watermill`, `otel`, `grpc`, and
 standalone leaf packages such as `discovery`, `provenance`, `verify`,
-`contract`, `agentdocs`, `semindex`, `approval`, `patchapply`, `modtest`).
+`review`, `contract`, `agentdocs`, `semindex`, `approval`, `patchapply`,
+`modtest`).
 There is no frontend or web service in this repository. See `make help`
 for the full target list; the ones used most often:
 
