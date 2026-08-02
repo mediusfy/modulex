@@ -246,6 +246,62 @@ func TestRedactSecrets(t *testing.T) {
 	}
 }
 
+func TestRedactHighConfidenceSecrets(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		wantFound bool
+		wantGone  string // substring that must not survive redaction; ignored if ""
+	}{
+		{
+			name:      "GitHub token still matches",
+			input:     "using token ghp_1234567890abcdefghijklmnopqrstuvwxyz",
+			wantFound: true,
+			wantGone:  "ghp_1234567890",
+		},
+		{
+			name:      "AWS secret env var still matches",
+			input:     "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+			wantFound: true,
+			wantGone:  "wJalrXUtnFEMI",
+		},
+		{
+			name:      "JWT-shaped string still matches",
+			input:     "authorization: bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
+			wantFound: true,
+			wantGone:  "dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
+		},
+		{
+			// This is the exact behavior difference from RedactSecrets:
+			// the loose generic key/token/password/secret catch-all is
+			// excluded, so a plain code assignment is no longer flagged.
+			name:      "generic key assignment does NOT match (unlike RedactSecrets)",
+			input:     "api_key=supersecretvalue123",
+			wantFound: false,
+		},
+		{
+			name:      "no secret",
+			input:     "just an ordinary log line",
+			wantFound: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, found := RedactHighConfidenceSecrets(tt.input)
+			if found != tt.wantFound {
+				t.Fatalf("RedactHighConfidenceSecrets(%q) found = %v, want %v", tt.input, found, tt.wantFound)
+			}
+			if tt.wantGone != "" && strings.Contains(got, tt.wantGone) {
+				t.Fatalf("RedactHighConfidenceSecrets(%q) = %q, still contains %q", tt.input, got, tt.wantGone)
+			}
+			if tt.wantFound && !strings.Contains(got, redactionMarker) {
+				t.Fatalf("RedactHighConfidenceSecrets(%q) = %q, want it to contain the redaction marker", tt.input, got)
+			}
+		})
+	}
+}
+
 func TestValidate_SkippedOrUnavailableRequiresReason(t *testing.T) {
 	tests := []struct {
 		name    string

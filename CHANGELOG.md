@@ -20,10 +20,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   P1, "Add diff review for boundaries, secrets, API compatibility, and
   changelog obligations" (Jira MOD-65). See
   `docs/planning/agent-diff-review-guide.md`.
+  - `ScanSecrets` uses `provenance.RedactHighConfidenceSecrets` (the
+    precise AWS/PEM/GitHub-token/JWT patterns) plus its own
+    quote-required generic pattern, rather than `provenance`'s looser
+    generic key/token/password/secret catch-all — smoke-tested against 30
+    commits of this repository's own history, the looser pattern produced
+    29 false positives from ordinary Go code (`token = hex.EncodeToString(buf)`,
+    typed `XxxKey` identifiers, narrative comments); the stricter pattern
+    drops that to 13, all legitimate (test fixtures intentionally
+    exercising secret-detection code, or doc comments describing the
+    patterns).
+  - A `// nosecret` marker (any line containing the case-insensitive
+    substring "nosecret") suppresses a finding, for a line that is
+    secret-shaped on purpose.
 - `provenance.RedactSecrets`: the exported form of the secret-shaped-value
-  detection `provenance.Envelope.Redact` already used internally, added so
-  `review.ScanSecrets` reuses the same pattern set instead of duplicating
-  it.
+  detection `provenance.Envelope.Redact` already used internally.
+- `provenance.RedactHighConfidenceSecrets` and `provenance.RedactionMarker`:
+  a narrower variant of `RedactSecrets` excluding the loose generic
+  key/token/password/secret catch-all, for a caller (like `review.ScanSecrets`)
+  scanning source code rather than free-text command output.
 
 ## [0.6.0] - 2026-07-30
 

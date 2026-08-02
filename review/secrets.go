@@ -25,21 +25,78 @@ const maxSecretFindings = 20
 // git, not requested here) are ignored.
 var hunkHeaderPattern = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@`)
 
+// strictGenericSecretPattern is this package's own, source-code-tuned
+// variant of provenance's genericAssignmentPattern (the key/token/password/
+// secret catch-all excluded from provenance.RedactHighConfidenceSecrets —
+// see that pattern's doc comment). It requires the assigned value to be a
+// quoted string literal immediately following the operator (':=', '=', or
+// ':') — not a bare identifier, typed constant, or function call — which
+// eliminates the dominant class of false positive found scanning real Go
+// source:
+//
+//	token = hex.EncodeToString(buf)           // unquoted expression
+//	var ServiceKey = modulex.NewKey[Sender](…) // unquoted, compound "Key" identifier
+//	&secretService{APIKey: secretValue}        // unquoted identifier reference
+//	// ... the right token: denied.            // narrative comment, no literal
+//
+// none of which assign a quoted literal, so none match. A genuinely
+// hardcoded secret in source code almost always does appear as a quoted
+// string literal (including via Go's ":=" short variable declaration, e.g.
+// `apiKey := "..."`, hence matching ":=" explicitly rather than only a
+// single ':' or '=' character), so this trade favors precision over recall
+// deliberately; see ScanSecrets' doc comment for the "nosecret" escape
+// hatch covering cases this still over- or under-catches.
+var strictGenericSecretPattern = regexp.MustCompile(`(?i)(key|token|password|secret)\s*(:=|[:=])\s*(['"])[^\s'"]{6,}['"]`)
+
+// nosecretMarker, when present anywhere in an added line (case-insensitive),
+// suppresses that line from ScanSecrets' findings regardless of pattern
+// matches — the escape hatch for lines that are secret-shaped on purpose
+// (a test fixture asserting redaction behavior, a doc line illustrating a
+// pattern) rather than by accident. Mirrors the `#nosec`/`// nolint`
+// convention other static-analysis tools in this ecosystem use. Example:
+//
+//	token := "fake-test-token-value" // nosecret: test fixture
+const nosecretMarker = "nosecret"
+
+// hasNosecretMarker reports whether line contains nosecretMarker,
+// case-insensitively.
+func hasNosecretMarker(line string) bool {
+	return strings.Contains(strings.ToLower(line), nosecretMarker)
+}
+
+// redactLine runs both provenance.RedactHighConfidenceSecrets (the precise,
+// non-generic patterns: AWS/PEM/GitHub/JWT) and strictGenericSecretPattern
+// against line, returning the fully redacted text and whether either
+// matched.
+func redactLine(line string) (string, bool) {
+	redacted, found := provenance.RedactHighConfidenceSecrets(line)
+	if strictGenericSecretPattern.MatchString(redacted) {
+		redacted = strictGenericSecretPattern.ReplaceAllString(redacted, provenance.RedactionMarker)
+		found = true
+	}
+	return redacted, found
+}
+
 // ScanSecrets runs a best-effort secret scan over the lines added between
 // baseRef and headRef (git's "A...B" triple-dot form: everything reachable
 // from headRef but not from baseRef's merge-base — the same diff scope
 // scripts/check-changelog.sh uses), returning one provenance.
 // VerificationResult with Category VerificationSecretScan.
 //
-// Only added (+) lines are scanned, using provenance.RedactSecrets — the
-// same best-effort, pattern-based detection provenance.Envelope.Redact uses
-// internally (see its doc comment for what it does and does not catch).
-// Scanning is diff-scoped deliberately: see the package doc comment's
-// "Boundary and compatibility checks are not diff-scoped" for why a
-// repository-wide scan would be worse, not better, here.
+// Only added (+) lines are scanned, using redactLine: provenance.
+// RedactHighConfidenceSecrets (AWS/PEM/GitHub/JWT — precise, low-noise
+// shapes) plus this package's own strictGenericSecretPattern (a
+// quote-required variant of provenance's looser generic catch-all, tuned
+// for source code rather than command output; see that pattern's doc
+// comment for why). Scanning is diff-scoped deliberately: see the package
+// doc comment's "Boundary and compatibility checks are not diff-scoped" for
+// why a repository-wide scan would be worse, not better, here.
+//
+// A line containing nosecretMarker ("nosecret", case-insensitive) is never
+// flagged, regardless of pattern matches — see its doc comment.
 //
 // A finding's Message never contains the raw secret value: each reported
-// line is passed through RedactSecrets before being included, so only the
+// line is passed through redactLine before being included, so only the
 // redacted form is ever recorded. Findings are capped at maxSecretFindings;
 // a diff with more reports the first maxSecretFindings plus a count of the
 // rest.
@@ -63,7 +120,10 @@ func ScanSecrets(ctx context.Context, baseRef, headRef string) provenance.Verifi
 
 	var findings []string
 	for _, l := range addedLines(diff) {
-		redacted, found := provenance.RedactSecrets(l.text)
+		if hasNosecretMarker(l.text) {
+			continue
+		}
+		redacted, found := redactLine(l.text)
 		if !found {
 			continue
 		}

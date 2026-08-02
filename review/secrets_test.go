@@ -99,6 +99,60 @@ func TestScanSecrets_FindsSecretAddedLine(t *testing.T) {
 	}
 }
 
+// TestScanSecrets_IgnoresUnquotedCodeAssignments covers the false-positive
+// shapes found when this scan was smoke-tested against modulex's own commit
+// history: plain code and narrative comments that merely contain the word
+// "key", "token", "password", or "secret" followed by ':'/'=' but never
+// assign a quoted string literal. See strictGenericSecretPattern's doc
+// comment for why the quote requirement rules each of these out.
+func TestScanSecrets_IgnoresUnquotedCodeAssignments(t *testing.T) {
+	root := newTestRepo(t)
+
+	writeFile(t, root, "app.go", "package app\n")
+	runGit(t, root, "add", "app.go")
+	runGit(t, root, "commit", "--quiet", "-m", "base")
+	runGit(t, root, "branch", "base")
+
+	writeFile(t, root, "app.go", strings.Join([]string{
+		"package app",
+		"",
+		`func genToken() string { token = hex.EncodeToString(buf); return token }`,
+		`var ServiceKey = modulex.NewKey[Sender]("notification.Service")`,
+		`var _ = secretService{APIKey: secretValue}`,
+		"// Wrong scope with the right token: denied.",
+		"",
+	}, "\n"))
+	runGit(t, root, "commit", "--quiet", "-am", "add code that merely mentions key/token/secret")
+
+	result := ScanSecrets(context.Background(), "base", "HEAD")
+
+	if result.Status != "pass" {
+		t.Fatalf("Status = %q, want pass (no quoted secret-shaped literal was added); Message: %s", result.Status, result.Message)
+	}
+}
+
+// TestScanSecrets_NosecretMarkerSuppressesFinding covers the escape hatch
+// for a line that is secret-shaped on purpose, e.g. a test fixture
+// asserting redaction behavior.
+func TestScanSecrets_NosecretMarkerSuppressesFinding(t *testing.T) {
+	root := newTestRepo(t)
+
+	writeFile(t, root, "fixture_test.go", "package fixture\n")
+	runGit(t, root, "add", "fixture_test.go")
+	runGit(t, root, "commit", "--quiet", "-m", "base")
+	runGit(t, root, "branch", "base")
+
+	writeFile(t, root, "fixture_test.go", "package fixture\n\n"+
+		`var fakeToken = "api_key=supersecretvalue123" // nosecret: test fixture`+"\n")
+	runGit(t, root, "commit", "--quiet", "-am", "add annotated test fixture")
+
+	result := ScanSecrets(context.Background(), "base", "HEAD")
+
+	if result.Status != "pass" {
+		t.Fatalf("Status = %q, want pass (line carries a nosecret marker); Message: %s", result.Status, result.Message)
+	}
+}
+
 func TestScanSecrets_IgnoresPreexistingSecretOutsideDiff(t *testing.T) {
 	root := newTestRepo(t)
 
@@ -216,5 +270,77 @@ func TestAddedLines(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRedactLine(t *testing.T) {
+	tests := []struct {
+		name      string
+		line      string
+		wantFound bool
+		wantGone  string
+	}{
+		{
+			name:      "quoted generic secret assignment matches",
+			line:      `apiKey := "supersecretvalue123"`,
+			wantFound: true,
+			wantGone:  "supersecretvalue123",
+		},
+		{
+			name:      "unquoted code assignment does not match",
+			line:      "token = hex.EncodeToString(buf)",
+			wantFound: false,
+		},
+		{
+			name:      "compound Key identifier without a quoted value does not match",
+			line:      `var ServiceKey = modulex.NewKey[Sender]("notification.Service")`,
+			wantFound: false,
+		},
+		{
+			name:      "struct literal with identifier value does not match",
+			line:      "&secretService{APIKey: secretValue}",
+			wantFound: false,
+		},
+		{
+			name:      "narrative comment does not match",
+			line:      "// Wrong scope with the right token: denied.",
+			wantFound: false,
+		},
+		{
+			name:      "GitHub token prefix still matches via high-confidence patterns",
+			line:      "using token ghp_1234567890abcdefghijklmnopqrstuvwxyz",
+			wantFound: true,
+			wantGone:  "ghp_1234567890",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, found := redactLine(tt.line)
+			if found != tt.wantFound {
+				t.Fatalf("redactLine(%q) found = %v, want %v (got %q)", tt.line, found, tt.wantFound, got)
+			}
+			if tt.wantGone != "" && strings.Contains(got, tt.wantGone) {
+				t.Fatalf("redactLine(%q) = %q, still contains %q", tt.line, got, tt.wantGone)
+			}
+		})
+	}
+}
+
+func TestHasNosecretMarker(t *testing.T) {
+	tests := []struct {
+		line string
+		want bool
+	}{
+		{line: `token := "value" // nosecret: test fixture`, want: true},
+		{line: `token := "value" // NOSECRET`, want: true},
+		{line: `token := "value"`, want: false},
+		{line: "an ordinary line", want: false},
+	}
+
+	for _, tt := range tests {
+		if got := hasNosecretMarker(tt.line); got != tt.want {
+			t.Errorf("hasNosecretMarker(%q) = %v, want %v", tt.line, got, tt.want)
+		}
 	}
 }

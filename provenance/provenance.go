@@ -56,6 +56,12 @@ const SchemaVersion = "1.0.0"
 // redactionMarker replaces any matched secret-shaped value.
 const redactionMarker = "[REDACTED]"
 
+// RedactionMarker is the exported form of redactionMarker, for a caller
+// (e.g. review.ScanSecrets) that redacts using its own additional patterns
+// alongside RedactHighConfidenceSecrets/RedactSecrets and wants the
+// resulting marker to match exactly.
+const RedactionMarker = redactionMarker
+
 // Status is the outcome of a command or verification step. Modeling this as
 // an explicit enum rather than a bool is required so that "did not run" and
 // "ran and passed" are never confused: a missing tool, an unmet approval
@@ -275,6 +281,51 @@ type Envelope struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// awsSecretPattern matches AWS secret-key-shaped env var assignments, e.g.
+// AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/...
+var awsSecretPattern = regexp.MustCompile(`(?i)\bAWS_SECRET[A-Z_]*\s*[:=]\s*['"]?[A-Za-z0-9/+=]{8,}['"]?`)
+
+// pemPrivateKeyPattern matches PEM private key blocks.
+var pemPrivateKeyPattern = regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----`)
+
+// githubTokenPattern matches well-known GitHub token prefixes.
+var githubTokenPattern = regexp.MustCompile(`\b(ghp_|gho_|ghu_|ghs_|ghr_|github_pat_)[A-Za-z0-9_]{20,}\b`)
+
+// jwtPattern matches JWT-shaped strings: three dot-separated base64url
+// segments, the first starting with the common "eyJ" header prefix.
+var jwtPattern = regexp.MustCompile(`\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b`)
+
+// genericAssignmentPattern is a broad, best-effort catch-all for generic
+// key/token/password/secret assignments with a non-trivial value (at least
+// 6 non-whitespace/quote characters). Deliberately not anchored to a word
+// boundary on the left so it also catches compound identifiers such as
+// "api_key=" or "db_password:", and deliberately permits an unquoted value
+// so it also catches shell/env-style "KEY=value" assignments as they
+// typically appear in captured command output — this package's original
+// use case (Envelope.Redact scrubbing free-text command output/notes
+// before persistence).
+//
+// This looseness is exactly why it is kept separate from
+// specificSecretPatterns: scanned against real source code rather than
+// command output, it flags plain code (`token = hex.EncodeToString(buf)`,
+// `ServiceKey = modulex.NewKey[...]`, `APIKey: someVariable`) and narrative
+// comments (`// ... the right token: denied.`) far more often than it
+// flags real secrets. review.ScanSecrets, which scans source diffs rather
+// than command output, uses RedactHighConfidenceSecrets (excluding this
+// pattern) plus its own stricter, quote-required variant instead; see
+// review/secrets.go.
+var genericAssignmentPattern = regexp.MustCompile(`(?i)(key|token|password|secret)\s*[:=]\s*['"]?[^\s'",]{6,}['"]?`)
+
+// specificSecretPatterns are the precise, high-confidence patterns for known
+// secret formats — everything in secretPatterns except
+// genericAssignmentPattern. See RedactHighConfidenceSecrets.
+var specificSecretPatterns = []*regexp.Regexp{
+	awsSecretPattern,
+	pemPrivateKeyPattern,
+	githubTokenPattern,
+	jwtPattern,
+}
+
 // secretPatterns is a best-effort, pattern-based set of regexes for
 // secret-shaped strings. This is a safety net, not a guarantee: it catches
 // common, recognizable secret shapes (cloud credential env-var names, PEM
@@ -286,22 +337,17 @@ type Envelope struct {
 // the human-facing policy this schema operationalizes, and ADR-0032's
 // requirement to "redact command output before it enters provenance
 // artifacts."
+//
+// Order matters for redactWith, which applies patterns sequentially:
+// preserved here exactly as originally authored so existing Redact/
+// Validate/RedactSecrets behavior is unchanged by the specificSecretPatterns/
+// genericAssignmentPattern split above.
 var secretPatterns = []*regexp.Regexp{
-	// AWS secret-key-shaped env var assignments, e.g.
-	// AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/...
-	regexp.MustCompile(`(?i)\bAWS_SECRET[A-Z_]*\s*[:=]\s*['"]?[A-Za-z0-9/+=]{8,}['"]?`),
-	// PEM private key blocks.
-	regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----`),
-	// GitHub token prefixes.
-	regexp.MustCompile(`\b(ghp_|gho_|ghu_|ghs_|ghr_|github_pat_)[A-Za-z0-9_]{20,}\b`),
-	// Generic key/token/password/secret assignments with a non-trivial
-	// value (at least 6 non-whitespace/quote characters). Deliberately not
-	// anchored to a word boundary on the left so it also catches compound
-	// identifiers such as "api_key=" or "db_password:".
-	regexp.MustCompile(`(?i)(key|token|password|secret)\s*[:=]\s*['"]?[^\s'",]{6,}['"]?`),
-	// JWT-shaped strings: three dot-separated base64url segments, the
-	// first starting with the common "eyJ" header prefix.
-	regexp.MustCompile(`\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b`),
+	awsSecretPattern,
+	pemPrivateKeyPattern,
+	githubTokenPattern,
+	genericAssignmentPattern,
+	jwtPattern,
 }
 
 // containsSecret reports whether s matches any known secret-shaped pattern.
@@ -314,20 +360,26 @@ func containsSecret(s string) bool {
 	return false
 }
 
-// redactString replaces every secret-shaped match in s with redactionMarker,
-// reporting whether any replacement was made.
-func redactString(s string) (string, bool) {
+// redactWith replaces every match of any pattern in patterns with
+// redactionMarker, reporting whether any replacement was made.
+func redactWith(s string, patterns []*regexp.Regexp) (string, bool) {
 	if s == "" {
 		return s, false
 	}
 	changed := false
-	for _, re := range secretPatterns {
+	for _, re := range patterns {
 		if re.MatchString(s) {
 			changed = true
 			s = re.ReplaceAllString(s, redactionMarker)
 		}
 	}
 	return s, changed
+}
+
+// redactString replaces every secret-shaped match in s with redactionMarker,
+// reporting whether any replacement was made.
+func redactString(s string) (string, bool) {
+	return redactWith(s, secretPatterns)
 }
 
 // RedactSecrets replaces every secret-shaped match in s with the redaction
@@ -339,6 +391,16 @@ func redactString(s string) (string, bool) {
 // pattern set instead of maintaining a second, divergent copy.
 func RedactSecrets(s string) (string, bool) {
 	return redactString(s)
+}
+
+// RedactHighConfidenceSecrets is like RedactSecrets but excludes
+// genericAssignmentPattern, the loose key/token/password/secret catch-all
+// tuned for free-text command output (see its doc comment). Prefer this
+// over RedactSecrets when scanning source code rather than command output —
+// e.g. review.ScanSecrets, which pairs it with its own stricter,
+// quote-required generic rule instead.
+func RedactHighConfidenceSecrets(s string) (string, bool) {
+	return redactWith(s, specificSecretPatterns)
 }
 
 // Redact scrubs secret-shaped values from every free-text field in the

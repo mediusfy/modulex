@@ -67,13 +67,68 @@ func ScanSecrets(ctx context.Context, baseRef, headRef string) provenance.Verifi
 `ScanSecrets` computes `git diff --unified=0 baseRef...headRef` (the same
 triple-dot, merge-base-relative diff scope
 `scripts/check-changelog.sh` uses), parses only the **added** (`+`) lines,
-and runs each one through `provenance.RedactSecrets` — the newly-exported
-form of the same best-effort, pattern-based detection
-`provenance.Envelope.Redact` already uses internally (AWS credential env
-vars, PEM key blocks, GitHub token prefixes, generic `key=`/`token=`/
-`password=`/`secret=` assignments, JWT-shaped strings). See
-`provenance.go`'s `secretPatterns` doc comment for what this does and does
-not catch — it is a safety net, not a guarantee.
+and runs each one through `redactLine` (unexported), which combines two
+pattern sets:
+
+1. `provenance.RedactHighConfidenceSecrets` — the precise, low-noise
+   patterns (AWS credential env vars, PEM key blocks, GitHub token
+   prefixes, JWT-shaped strings) from `provenance.RedactSecrets`, with its
+   loose generic `key=`/`token=`/`password=`/`secret=` catch-all excluded.
+2. `strictGenericSecretPattern` (`review/secrets.go`) — this package's own,
+   source-code-tuned replacement for that excluded catch-all: it requires
+   the assigned value to be a **quoted string literal** immediately
+   following the operator (`:=`, `=`, or `:`), not a bare identifier, typed
+   constant, or function call.
+
+### Why the generic pattern needed its own, stricter variant
+
+Smoke-testing an earlier version of this scan (using `provenance.RedactSecrets`
+directly, generic catch-all included) against 30 commits of this
+repository's own history produced 29 findings — a firehose of false
+positives, all from provenance's generic pattern matching ordinary Go code
+that merely mentions "key"/"token"/"password"/"secret":
+
+```
+token = hex.EncodeToString(buf)                              // unquoted expression
+var ServiceKey = modulex.NewKey[Sender]("notification.Service") // unquoted, compound "Key" identifier
+&secretService{APIKey: secretValue}                           // unquoted identifier reference
+// Wrong scope with the right token: denied.                  // narrative comment
+```
+
+None of these assign a quoted literal, so `strictGenericSecretPattern`
+(which does require one, including Go's `:=` short declaration — e.g.
+`apiKey := "..."` — matched explicitly, not just a bare `:` or `=`) rules
+all of them out. Re-running the same 30-commit smoke test after this change
+dropped the count from 29 to 13, and every remaining hit is a legitimate
+residual case: a test fixture in `provenance_test.go`/`approval_test.go`/
+`contract_test.go` that intentionally uses a fake-but-secret-shaped literal
+to assert the redaction machinery itself works, or a doc comment
+illustrating the AWS pattern. See `TestScanSecrets_IgnoresUnquotedCodeAssignments`.
+
+This is a deliberate precision-over-recall trade for the generic catch-all
+specifically: `provenance`'s original, looser version remains appropriate
+for its own use case (free-text command output, where an unquoted
+`KEY=value` shell/env-style assignment is the norm — very different from
+scanning Go source). The high-confidence, format-specific patterns (AWS,
+PEM, GitHub, JWT) are unaffected either way — those are precise enough
+already that quote-requiring them would only lose real recall for no
+precision gain.
+
+### The `nosecret` escape hatch
+
+A line containing the case-insensitive substring `nosecret` anywhere is
+never flagged, regardless of pattern matches — mirroring the `#nosec`/
+`// nolint` convention other static-analysis tools in this ecosystem use:
+
+```go
+token := "fake-test-token-value" // nosecret: test fixture
+```
+
+This exists for the residual case pattern-tightening cannot resolve on its
+own: a line that is secret-shaped **on purpose** (a test fixture asserting
+redaction behavior, a doc line illustrating a pattern), which no regex can
+distinguish from a real accidental secret by shape alone. See
+`TestScanSecrets_NosecretMarkerSuppressesFinding`.
 
 Like every command this repository's diff-review tooling runs, `ScanSecrets`
 operates relative to the process's current working directory rather than
@@ -91,10 +146,10 @@ in a PR comment or CI log:
    introduces are scanned. See
    `TestScanSecrets_IgnoresPreexistingSecretOutsideDiff`.
 2. **Redacted findings.** A finding's `Message` never contains the raw
-   matched value: every reported line is passed through
-   `provenance.RedactSecrets` before being included, so only the redacted
-   form (with `[REDACTED]` in place of the secret-shaped substring) ever
-   appears. See `TestScanSecrets_FindsSecretAddedLine`.
+   matched value: every reported line is passed through `redactLine`
+   before being included, so only the redacted form (with `[REDACTED]` in
+   place of the secret-shaped substring) ever appears. See
+   `TestScanSecrets_FindsSecretAddedLine`.
 
 Findings are capped at 20 (`maxSecretFindings`) per result, with the
 remainder summarized as a count — mirroring `verify/run.go`'s
@@ -172,10 +227,11 @@ for _, r := range results {
   the `verify.CheckSpec`/`Run`/`RenderText` machinery this package reuses
 - [`docs/planning/provenance-handoff-schema.md`](provenance-handoff-schema.md) —
   the `provenance.Status`/`VerificationCategory`/`VerificationResult` types
-  reused here, and `provenance.RedactSecrets`'s underlying pattern set
+  reused here, and `provenance.RedactHighConfidenceSecrets`'s underlying
+  pattern set
 - [`docs/planning/agent-discovery-guide.md`](agent-discovery-guide.md) — the
   `discovery.Repository.Tools` data this package's tool gating (via
   `verify.Run`) consumes
 - Jira MOD-63: `verify` package (`CheckSpec`, `Run`, `RenderText`)
 - Jira MOD-66: `provenance` package (`VerificationResult`, `Status`,
-  `RedactSecrets`)
+  `RedactSecrets`, `RedactHighConfidenceSecrets`)
