@@ -12,18 +12,19 @@ import (
 	"github.com/mediusfy/modulex"
 )
 
-// EventBus implements modulex.EventBus using Watermill's GoChannel.
+// EventBus implements modulex.EventBus using Watermill's Channel.
 type EventBus struct {
 	pubSub *gochannel.GoChannel
 	logger watermill.LoggerAdapter
 
 	mu        sync.Mutex
 	wg        sync.WaitGroup
+	closeOnce sync.Once
 	nextSubID uint64
 	cancels   map[uint64]context.CancelFunc
 }
 
-// NewEventBus creates a configured in-memory GoChannel PubSub.
+// NewEventBus creates a configured in-memory Channel PubSub.
 func NewEventBus(bufferSize int64, persistent bool, debug bool) *EventBus {
 	logger := watermill.NewStdLogger(debug, debug)
 
@@ -71,7 +72,9 @@ func (w *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 		return fmt.Errorf("watermill subscription failed: %w", err)
 	}
 
-	subCtx, cancel := context.WithCancel(ctx)
+	// Detach from the caller's transient context so the subscription remains
+	// active until EventBus.Close() is called.
+	subCtx, cancel := context.WithCancel(context.Background())
 
 	w.mu.Lock()
 	subID := w.nextSubID
@@ -100,11 +103,9 @@ func (w *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 
 				msgCtx := msg.Context()
 				if err := handler(msgCtx, msg.Payload); err != nil {
-					msg.Ack()
 					w.logger.Error("handler error, message acknowledged to prevent redelivery", err, nil)
-				} else {
-					msg.Ack()
 				}
+				msg.Ack()
 			}
 		}
 	}()
@@ -113,25 +114,33 @@ func (w *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 }
 
 // Close cancels all active subscriptions, waits for running handlers to exit,
-// and shuts down the underlying GoChannel.
+// and shuts down the underlying Channel.
 func (w *EventBus) Close(ctx context.Context) error {
-	// Snapshot and clear cancels under lock
-	w.mu.Lock()
-	cancels := make([]context.CancelFunc, 0, len(w.cancels))
-	for _, cancel := range w.cancels {
-		cancels = append(cancels, cancel)
-	}
-	w.cancels = make(map[uint64]context.CancelFunc)
-	w.mu.Unlock()
+	var closeErr error
 
-	// Signal all loops to stop
-	for _, cancel := range cancels {
-		cancel()
-	}
+	w.closeOnce.Do(func() {
+		// Snapshot and clear cancels under lock
+		w.mu.Lock()
+		cancels := make([]context.CancelFunc, 0, len(w.cancels))
+		for _, cancel := range w.cancels {
+			cancels = append(cancels, cancel)
+		}
+		w.cancels = make(map[uint64]context.CancelFunc)
+		w.mu.Unlock()
 
-	// Close channel to unblock any receivers sitting on <-messages
-	if err := w.pubSub.Close(); err != nil {
-		return fmt.Errorf("failed to close watermill pubsub: %w", err)
+		// Signal all loops to stop
+		for _, cancel := range cancels {
+			cancel()
+		}
+
+		// Close channel to unblock any receivers sitting on <-messages
+		if err := w.pubSub.Close(); err != nil {
+			closeErr = fmt.Errorf("failed to close watermill pubsub: %w", err)
+		}
+	})
+
+	if closeErr != nil {
+		return closeErr
 	}
 
 	// Wait for background worker goroutines to finish with context timeout support

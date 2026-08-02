@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `watermill.EventBus.Subscribe` no longer derives its background consume
+  loop's context from the caller-supplied `ctx`: a subscription is meant to
+  stay active until `Close` is called, but deriving `subCtx` from `ctx`
+  meant a caller passing a request-scoped or otherwise transient context
+  (rather than a long-lived one) into `Subscribe` would have its
+  subscription silently die whenever that context was cancelled, not only
+  on `Close`. `subCtx` is now derived from `context.Background()` instead.
+  `Close` also gained a `sync.Once` guard so a second call is a safe no-op
+  rather than double-closing `w.pubSub`.
+
 ### Added
 
 - New `review` package: `review.Review` runs an "agent diff review" —
