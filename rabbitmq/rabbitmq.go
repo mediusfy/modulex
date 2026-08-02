@@ -1,4 +1,3 @@
-// Package rabbitmq provides a Modulex EventBus adapter backed by RabbitMQ.
 package rabbitmq
 
 import (
@@ -207,7 +206,8 @@ func (r *EventBus) registerConsumer(tag string, cancel context.CancelFunc) (chan
 	return r.stopped, nil
 }
 
-func (r *EventBus) consumeLoop(ctx context.Context, topic string, handler modulex.EventHandler, msgs <-chan amqp.Delivery, cancel context.CancelFunc, stopped chan struct{}) {
+func (r *EventBus) consumeLoop(ctx context.Context, topic string, handler modulex.EventHandler, msgs <-chan amqp.Delivery,
+	cancel context.CancelFunc, stopped chan struct{}) {
 	defer func() {
 		cancel()
 		r.mu.Lock()

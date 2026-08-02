@@ -51,7 +51,8 @@ func outgoingMetadata(ctx context.Context) metadata.MD {
 // otel.GetTextMapPropagator() — the same propagator the nats and rabbitmq
 // adapters use for message headers.
 func TraceUnaryClientInterceptor() googlegrpc.UnaryClientInterceptor {
-	return func(ctx context.Context, method string, req, reply any, cc *googlegrpc.ClientConn, invoker googlegrpc.UnaryInvoker, opts ...googlegrpc.CallOption) error {
+	return func(ctx context.Context, method string, req, reply any, cc *googlegrpc.ClientConn, invoker googlegrpc.UnaryInvoker,
+		opts ...googlegrpc.CallOption) error {
 		md := outgoingMetadata(ctx)
 		otel.GetTextMapPropagator().Inject(ctx, metadataCarrier(md))
 		ctx = metadata.NewOutgoingContext(ctx, md)
@@ -81,7 +82,8 @@ func TraceUnaryServerInterceptor() googlegrpc.UnaryServerInterceptor {
 // instrumentation conventions) the trace context reflects the caller's
 // context at Stream-open time.
 func TraceStreamClientInterceptor() googlegrpc.StreamClientInterceptor {
-	return func(ctx context.Context, desc *googlegrpc.StreamDesc, cc *googlegrpc.ClientConn, method string, streamer googlegrpc.Streamer, opts ...googlegrpc.CallOption) (googlegrpc.ClientStream, error) {
+	return func(ctx context.Context, desc *googlegrpc.StreamDesc, cc *googlegrpc.ClientConn, method string,
+		streamer googlegrpc.Streamer, opts ...googlegrpc.CallOption) (googlegrpc.ClientStream, error) {
 		md := outgoingMetadata(ctx)
 		otel.GetTextMapPropagator().Inject(ctx, metadataCarrier(md))
 		ctx = metadata.NewOutgoingContext(ctx, md)

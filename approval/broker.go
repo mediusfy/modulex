@@ -13,16 +13,6 @@ import (
 // doc comment for the guarantees it makes: nothing is approved by default,
 // every decision fails closed, and a matched grant is scoped exactly (never
 // by action alone) and single-use.
-//
-// A Broker is safe for concurrent use: every method takes an internal
-// mutex, so [Broker.Grant] and [Broker.Check] may be called from multiple
-// goroutines simultaneously (e.g. one goroutine granting approvals while
-// others check them) without a data race, and — critically — two
-// concurrent [Broker.Check] calls racing to consume the same single-use
-// grant can never both succeed; see broker_test.go's concurrency test.
-//
-// The zero value of Broker is not ready to use; construct one with
-// [NewBroker].
 type Broker struct {
 	mu sync.Mutex
 	// grants is keyed by Grant.Token. Only Broker.Grant ever inserts into

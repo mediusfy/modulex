@@ -12,7 +12,6 @@ import (
 	"github.com/mediusfy/modulex"
 )
 
-// defaultCheckTimeout bounds an individual check execution.
 const defaultCheckTimeout = 5 * time.Second
 
 const (
@@ -81,7 +80,8 @@ func runChecks(ctx context.Context, checks map[string]func(context.Context) erro
 	return results, allOK
 }
 
-func writeCheckResponse(w http.ResponseWriter, r *http.Request, checks map[string]func(context.Context) error, okStatus, failStatus string) {
+func writeCheckResponse(w http.ResponseWriter, r *http.Request, checks map[string]func(context.Context) error,
+	okStatus, failStatus string) {
 	results, ok := runChecks(r.Context(), checks)
 
 	status := okStatus
@@ -129,7 +129,8 @@ func ReadinessHandler(p modulex.ReadinessProvider) http.HandlerFunc {
 }
 
 // Serve starts an HTTP server within a modulex.TaskSpawner and manages graceful shutdown.
-func Serve(ctx context.Context, spawner modulex.TaskSpawner, name string, server *http.Server, shutdownTimeout time.Duration) (*modulex.TaskHandle, error) {
+func Serve(ctx context.Context, spawner modulex.TaskSpawner, name string, server *http.Server,
+	shutdownTimeout time.Duration) (*modulex.TaskHandle, error) {
 	if spawner == nil {
 		return nil, fmt.Errorf("httpx: spawner must not be nil")
 	}
