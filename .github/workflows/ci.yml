@@ -194,3 +194,69 @@ jobs:
       env:
         GITHUB_ACTOR: ${{ github.actor }}
       run: ./scripts/check-changelog.sh "origin/${{ github.event.pull_request.base.ref }}" "${{ github.event.pull_request.head.sha }}"
+
+  provenance:
+    name: Publish Provenance Artifact
+    runs-on: ubuntu-latest
+    needs:
+      - build-and-test
+      - integration-test
+      - lint
+      - vuln
+      - consumer-boundary
+      - module-boundary
+      - api-compat
+      - changelog
+    # Always publish a record of this run's outcome, even when one or more
+    # of the jobs above failed or was cancelled — that is the case a
+    # provenance artifact is most useful for. This job itself only fails if
+    # it could not produce a valid envelope (e.g. a bug in provenanceci);
+    # individual job outcomes are recorded as data inside the artifact, not
+    # reflected in this job's own exit status.
+    if: always()
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+    - name: Set up Go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+      with:
+        go-version: '1.26.x'
+
+    - name: Build provenanceci
+      working-directory: tools/provenanceci
+      run: go build -o /tmp/provenanceci ./cmd/provenanceci
+
+    - name: Build provenance envelope
+      env:
+        COMMIT: ${{ github.sha }}
+        BRANCH: ${{ github.ref_name }}
+        RESULT_BUILD_AND_TEST: ${{ needs.build-and-test.result }}
+        RESULT_INTEGRATION_TEST: ${{ needs.integration-test.result }}
+        RESULT_LINT: ${{ needs.lint.result }}
+        RESULT_VULN: ${{ needs.vuln.result }}
+        RESULT_CONSUMER_BOUNDARY: ${{ needs.consumer-boundary.result }}
+        RESULT_MODULE_BOUNDARY: ${{ needs.module-boundary.result }}
+        RESULT_API_COMPAT: ${{ needs.api-compat.result }}
+        RESULT_CHANGELOG: ${{ needs.changelog.result }}
+      run: |
+        /tmp/provenanceci \
+          -commit "$COMMIT" \
+          -branch "$BRANCH" \
+          -out provenance.json \
+          -job "build-and-test=$RESULT_BUILD_AND_TEST" \
+          -job "integration-test=$RESULT_INTEGRATION_TEST" \
+          -job "lint=$RESULT_LINT" \
+          -job "vuln=$RESULT_VULN" \
+          -job "consumer-boundary=$RESULT_CONSUMER_BOUNDARY" \
+          -job "module-boundary=$RESULT_MODULE_BOUNDARY" \
+          -job "api-compat=$RESULT_API_COMPAT" \
+          -job "changelog=$RESULT_CHANGELOG"
+
+    - name: Upload provenance artifact
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      with:
+        name: provenance-${{ github.sha }}
+        path: provenance.json
+        retention-days: 90

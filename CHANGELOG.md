@@ -39,6 +39,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a narrower variant of `RedactSecrets` excluding the loose generic
   key/token/password/secret catch-all, for a caller (like `review.ScanSecrets`)
   scanning source code rather than free-text command output.
+- New `tools/provenanceci` module (`provenanceci.BuildEnvelope`) and a
+  `provenance` job in `.github/workflows/ci.yml`: every CI run now
+  publishes a `provenance.Envelope` JSON artifact (`provenance-<sha>`,
+  90-day retention) recording repository state and the pass/fail/skipped
+  outcome of every CI job, mapped from GitHub Actions'
+  `needs.<job>.result`. Runs with `if: always()` so a record is published
+  even when other jobs fail or are cancelled. Implements ADR-0032 P2,
+  "Publish provenance artifacts from CI" (Jira MOD-72). See
+  `docs/planning/agent-provenance-ci-guide.md`.
 
 ## [0.6.0] - 2026-07-30
 
