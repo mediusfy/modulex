@@ -10,6 +10,7 @@ import (
 	"github.com/ThreeDotsLabs/watermill/pubsub/gochannel"
 
 	"github.com/mediusfy/modulex"
+	"github.com/mediusfy/modulex/workerpool"
 )
 
 // EventBus implements modulex.EventBus using Watermill's Channel.
@@ -21,7 +22,19 @@ type EventBus struct {
 	wg        sync.WaitGroup
 	closeOnce sync.Once
 	nextSubID uint64
-	cancels   map[uint64]context.CancelFunc
+	subs      map[uint64]subscription
+}
+
+type subscription struct {
+	cancel    context.CancelFunc
+	processor *workerpool.Processor
+}
+
+// SubscribeOptions enables bounded concurrent handler processing. The zero
+// value is not valid; use Subscribe for the existing sequential behavior.
+type SubscribeOptions struct {
+	Workers       int
+	QueueCapacity int
 }
 
 // NewEventBus creates a configured in-memory Channel PubSub.
@@ -37,9 +50,9 @@ func NewEventBus(bufferSize int64, persistent bool, debug bool) *EventBus {
 	)
 
 	return &EventBus{
-		pubSub:  pubSub,
-		logger:  logger,
-		cancels: make(map[uint64]context.CancelFunc),
+		pubSub: pubSub,
+		logger: logger,
+		subs:   make(map[uint64]subscription),
 	}
 }
 
@@ -60,6 +73,35 @@ func (w *EventBus) Publish(ctx context.Context, topic string, payload []byte) er
 
 // Subscribe listens to a topic and handles messages in the background.
 func (w *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.EventHandler) error {
+	return w.subscribe(ctx, topic, handler, nil)
+}
+
+// SubscribeWithOptions subscribes with an opt-in bounded processor. Handler
+// errors retain Watermill's existing acknowledge-and-log policy. Messages are
+// acknowledged only after the handler returns. Processing order is not
+// guaranteed when Workers is greater than one.
+func (w *EventBus) SubscribeWithOptions(ctx context.Context, topic string, handler modulex.EventHandler, options SubscribeOptions) error {
+	if handler == nil {
+		return fmt.Errorf("watermill subscription failed: handler must not be nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	processor, err := workerpool.New(workerpool.Options{
+		Workers:       options.Workers,
+		QueueCapacity: options.QueueCapacity,
+	})
+	if err != nil {
+		return fmt.Errorf("watermill subscription failed: invalid worker options: %w", err)
+	}
+	if err := w.subscribe(ctx, topic, handler, processor); err != nil {
+		_ = processor.Close(context.Background())
+		return err
+	}
+	return nil
+}
+
+func (w *EventBus) subscribe(ctx context.Context, topic string, handler modulex.EventHandler, processor *workerpool.Processor) error {
 	if handler == nil {
 		return fmt.Errorf("watermill subscription failed: handler must not be nil")
 	}
@@ -79,7 +121,7 @@ func (w *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 	w.mu.Lock()
 	subID := w.nextSubID
 	w.nextSubID++
-	w.cancels[subID] = cancel
+	w.subs[subID] = subscription{cancel: cancel, processor: processor}
 	w.mu.Unlock()
 
 	w.wg.Add(1)
@@ -87,8 +129,11 @@ func (w *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 		defer func() {
 			cancel()
 			w.mu.Lock()
-			delete(w.cancels, subID)
+			delete(w.subs, subID)
 			w.mu.Unlock()
+			if processor != nil {
+				_ = processor.Close(context.Background())
+			}
 			w.wg.Done()
 		}()
 
@@ -101,11 +146,27 @@ func (w *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 					return
 				}
 
-				msgCtx := msg.Context()
-				if err := handler(msgCtx, msg.Payload); err != nil {
-					w.logger.Error("handler error, message acknowledged to prevent redelivery", err, nil)
+				if processor == nil {
+					msgCtx := msg.Context()
+					if err := handler(msgCtx, msg.Payload); err != nil {
+						w.logger.Error("handler error, message acknowledged to prevent redelivery", err, nil)
+					}
+					msg.Ack()
+					continue
 				}
-				msg.Ack()
+
+				_, err := processor.Submit(msg.Context(), func(taskCtx context.Context) error {
+					err := handler(taskCtx, msg.Payload)
+					if err != nil {
+						w.logger.Error("handler error, message acknowledged to prevent redelivery", err, nil)
+					}
+					msg.Ack()
+					return err
+				})
+				if err != nil {
+					w.logger.Error("worker pool rejected message, nacking for redelivery", err, nil)
+					msg.Nack()
+				}
 			}
 		}
 	}()
@@ -121,11 +182,11 @@ func (w *EventBus) Close(ctx context.Context) error {
 	w.closeOnce.Do(func() {
 		// Snapshot and clear cancels under lock
 		w.mu.Lock()
-		cancels := make([]context.CancelFunc, 0, len(w.cancels))
-		for _, cancel := range w.cancels {
-			cancels = append(cancels, cancel)
+		cancels := make([]context.CancelFunc, 0, len(w.subs))
+		for _, sub := range w.subs {
+			cancels = append(cancels, sub.cancel)
 		}
-		w.cancels = make(map[uint64]context.CancelFunc)
+		w.subs = make(map[uint64]subscription)
 		w.mu.Unlock()
 
 		// Signal all loops to stop

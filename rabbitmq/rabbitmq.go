@@ -9,6 +9,7 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 
 	"github.com/mediusfy/modulex"
+	"github.com/mediusfy/modulex/workerpool"
 	"go.opentelemetry.io/otel"
 )
 
@@ -123,6 +124,39 @@ func (r *EventBus) Publish(ctx context.Context, topic string, payload []byte) er
 // matches the acknowledge-and-log policy used by the other EventBus adapters
 // in this module (see watermill.EventBus.Subscribe).
 func (r *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.EventHandler) error {
+	return r.subscribe(ctx, topic, handler, nil)
+}
+
+// SubscribeWithOptions enables opt-in bounded concurrent processing. RabbitMQ
+// prefetch is set to Workers plus QueueCapacity, messages are acknowledged or
+// nacked only after their handler completes, and processing order is not
+// guaranteed when Workers is greater than one.
+func (r *EventBus) SubscribeWithOptions(ctx context.Context, topic string, handler modulex.EventHandler, options workerpool.Options) error {
+	if handler == nil {
+		return fmt.Errorf("failed to subscribe to queue %q: handler must not be nil", topic)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := r.checkClosed(); err != nil {
+		return fmt.Errorf("failed to subscribe to queue %q: %w", topic, err)
+	}
+	processor, err := workerpool.New(options)
+	if err != nil {
+		return fmt.Errorf("failed to subscribe to queue %q: invalid worker options: %w", topic, err)
+	}
+	if err := r.ch.Qos(options.Workers+options.QueueCapacity, 0, false); err != nil {
+		_ = processor.Close(context.Background())
+		return fmt.Errorf("failed to configure prefetch for queue %q: %w", topic, err)
+	}
+	if err := r.subscribe(ctx, topic, handler, processor); err != nil {
+		_ = processor.Close(context.Background())
+		return err
+	}
+	return nil
+}
+
+func (r *EventBus) subscribe(ctx context.Context, topic string, handler modulex.EventHandler, processor *workerpool.Processor) error {
 	if handler == nil {
 		return fmt.Errorf("failed to subscribe to queue %q: handler must not be nil", topic)
 	}
@@ -157,7 +191,7 @@ func (r *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 		return fmt.Errorf("failed to subscribe to queue %q: %w", topic, err)
 	}
 
-	go r.consumeLoop(subCtx, topic, handler, msgs, cancel, stopped)
+	go r.consumeLoop(subCtx, topic, handler, msgs, cancel, stopped, processor)
 	return nil
 }
 
@@ -207,9 +241,12 @@ func (r *EventBus) registerConsumer(tag string, cancel context.CancelFunc) (chan
 }
 
 func (r *EventBus) consumeLoop(ctx context.Context, topic string, handler modulex.EventHandler, msgs <-chan amqp.Delivery,
-	cancel context.CancelFunc, stopped chan struct{}) {
+	cancel context.CancelFunc, stopped chan struct{}, processor *workerpool.Processor) {
 	defer func() {
 		cancel()
+		if processor != nil {
+			_ = processor.Close(context.Background())
+		}
 		r.mu.Lock()
 		r.active--
 		if r.active == 0 {
@@ -225,7 +262,55 @@ func (r *EventBus) consumeLoop(ctx context.Context, topic string, handler module
 			if !ok {
 				return
 			}
-			r.handleDelivery(ctx, topic, handler, d)
+			if processor == nil {
+				r.handleDelivery(ctx, topic, handler, d)
+			} else {
+				r.submitDelivery(ctx, topic, handler, d, processor)
+			}
+		}
+	}
+}
+
+func (r *EventBus) submitDelivery(ctx context.Context, topic string, handler modulex.EventHandler, d amqp.Delivery, processor *workerpool.Processor) {
+	var headers amqp.Table
+	if d.Headers != nil {
+		headers = d.Headers
+	} else {
+		headers = make(amqp.Table)
+	}
+	msgCtx := otel.GetTextMapPropagator().Extract(ctx, amqpHeadersCarrier(headers))
+	_, err := processor.Submit(msgCtx, func(taskCtx context.Context) error {
+		if err := handler(taskCtx, d.Body); err != nil {
+			r.logger.ErrorContext(taskCtx, "handler error, message nacked without requeue",
+				slog.String(logKeyQueue, topic),
+				slog.Any(logKeyError, err),
+			)
+			if nackErr := d.Nack(false, false); nackErr != nil {
+				r.logger.ErrorContext(taskCtx, "failed to nack message",
+					slog.String(logKeyQueue, topic),
+					slog.Any(logKeyError, nackErr),
+				)
+			}
+			return err
+		}
+		if ackErr := d.Ack(false); ackErr != nil {
+			r.logger.ErrorContext(taskCtx, "failed to ack message",
+				slog.String(logKeyQueue, topic),
+				slog.Any(logKeyError, ackErr),
+			)
+		}
+		return nil
+	})
+	if err != nil {
+		r.logger.ErrorContext(msgCtx, "worker pool rejected message",
+			slog.String(logKeyQueue, topic),
+			slog.Any(logKeyError, err),
+		)
+		if nackErr := d.Nack(false, false); nackErr != nil {
+			r.logger.ErrorContext(msgCtx, "failed to nack rejected message",
+				slog.String(logKeyQueue, topic),
+				slog.Any(logKeyError, nackErr),
+			)
 		}
 	}
 }

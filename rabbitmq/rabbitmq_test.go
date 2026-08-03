@@ -17,6 +17,7 @@ import (
 	"github.com/mediusfy/modulex"
 	"github.com/mediusfy/modulex/internal/eventbustest"
 	rabbitadapter "github.com/mediusfy/modulex/rabbitmq"
+	"github.com/mediusfy/modulex/workerpool"
 )
 
 func TestMain(m *testing.M) {
@@ -100,6 +101,12 @@ func TestEventBus_RejectsSubscriptionsAfterClose(t *testing.T) {
 
 	err := eb.Subscribe(context.Background(), "queue", func(context.Context, []byte) error { return nil })
 	assert.ErrorContains(t, err, "event bus is closed")
+}
+
+func TestEventBus_RejectsInvalidWorkerOptionsBeforeUsingChannel(t *testing.T) {
+	eb := rabbitadapter.NewEventBus(nil)
+	err := eb.SubscribeWithOptions(context.Background(), "queue", func(context.Context, []byte) error { return nil }, workerpool.Options{})
+	assert.ErrorContains(t, err, "invalid worker options")
 }
 
 func TestEventBus_HandlerErrorIsLogged(t *testing.T) {

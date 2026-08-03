@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- New `workerpool` package (`workerpool.New`, `workerpool.Processor`):
+  a small, technology-neutral bounded worker pool — fixed worker count,
+  bounded waiting queue, panic recovery, and accept/complete/fail/reject
+  counters via `Stats`. Implements ADR-0034's bounded-processor contract.
+- `watermill.EventBus.SubscribeWithOptions` and
+  `rabbitmq.EventBus.SubscribeWithOptions`: opt-in bounded concurrent
+  message processing backed by `workerpool`. Default `Subscribe` behavior
+  (one handler at a time, existing ack/ordering semantics) is unchanged;
+  concurrency is opt-in only, per ADR-0034. RabbitMQ's prefetch is set to
+  `Workers + QueueCapacity` to bound broker-side deliveries consistently
+  with the pool's own capacity. Messages are acknowledged, nacked, or (for
+  Watermill) nacked-for-redelivery only after the submitted handler
+  completes or the pool rejects the message outright — a message is never
+  left unresolved.
+
 - `app.WithPreStop`/`app.WithPostStop`: hooks that run immediately before
   and after `modulex.Manager.StopModules` inside `app.Run`, sharing its
   shutdown-timeout context. Addresses real feedback from Badger's `v0.7.0`
