@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Docs
+
+- `docs/planning/badger-adoption-guide.md`: added an "Adoption validation"
+  section (Jira MOD-59, per ADR-0031's adoption-validation roadmap item)
+  documenting real Badger `web/backend` usage — build/vet/`-race`
+  test/lint results (all passing) and a capability-by-capability adoption
+  status table, distinguishing genuine low-risk next steps (`app.Run`,
+  `WithTypedConfig[T]` are unused but would be drop-in replacements for
+  existing hand-written equivalents) from intentional scope gaps (Badger's
+  own broader `pkg/broker` covers messaging; Modulex deliberately does not
+  aim to replace it).
+
 ### Fixed
 
 - `watermill.EventBus.Subscribe` no longer derives its background consume
