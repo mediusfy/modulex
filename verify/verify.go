@@ -140,6 +140,15 @@ type CheckSpec struct {
 	// Networked marks a check that performs network I/O. Run skips these
 	// when its caller's allowNetwork argument is false.
 	Networked bool
+	// Dir, if non-empty, is the working directory Command runs in (set as
+	// the spawned process's exec.Cmd.Dir). Empty means Run's own process's
+	// current working directory — today's behavior, unchanged for every
+	// existing caller (PlanFor, FullGates, review.Checks) that leaves this
+	// unset. A caller that resolves Command against a specific repository
+	// root not necessarily equal to the calling process's cwd (e.g.
+	// tools/mcpserver, whose callers pass an explicit root per MCP call)
+	// should set Dir to that root.
+	Dir string
 }
 
 // Plan is the output of mapping a set of changed files to focused checks,

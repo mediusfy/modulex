@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mediusfy/modulex/discovery"
@@ -161,5 +162,70 @@ func TestRun_EveryInputProducesExactlyOneResult(t *testing.T) {
 
 	if _, err := os.Stat("/should/not/run"); !os.IsNotExist(err) {
 		t.Fatal("the unavailable check's command was executed despite the missing tool")
+	}
+}
+
+func TestRun_CheckSpecDirSetsWorkingDirectory(t *testing.T) {
+	dir := t.TempDir()
+
+	check := CheckSpec{
+		Name:     "pwd-check",
+		Command:  "pwd",
+		Category: provenance.VerificationFocused,
+		Dir:      dir,
+	}
+
+	results := Run(context.Background(), []CheckSpec{check}, nil, false)
+	if len(results) != 1 {
+		t.Fatalf("len(results) = %d, want 1", len(results))
+	}
+	r := results[0]
+
+	if r.Status != provenance.StatusPass {
+		t.Fatalf("Status = %q, want %q; Message: %s", r.Status, provenance.StatusPass, r.Message)
+	}
+
+	resolvedDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%s): %v", dir, err)
+	}
+	gotDir := strings.TrimSpace(r.Message)
+	resolvedGot, err := filepath.EvalSymlinks(gotDir)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%s): %v", gotDir, err)
+	}
+	if resolvedGot != resolvedDir {
+		t.Errorf("pwd reported %q, want %q (CheckSpec.Dir was not honored)", resolvedGot, resolvedDir)
+	}
+}
+
+func TestRun_EmptyCheckSpecDirUsesCallingProcessCwd(t *testing.T) {
+	wantCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd: %v", err)
+	}
+
+	check := CheckSpec{
+		Name:     "pwd-check-no-dir",
+		Command:  "pwd",
+		Category: provenance.VerificationFocused,
+	}
+
+	results := Run(context.Background(), []CheckSpec{check}, nil, false)
+	if results[0].Status != provenance.StatusPass {
+		t.Fatalf("Status = %q, want %q; Message: %s", results[0].Status, provenance.StatusPass, results[0].Message)
+	}
+
+	resolvedWant, err := filepath.EvalSymlinks(wantCwd)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%s): %v", wantCwd, err)
+	}
+	gotDir := strings.TrimSpace(results[0].Message)
+	resolvedGot, err := filepath.EvalSymlinks(gotDir)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%s): %v", gotDir, err)
+	}
+	if resolvedGot != resolvedWant {
+		t.Errorf("pwd reported %q, want %q (empty Dir must leave the calling process's cwd unchanged, matching pre-Dir-field behavior)", resolvedGot, resolvedWant)
 	}
 }

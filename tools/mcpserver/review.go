@@ -11,12 +11,11 @@ import (
 
 // ReviewDiffIn is review_diff's input.
 type ReviewDiffIn struct {
-	// Root is used only to detect which tools (go, git, golangci-lint, ...)
-	// are available on PATH, gating each check's RequiredTool. It does NOT
-	// control where review.Review's own git/shell commands run — those
-	// always run in the MCP server process's actual working directory (see
-	// reviewDiff's doc comment). Defaults to "." if empty.
-	Root string `json:"root,omitempty" jsonschema:"repository root used to detect available tools; does not change where review commands actually run (see docs/planning/agent-mcp-server-guide.md); defaults to \".\" if empty"`
+	// Root is used to detect which tools (go, git, golangci-lint, ...) are
+	// available on PATH (gating each check's RequiredTool) and as the
+	// working directory every review command — including the secret scan's
+	// git diff invocation — actually runs in. Defaults to "." if empty.
+	Root string `json:"root,omitempty" jsonschema:"repository root: used both to detect available tools and as the working directory review commands run in; defaults to \".\" if empty"`
 	// BaseRef and HeadRef are git refs review.Review diffs between (git's
 	// "A...B" triple-dot form — everything reachable from HeadRef but not
 	// from BaseRef's merge-base).
@@ -31,31 +30,22 @@ type ReviewDiffOut struct {
 	Results []provenance.VerificationResult `json:"results"`
 }
 
-// reviewDiff resolves root's available tools and runs review.Review. Unlike
+// reviewDiff resolves root's available tools and runs review.Review with
+// root as the working directory for every check and the secret scan's git
+// diff (review.Review's dir parameter — see its doc comment). Unlike
 // run_verification, this call is safe from shell injection regardless of
 // baseRef/headRef content: review.Review's git diff invocation uses an argv
 // slice (exec.CommandContext), never "sh -c" — a bad ref simply makes the
 // underlying git command fail, surfaced as a provenance.StatusUnavailable
 // result inside Results, not a handler error. This handler therefore only
 // returns an error when resolveTools itself fails (an invalid root).
-//
-// # root only gates tool availability — it is not review.Review's cwd
-//
-// root is passed to resolveTools (tool-availability detection) only.
-// review.Review takes no working-directory parameter, and neither its git
-// diff invocation (review/secrets.go's gitDiff) nor the shell commands
-// verify.Run executes on its behalf (review.Checks) ever set a working
-// directory — both always run in this MCP server process's own actual
-// working directory, regardless of root. A caller pointing root at a
-// different checkout than the server process's cwd gets a review of the
-// server's own cwd, not of root — this mirrors run_verification's
-// RunVerificationIn.Root, whose doc comment states the same constraint.
 func reviewDiff(ctx context.Context, root, baseRef, headRef string, allowNetwork bool) (ReviewDiffOut, error) {
 	tools, err := resolveTools(root)
 	if err != nil {
 		return ReviewDiffOut{}, err
 	}
-	return ReviewDiffOut{Results: review.Review(ctx, baseRef, headRef, tools, allowNetwork)}, nil
+	resolvedRoot := resolveRoot(root)
+	return ReviewDiffOut{Results: review.Review(ctx, resolvedRoot, baseRef, headRef, tools, allowNetwork)}, nil
 }
 
 func reviewDiffHandler(ctx context.Context, _ *mcp.CallToolRequest, in ReviewDiffIn) (*mcp.CallToolResult, ReviewDiffOut, error) {

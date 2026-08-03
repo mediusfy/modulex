@@ -95,13 +95,20 @@ Before handing any check to `verify.Run`, `runVerification` classifies its
 ADR-0032's command-classification model already defines (`safe`,
 `mutating`, `networked`, `destructive`, `approval_required`, with anything
 unrecognized failing safe to `approval_required`). A `Command` classifying
-as `destructive` or `approval_required` is never executed: it comes back as
-`StatusApprovalRequired` with `ClassifyCommand`'s own reason, instead of
-running. This is *not* a new approval/auth mechanism — no grant, no token,
-nothing stateful — it only refuses to run what the repository's existing
-classifier already flags as unsafe to run unattended, closing the gap a
-caller-supplied `Command` would otherwise leave open. A `Command`
-classifying as `safe`/`mutating`/`networked` still runs verbatim.
+as `mutating`, `destructive`, or `approval_required` is never executed: it
+comes back as `StatusApprovalRequired` with `ClassifyCommand`'s own reason,
+instead of running. `mutating` is blocked alongside the other two — not
+just `destructive`/`approval_required` — because this package's whole
+premise is that nothing in it can mutate the target repository, and a
+`mutating` command (e.g. `git add`/`git commit`, `make fmt`) is,
+definitionally, exactly that; "the classifier says it's safe to run
+unattended" is a different question from "safe for a read-only tool to
+run." Only `safe` and `networked` commands run (`networked` still subject
+to the existing `Networked`/`allow_network` gate in `verify.Run`). This is
+*not* a new approval/auth mechanism — no grant, no token, nothing stateful
+— it only refuses to run what the repository's existing classifier already
+flags as unsafe or mutating, closing the gap a caller-supplied `Command`
+would otherwise leave open.
 
 **`run_verification` remains intended for `Command` values that originated
 from this repository's own tooling** — copied from a prior
@@ -124,22 +131,30 @@ invocation uses an argv slice (`exec.CommandContext`), never a shell — a bad
 ref just makes the git command fail, surfaced as a `StatusUnavailable`
 result, never as arbitrary code execution.
 
-## `root` only gates tool availability — it never becomes a working directory
+## `root` is a real working directory for every tool
 
-`run_verification` and `review_diff`'s `root` parameter is passed only to
-`discovery.Discover` to detect which tools (`go`, `git`, `golangci-lint`,
-...) are on `PATH`, gating each check's `RequiredTool`. It does **not**
-control where the underlying commands actually run: `verify.Run`'s shelled
-checks and `review.Review`'s `git diff` invocation always run in the MCP
-server process's own actual working directory, regardless of `root`. In
-normal use this is not surprising — a host spawns `mcpserver` with the
-target repository already as its working directory — but a caller pointing
-`root` at a *different* checkout than the server process's cwd will get
-results computed against the server's cwd, not `root`, with no error
-signaling the mismatch. `discover_repository` and `read_contract`, by
-contrast, genuinely scan whatever `root` names, since `discovery.Discover`
-and the `modulex.agent.yaml` read both take `root` as a real filesystem
-path, not merely a hint.
+`root` is resolved once per call (defaulting empty to `"."`) and used both
+to detect which tools are on `PATH` (`discovery.Discover(root).Tools`,
+gating `RequiredTool`) *and* as the actual working directory the
+underlying commands run in:
+
+- `run_verification` sets every runnable check's `verify.CheckSpec.Dir` to
+  the resolved `root`, so `Command` executes there (`exec.Cmd.Dir`), not in
+  the MCP server process's own cwd.
+- `review_diff` passes the resolved `root` as `review.Review`'s `dir`
+  parameter, which threads it the same way into `review.Checks`'
+  `verify.Run` invocation *and* into the secret scan's `git diff`
+  invocation (`git -C <root> diff ...`).
+- `discover_repository` and `read_contract` already genuinely scanned
+  whatever `root` named, since `discovery.Discover` and the
+  `modulex.agent.yaml` read both take `root` as a real filesystem path.
+
+So a caller pointing `root` at a checkout other than the server process's
+own cwd gets results computed against `root`, as documented — this was not
+always true (an earlier version of this server only used `root` for tool
+detection while commands silently ran in the server's cwd; see
+`verify.CheckSpec.Dir` and `review.Review`'s `dir` parameter for the
+underlying mechanism this now relies on).
 
 ## Worked example
 

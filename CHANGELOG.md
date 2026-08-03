@@ -83,12 +83,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `run_verification` and `root`'s semantics.
   - `run_verification` classifies each check's `Command` with
     `discovery.ClassifyCommand` before running it: a command classifying as
-    destructive or approval-required is reported as
-    `StatusApprovalRequired` instead of executed. Not a new approval/auth
-    mechanism (no grant, no token, nothing stateful) — it closes the gap a
-    caller-supplied `Command` would otherwise leave in this package's
-    "nothing here can mutate the target repository" guarantee, using only
-    the already-built `discovery` package.
+    mutating, destructive, or approval-required is reported as
+    `StatusApprovalRequired` instead of executed (mutating is blocked
+    alongside the other two, not just destructive/approval-required, since
+    this package's premise is that nothing in it can mutate the target
+    repository). Not a new approval/auth mechanism (no grant, no token,
+    nothing stateful) — it closes the gap a caller-supplied `Command` would
+    otherwise leave in that guarantee, using only the already-built
+    `discovery` package.
+  - `root` is now a real working directory for `run_verification` and
+    `review_diff`, not just a tool-detection hint: new `verify.CheckSpec.Dir`
+    (empty = unchanged, process-cwd-relative behavior for every existing
+    caller) and a new `dir` parameter on `review.Review`/`review.ScanSecrets`
+    let `tools/mcpserver` thread the resolved `root` all the way to each
+    check's `exec.Cmd.Dir` and the secret scan's `git -C <dir> diff`, so a
+    caller pointing `root` at a different checkout than the server
+    process's own cwd gets results computed against `root`, as documented,
+    rather than silently against the server's cwd.
 
 ## [0.6.0] - 2026-07-30
 

@@ -105,10 +105,16 @@ func redactLine(line string) (string, bool) {
 // this is not a git repository), ScanSecrets returns
 // provenance.StatusUnavailable rather than treating an inability to compute
 // the diff as either a pass or a fail.
-func ScanSecrets(ctx context.Context, baseRef, headRef string) provenance.VerificationResult {
+//
+// dir, if non-empty, is the repository gitDiff runs `git -C dir diff ...`
+// against; empty leaves off -C entirely, so git resolves the repository
+// from ScanSecrets' own calling process's current working directory —
+// unchanged from this function's behavior before dir existed as a
+// parameter.
+func ScanSecrets(ctx context.Context, dir, baseRef, headRef string) provenance.VerificationResult {
 	const name = "check-secrets"
 
-	diff, err := gitDiff(ctx, baseRef, headRef)
+	diff, err := gitDiff(ctx, dir, baseRef, headRef)
 	if err != nil {
 		return provenance.VerificationResult{
 			Name:     name,
@@ -154,15 +160,22 @@ func ScanSecrets(ctx context.Context, baseRef, headRef string) provenance.Verifi
 
 // gitDiff returns the unified diff (context-free: --unified=0, so every
 // output line is either a hunk header or an actual addition/removal) for
-// everything headRef introduced since it diverged from baseRef. It shells
-// out via exec.CommandContext with an argv slice (no "sh -c"), so baseRef
-// and headRef — which a caller might derive from CI event data — cannot
-// inject shell syntax regardless of content; a malformed ref simply makes
-// the git invocation itself fail, which ScanSecrets reports as
-// StatusUnavailable.
-func gitDiff(ctx context.Context, baseRef, headRef string) (string, error) {
+// everything headRef introduced since it diverged from baseRef, in the
+// repository at dir (or ScanSecrets' calling process's cwd if dir is
+// empty). It shells out via exec.CommandContext with an argv slice (no
+// "sh -c"), so dir/baseRef/headRef — any of which a caller might derive
+// from CI event data or an MCP tool call — cannot inject shell syntax
+// regardless of content; a malformed ref or dir simply makes the git
+// invocation itself fail, which ScanSecrets reports as StatusUnavailable.
+func gitDiff(ctx context.Context, dir, baseRef, headRef string) (string, error) {
+	args := make([]string, 0, 6)
+	if dir != "" {
+		args = append(args, "-C", dir)
+	}
+	args = append(args, "diff", "--unified=0", "--no-color", fmt.Sprintf("%s...%s", baseRef, headRef))
+
 	var stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, "git", "diff", "--unified=0", "--no-color", fmt.Sprintf("%s...%s", baseRef, headRef))
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {

@@ -24,7 +24,7 @@ func TestReview_ComposesChecksAndSecretScan(t *testing.T) {
 	writeFile(t, root, "app.go", "package app\n\nfunc Hello() string { return \"hi\" }\n")
 	runGit(t, root, "commit", "--quiet", "-am", "add hello")
 
-	results := Review(context.Background(), "base", "HEAD", nil, false)
+	results := Review(context.Background(), root, "base", "HEAD", nil, false)
 
 	if len(results) != len(Checks)+1 {
 		t.Fatalf("len(results) = %d, want %d (len(Checks) + secret scan)", len(results), len(Checks)+1)

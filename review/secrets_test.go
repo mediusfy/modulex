@@ -30,10 +30,12 @@ func runGit(t *testing.T, dir string, args ...string) {
 
 // newTestRepo lays out a fresh git repository at t.TempDir(), makes it the
 // current process's working directory for the duration of the test (via
-// t.Chdir, restored automatically), and returns the repo root. ScanSecrets
-// (like verify.Run's "sh -c" commands) operates relative to the process
-// working directory rather than taking an explicit repo-root parameter, to
-// stay consistent with that existing convention.
+// t.Chdir, restored automatically), and returns the repo root. Tests below
+// pass the returned root as ScanSecrets/Review's dir parameter explicitly
+// (exercising the parameter itself); the t.Chdir is redundant with that but
+// kept so ScanSecrets/gitDiff's git invocation still resolves correctly for
+// any test that ends up calling git without going through dir (there are
+// none today, but this keeps the fixture robust either way).
 func newTestRepo(t *testing.T) string {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
@@ -59,7 +61,7 @@ func TestScanSecrets_NoFindings(t *testing.T) {
 	writeFile(t, root, "app.go", "package app\n\nfunc Hello() string { return \"hi\" }\n")
 	runGit(t, root, "commit", "--quiet", "-am", "add hello")
 
-	result := ScanSecrets(context.Background(), "base", "HEAD")
+	result := ScanSecrets(context.Background(), root, "base", "HEAD")
 
 	if result.Status != "pass" {
 		t.Fatalf("Status = %q, want pass; Message: %s", result.Status, result.Message)
@@ -83,7 +85,7 @@ func TestScanSecrets_FindsSecretAddedLine(t *testing.T) {
 	writeFile(t, root, "config.go", "package config\n\nconst apiKey = \"api_key=supersecretvalue123\"\n")
 	runGit(t, root, "commit", "--quiet", "-am", "oops, hardcoded a key")
 
-	result := ScanSecrets(context.Background(), "base", "HEAD")
+	result := ScanSecrets(context.Background(), root, "base", "HEAD")
 
 	if result.Status != "fail" {
 		t.Fatalf("Status = %q, want fail; Message: %s", result.Status, result.Message)
@@ -124,7 +126,7 @@ func TestScanSecrets_IgnoresUnquotedCodeAssignments(t *testing.T) {
 	}, "\n"))
 	runGit(t, root, "commit", "--quiet", "-am", "add code that merely mentions key/token/secret")
 
-	result := ScanSecrets(context.Background(), "base", "HEAD")
+	result := ScanSecrets(context.Background(), root, "base", "HEAD")
 
 	if result.Status != "pass" {
 		t.Fatalf("Status = %q, want pass (no quoted secret-shaped literal was added); Message: %s", result.Status, result.Message)
@@ -146,7 +148,7 @@ func TestScanSecrets_NosecretMarkerSuppressesFinding(t *testing.T) {
 		`var fakeToken = "api_key=supersecretvalue123" // nosecret: test fixture`+"\n")
 	runGit(t, root, "commit", "--quiet", "-am", "add annotated test fixture")
 
-	result := ScanSecrets(context.Background(), "base", "HEAD")
+	result := ScanSecrets(context.Background(), root, "base", "HEAD")
 
 	if result.Status != "pass" {
 		t.Fatalf("Status = %q, want pass (line carries a nosecret marker); Message: %s", result.Status, result.Message)
@@ -167,7 +169,7 @@ func TestScanSecrets_IgnoresPreexistingSecretOutsideDiff(t *testing.T) {
 	writeFile(t, root, "config.go", "package config\n\nconst apiKey = \"api_key=preexistingsecret456\"\n\nfunc Unrelated() {}\n")
 	runGit(t, root, "commit", "--quiet", "-am", "unrelated change")
 
-	result := ScanSecrets(context.Background(), "base", "HEAD")
+	result := ScanSecrets(context.Background(), root, "base", "HEAD")
 
 	if result.Status != "pass" {
 		t.Fatalf("Status = %q, want pass (pre-existing secret is outside the diff); Message: %s", result.Status, result.Message)
@@ -175,15 +177,48 @@ func TestScanSecrets_IgnoresPreexistingSecretOutsideDiff(t *testing.T) {
 }
 
 func TestScanSecrets_BadRefReturnsUnavailable(t *testing.T) {
-	newTestRepo(t)
+	root := newTestRepo(t)
 
-	result := ScanSecrets(context.Background(), "this-ref-does-not-exist", "HEAD")
+	result := ScanSecrets(context.Background(), root, "this-ref-does-not-exist", "HEAD")
 
 	if result.Status != "unavailable" {
 		t.Fatalf("Status = %q, want unavailable", result.Status)
 	}
 	if result.Reason == "" {
 		t.Error("Reason is empty, want an explanation naming the failed diff computation")
+	}
+}
+
+// TestScanSecrets_UsesDirRegardlessOfProcessCwd is a decisive regression
+// test for dir actually being honored: the process's cwd is a plain,
+// non-git directory, so if ScanSecrets ever fell back to it instead of
+// using dir, `git diff` would fail outright ("not a git repository") —
+// there is no git history at cwd for it to silently scan by mistake. A
+// separate real repo at dir carries the actual base/HEAD commits and a
+// secret-shaped added line; the scan must find it there.
+func TestScanSecrets_UsesDirRegardlessOfProcessCwd(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available on PATH")
+	}
+
+	nonGitCwd := t.TempDir()
+	t.Chdir(nonGitCwd)
+
+	repo := t.TempDir()
+	runGit(t, repo, "init", "--quiet")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test")
+	writeFile(t, repo, "config.go", "package config\n")
+	runGit(t, repo, "add", "config.go")
+	runGit(t, repo, "commit", "--quiet", "-m", "base")
+	runGit(t, repo, "branch", "base")
+	writeFile(t, repo, "config.go", "package config\n\nconst apiKey = \"api_key=supersecretvalue123\"\n")
+	runGit(t, repo, "commit", "--quiet", "-am", "oops, hardcoded a key")
+
+	result := ScanSecrets(context.Background(), repo, "base", "HEAD")
+
+	if result.Status != "fail" {
+		t.Fatalf("Status = %q, want fail (dir must be honored regardless of the process's cwd); Message: %s, Reason: %s", result.Status, result.Message, result.Reason)
 	}
 }
 

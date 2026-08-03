@@ -45,7 +45,8 @@ const maxOutputBytes = 4096
 // and an explicit caller-supplied flag is what the ticket asked for.
 //
 // Every other check is actually executed via "sh -c <Command>", with ctx
-// honored for cancellation/timeout. Exit code 0 maps to StatusPass; any
+// honored for cancellation/timeout and CheckSpec.Dir (if set) as the
+// spawned process's working directory. Exit code 0 maps to StatusPass; any
 // other outcome (nonzero exit, or ctx cancellation) maps to StatusFail.
 // Combined stdout+stderr is captured into Message, truncated per
 // maxOutputBytes.
@@ -92,7 +93,7 @@ func runOne(ctx context.Context, c CheckSpec, present map[string]bool, allowNetw
 	}
 
 	start := time.Now()
-	output, err := runCommand(ctx, c.Command)
+	output, err := runCommand(ctx, c.Command, c.Dir)
 	duration := time.Since(start)
 
 	status := provenance.StatusPass
@@ -112,10 +113,14 @@ func runOne(ctx context.Context, c CheckSpec, present map[string]bool, allowNetw
 // runCommand actually executes command via the shell (so Command strings
 // like "go test ./httpx/..." or a "make X" target work exactly as a human
 // would type them, including any shell features they rely on), honoring ctx
-// for cancellation. It returns combined stdout+stderr and the command's
-// error (nil on exit code 0).
-func runCommand(ctx context.Context, command string) (string, error) {
+// for cancellation. dir, if non-empty, becomes the spawned process's
+// working directory (exec.Cmd.Dir); empty leaves it unset, so the process
+// inherits Run's own current working directory exactly as before this
+// field existed. It returns combined stdout+stderr and the command's error
+// (nil on exit code 0).
+func runCommand(ctx context.Context, command, dir string) (string, error) {
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }

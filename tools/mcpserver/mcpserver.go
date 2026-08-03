@@ -79,7 +79,7 @@ func NewServer() *mcp.Server {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "run_verification",
-		Description: "Run a list of verification checks (e.g. from recommend_verification or review_diff) and report each one's pass/fail/skipped/unavailable/approval-required status. Each Command is classified via discovery.ClassifyCommand before running; a destructive or approval-required command is reported as approval-required instead of executed — see this tool's full description in docs/planning/agent-mcp-server-guide.md for the trust boundary this implies.",
+		Description: "Run a list of verification checks (e.g. from recommend_verification or review_diff) and report each one's pass/fail/skipped/unavailable/approval-required status. Each check runs with root as its working directory. Each Command is classified via discovery.ClassifyCommand before running; a mutating, destructive, or approval-required command is reported as approval-required instead of executed — see this tool's full description in docs/planning/agent-mcp-server-guide.md for the trust boundary this implies.",
 	}, runVerificationHandler)
 
 	mcp.AddTool(s, &mcp.Tool{

@@ -100,6 +100,15 @@ var Checks = []verify.CheckSpec{
 // VerificationResult per check, in Checks order followed by the secret scan
 // result.
 //
+// dir is the repository root every check and the secret scan run against:
+// each Checks entry is copied with its CheckSpec.Dir set to dir before
+// verify.Run executes it (see verify.CheckSpec.Dir), and dir is passed to
+// ScanSecrets for its git diff invocation. An empty dir leaves every
+// command's working directory unset, i.e. Review's own calling process's
+// current working directory — unchanged from this function's behavior
+// before dir existed as a parameter, so an existing caller that always ran
+// from the repository root can pass "" without any change in behavior.
+//
 // tools should be discovery.Discover's Tools field (or an equivalent slice);
 // it gates each CheckSpec.RequiredTool exactly as verify.Run documents.
 // allowNetwork is passed through to verify.Run for forward compatibility
@@ -109,7 +118,13 @@ var Checks = []verify.CheckSpec{
 // The result is []provenance.VerificationResult, the same type verify.Run
 // produces, so verify.RenderText(results) renders it as a human-readable,
 // per-category summary without this package needing its own renderer.
-func Review(ctx context.Context, baseRef, headRef string, tools []discovery.ToolStatus, allowNetwork bool) []provenance.VerificationResult {
-	results := verify.Run(ctx, Checks, tools, allowNetwork)
-	return append(results, ScanSecrets(ctx, baseRef, headRef))
+func Review(ctx context.Context, dir, baseRef, headRef string, tools []discovery.ToolStatus, allowNetwork bool) []provenance.VerificationResult {
+	checks := make([]verify.CheckSpec, len(Checks))
+	for i, c := range Checks {
+		c.Dir = dir
+		checks[i] = c
+	}
+
+	results := verify.Run(ctx, checks, tools, allowNetwork)
+	return append(results, ScanSecrets(ctx, dir, baseRef, headRef))
 }

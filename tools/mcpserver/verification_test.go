@@ -2,6 +2,8 @@ package mcpserver
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/mediusfy/modulex/provenance"
@@ -102,6 +104,18 @@ func TestRunVerification(t *testing.T) {
 		}
 	})
 
+	t.Run("mutating command is blocked without running, not just destructive", func(t *testing.T) {
+		out, err := runVerification(context.Background(), "../..", []CheckSpecIn{
+			{Name: "would-mutate", Command: "make fmt", Category: provenance.VerificationFull},
+		}, false)
+		if err != nil {
+			t.Fatalf("runVerification() error = %v", err)
+		}
+		if out.Results[0].Status != provenance.StatusApprovalRequired {
+			t.Errorf("Status = %q, want %q (a read-only tool must never run a mutating command, not just destructive/approval-required ones)", out.Results[0].Status, provenance.StatusApprovalRequired)
+		}
+	})
+
 	t.Run("unrecognized command defaults to approval-required, fail-safe", func(t *testing.T) {
 		out, err := runVerification(context.Background(), "../..", []CheckSpecIn{
 			{Name: "mystery", Command: "some-arbitrary-unrecognized-command", Category: provenance.VerificationFull},
@@ -137,4 +151,52 @@ func TestRunVerification(t *testing.T) {
 			}
 		}
 	})
+}
+
+// writeTinyGoModule writes a minimal go.mod plus one .go file (whatever
+// content the caller supplies, valid or not) into dir, so "go vet ./..."
+// run with dir as its working directory has something real to vet.
+func writeTinyGoModule(t *testing.T, dir, goFileContent string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/tmp\n\ngo 1.25\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile go.mod: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(goFileContent), 0o644); err != nil {
+		t.Fatalf("WriteFile main.go: %v", err)
+	}
+}
+
+// TestRunVerification_UsesRootAsWorkingDirectory is a decisive differential
+// regression test for root actually becoming Command's working directory
+// (via verify.CheckSpec.Dir): two separate temp Go modules, one that vets
+// cleanly and one with a syntax error. If root were not threaded through
+// (the bug this guards against), "go vet ./..." would run against
+// tools/mcpserver's own directory in both calls — which itself vets
+// cleanly — so both would report StatusPass regardless of which root was
+// given; only correctly honoring root as the working directory makes the
+// second call fail.
+func TestRunVerification_UsesRootAsWorkingDirectory(t *testing.T) {
+	dirGood := t.TempDir()
+	writeTinyGoModule(t, dirGood, "package tmp\n")
+
+	dirBad := t.TempDir()
+	writeTinyGoModule(t, dirBad, "package tmp\n\nfunc broken( {\n")
+
+	check := []CheckSpecIn{{Name: "vet", Command: "go vet ./...", Category: provenance.VerificationFull}}
+
+	goodOut, err := runVerification(context.Background(), dirGood, check, false)
+	if err != nil {
+		t.Fatalf("runVerification(dirGood) error = %v", err)
+	}
+	if goodOut.Results[0].Status != provenance.StatusPass {
+		t.Errorf("dirGood: Status = %q, want %q; Message: %s", goodOut.Results[0].Status, provenance.StatusPass, goodOut.Results[0].Message)
+	}
+
+	badOut, err := runVerification(context.Background(), dirBad, check, false)
+	if err != nil {
+		t.Fatalf("runVerification(dirBad) error = %v", err)
+	}
+	if badOut.Results[0].Status != provenance.StatusFail {
+		t.Errorf("dirBad: Status = %q, want %q (root must be honored as the working directory, not silently ignored); Message: %s", badOut.Results[0].Status, provenance.StatusFail, badOut.Results[0].Message)
+	}
 }

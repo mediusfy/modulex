@@ -45,7 +45,7 @@ type CheckSpecIn struct {
 	Networked    bool                            `json:"networked,omitempty" jsonschema:"if true, this check performs network I/O and is skipped unless allow_network is true"`
 }
 
-func toCheckSpec(in CheckSpecIn) verify.CheckSpec {
+func toCheckSpec(in CheckSpecIn, dir string) verify.CheckSpec {
 	return verify.CheckSpec{
 		Name:         in.Name,
 		Command:      in.Command,
@@ -53,15 +53,17 @@ func toCheckSpec(in CheckSpecIn) verify.CheckSpec {
 		Reason:       in.Reason,
 		RequiredTool: in.RequiredTool,
 		Networked:    in.Networked,
+		Dir:          dir,
 	}
 }
 
 // RunVerificationIn is run_verification's input.
 type RunVerificationIn struct {
-	// Root is used only to detect which tools (go, git, golangci-lint,
-	// ...) are available on PATH, gating each Checks[i].RequiredTool.
-	// Defaults to "." if empty.
-	Root string `json:"root,omitempty" jsonschema:"repository root used to detect available tools; defaults to \".\" if empty"`
+	// Root is used to detect which tools (go, git, golangci-lint, ...) are
+	// available on PATH (gating each Checks[i].RequiredTool) and as the
+	// working directory every runnable check's Command executes in (via
+	// verify.CheckSpec.Dir). Defaults to "." if empty.
+	Root string `json:"root,omitempty" jsonschema:"repository root: used both to detect available tools and as the working directory checks run in; defaults to \".\" if empty"`
 	// Checks are the checks to run — typically reused verbatim from a
 	// prior recommend_verification or review_diff result's checks, or from
 	// this repository's own documented full gate list, rather than
@@ -80,11 +82,13 @@ type RunVerificationOut struct {
 
 // runVerification resolves root's available tools, classifies each check's
 // Command (see "Command classification gate" below), and runs whichever
-// ones clear that gate via verify.Run — see that function's doc comment for
-// the tool-availability/network-capability gating and "sh -c" execution it
-// performs. Exactly one provenance.VerificationResult is produced per input
-// CheckSpecIn, in the same order, whether a check ran, was gated, or was
-// unavailable/skipped by verify.Run itself — mirroring verify.Run's own
+// ones clear that gate via verify.Run, with each CheckSpec.Dir set to
+// root so Command actually executes there (see "root is a real working
+// directory" below) — see verify.Run's doc comment for the tool-
+// availability/network-capability gating and "sh -c" execution it performs
+// beyond that. Exactly one provenance.VerificationResult is produced per
+// input CheckSpecIn, in the same order, whether a check ran, was gated, or
+// was unavailable/skipped by verify.Run itself — mirroring verify.Run's own
 // "never fewer than input" guarantee.
 //
 // # Checks[i].Command is executed verbatim, but not unconditionally — trust
@@ -98,33 +102,49 @@ type RunVerificationOut struct {
 // before handing any check to verify.Run, runVerification classifies its
 // Command with discovery.ClassifyCommand (the same fail-safe classifier
 // ADR-0032's command-classification model already defines). A Command that
-// classifies as provenance.ClassDestructive or provenance.ClassApprovalRequired
-// is never executed: it is reported as provenance.StatusApprovalRequired
-// instead, with ClassifyCommand's own Reason explaining why. This is not a
-// new approval/auth mechanism (no grant, no token, nothing stateful) — it
-// only refuses to run what the repository's existing, already-built
-// classifier already flags as unsafe to run unattended, closing the gap a
+// classifies as provenance.ClassMutating, provenance.ClassDestructive, or
+// provenance.ClassApprovalRequired is never executed: it is reported as
+// provenance.StatusApprovalRequired instead, with ClassifyCommand's own
+// Reason explaining why. Mutating is blocked alongside Destructive/
+// ApprovalRequired (not merely those two) because this package's whole
+// premise is that nothing in it can mutate the target repository — a
+// classifier-approved "safe to run unattended" is not the same question as
+// "safe for a read-only tool to run," and ClassMutating commands (e.g.
+// `git add`/`git commit`, `make fmt`) are, definitionally, neither. Only
+// ClassSafe and ClassNetworked commands run; ClassNetworked remains subject
+// to Networked/allowNetwork gating in verify.Run exactly as before. This is
+// not a new approval/auth mechanism (no grant, no token, nothing stateful)
+// — it only refuses to run what the repository's existing, already-built
+// classifier already flags as unsafe or mutating, closing the gap a
 // caller-supplied Command would otherwise leave in this package's "nothing
 // here can mutate the target repository" guarantee (see mcpserver.go's
-// package doc). A Command classifying as safe/mutating/networked still runs
-// verbatim, exactly as documented: this tool remains intended for Command
-// values that originated from this repository's own
-// recommend_verification/review_diff output or its documented gate list,
-// not arbitrary caller-authored shell — the classifier is defense in depth,
-// not a substitute for that expectation. See
+// package doc). This tool remains intended for Command values that
+// originated from this repository's own recommend_verification/
+// review_diff output or its documented gate list, not arbitrary
+// caller-authored shell — the classifier is defense in depth, not a
+// substitute for that expectation. See
 // docs/planning/agent-mcp-server-guide.md's safety section.
+//
+// # root is a real working directory, not just a tool-detection hint
+//
+// Every runnable check's verify.CheckSpec.Dir is set to root (resolved via
+// resolveRoot), so Command genuinely executes there — this was previously
+// not the case (root only gated tool detection, while Command always ran
+// in the server process's own cwd); see verify.CheckSpec.Dir's doc comment
+// for the underlying mechanism.
 func runVerification(ctx context.Context, root string, checksIn []CheckSpecIn, allowNetwork bool) (RunVerificationOut, error) {
 	tools, err := resolveTools(root)
 	if err != nil {
 		return RunVerificationOut{}, err
 	}
+	resolvedRoot := resolveRoot(root)
 
 	results := make([]provenance.VerificationResult, len(checksIn))
 	var runnable []verify.CheckSpec
 	var runnableIdx []int
 	for i, c := range checksIn {
 		class, reason := discovery.ClassifyCommand(c.Command)
-		if class == provenance.ClassDestructive || class == provenance.ClassApprovalRequired {
+		if class == provenance.ClassMutating || class == provenance.ClassDestructive || class == provenance.ClassApprovalRequired {
 			results[i] = provenance.VerificationResult{
 				Name:     c.Name,
 				Category: c.Category,
@@ -133,7 +153,7 @@ func runVerification(ctx context.Context, root string, checksIn []CheckSpecIn, a
 			}
 			continue
 		}
-		runnable = append(runnable, toCheckSpec(c))
+		runnable = append(runnable, toCheckSpec(c, resolvedRoot))
 		runnableIdx = append(runnableIdx, i)
 	}
 
