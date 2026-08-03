@@ -70,7 +70,7 @@ jobs:
       - name: Run the optional modboundary analyzer on examples/deployment
         run: make check-module-boundary
 
-      - name: Verify nested modules (tools/modboundary, tools/scaffold, tools/provenanceci, examples/external-consumer)
+      - name: Verify nested modules (tools/modboundary, tools/scaffold, tools/provenanceci, tools/mcpserver, examples/external-consumer)
         run: make check-nested-modules
 
       - name: Report API changes since the latest tag

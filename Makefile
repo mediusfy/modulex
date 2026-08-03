@@ -13,7 +13,7 @@ help:
 	@echo "  check-module-boundary   - Run the optional modboundary analyzer on examples/deployment"
 	@echo "  check-api-compat        - Report API changes since the latest git tag"
 	@echo "  check-changelog         - Verify CHANGELOG.md is updated when required (PR diff vs origin/main)"
-	@echo "  check-nested-modules    - Verify tidy/build/test for tools/modboundary, tools/scaffold, tools/provenanceci, examples/external-consumer"
+	@echo "  check-nested-modules    - Verify tidy/build/test for tools/modboundary, tools/scaffold, tools/provenanceci, tools/mcpserver, examples/external-consumer"
 	@echo "  release                 - Preflight (clean tree, on main, up to date, no duplicate tag, gates pass), then tag/push (VERSION required)"
 	@echo "  publish-godev           - Manually request go.dev to re-index the module"
 	@echo "  proto-gen               - Regenerate notificationpb from its .proto (requires protoc; not part of build/test/CI)"
@@ -56,11 +56,11 @@ check-changelog:
 	./scripts/check-changelog.sh
 
 check-nested-modules:
-	@for dir in tools/modboundary tools/scaffold tools/provenanceci examples/external-consumer; do \
+	@for dir in tools/modboundary tools/scaffold tools/provenanceci tools/mcpserver examples/external-consumer; do \
 		echo "--- $$dir ---"; \
 		(cd "$$dir" && go mod tidy -diff && go build ./... && go test ./...) || exit 1; \
 	done
-	@echo "ok: nested modules (tools/modboundary, tools/scaffold, tools/provenanceci, examples/external-consumer) are tidy and build/test cleanly"
+	@echo "ok: nested modules (tools/modboundary, tools/scaffold, tools/provenanceci, tools/mcpserver, examples/external-consumer) are tidy and build/test cleanly"
 
 # release runs a local preflight before tagging: a dirty tree, a non-main
 # branch, a local main that has diverged from origin/main, a duplicate tag,
