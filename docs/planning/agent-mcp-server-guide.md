@@ -80,30 +80,66 @@ outcome an agent should be able to branch on, not a failure to catch:
 | `true` | parsed contract | one string per violated rule | File present, parsed, but fails `Contract.Validate()` |
 | `true` | parsed contract | `null` | File present and fully valid |
 
-## Safety: `run_verification` executes the `Command` you give it, verbatim
+## Safety: `run_verification` classifies the `Command` you give it before running it
 
 `run_verification`'s `checks[i].command` is executed by `verify.Run` via a
-shell (`sh -c`), with no sanitization — this is not a new risk introduced
-by the MCP layer; `verify.CheckSpec.Command` has always worked this way for
-its existing callers (`verify.FullGates`, `review.Checks`). What's new is
-that `run_verification` lets an MCP *caller* supply `Command` directly,
-rather than only ever running commands `verify.PlanFor` built itself from
-this repository's own trusted rule table.
+shell (`sh -c`) — this is not a new risk introduced by the MCP layer;
+`verify.CheckSpec.Command` has always worked this way for its existing
+callers (`verify.FullGates`, `review.Checks`). What's new is that
+`run_verification` lets an MCP *caller* supply `Command` directly, rather
+than only ever running commands `verify.PlanFor` built itself from this
+repository's own trusted rule table.
 
-**`run_verification` is intended for `Command` values that originated from
-this repository's own tooling** — copied from a prior `recommend_verification`
-or `review_diff` result, or from `verify.FullGates` — **not arbitrary
-caller-authored shell.** This is consistent with the ADR's framing: "run
-declared verification" is explicitly listed as part of the *read-only*
-server's surface. Read-only here means "no tool writes to the repository or
-mutates external state" (no file writes, no git mutation, no approvals) —
-not "no tool ever spawns a process."
+Before handing any check to `verify.Run`, `runVerification` classifies its
+`Command` with `discovery.ClassifyCommand` — the same fail-safe classifier
+ADR-0032's command-classification model already defines (`safe`,
+`mutating`, `networked`, `destructive`, `approval_required`, with anything
+unrecognized failing safe to `approval_required`). A `Command` classifying
+as `destructive` or `approval_required` is never executed: it comes back as
+`StatusApprovalRequired` with `ClassifyCommand`'s own reason, instead of
+running. This is *not* a new approval/auth mechanism — no grant, no token,
+nothing stateful — it only refuses to run what the repository's existing
+classifier already flags as unsafe to run unattended, closing the gap a
+caller-supplied `Command` would otherwise leave open. A `Command`
+classifying as `safe`/`mutating`/`networked` still runs verbatim.
+
+**`run_verification` remains intended for `Command` values that originated
+from this repository's own tooling** — copied from a prior
+`recommend_verification` or `review_diff` result, or from `verify.FullGates`
+— **not arbitrary caller-authored shell.** The classifier is defense in
+depth, not a substitute for that expectation: it recognizes a narrow,
+Go/git/make-specific rule table (see `discovery/classify.go`), so an
+unrecognized-but-actually-harmless command (e.g. a one-off `echo` or a
+non-Go toolchain's own test runner) is also reported as
+`StatusApprovalRequired` under the same fail-safe default, not just a truly
+dangerous one. This is consistent with the ADR's framing: "run declared
+verification" is explicitly listed as part of the *read-only* server's
+surface. Read-only here means "no tool writes to the repository or mutates
+external state" (no file writes, no git mutation, no approvals) — not "no
+tool ever spawns a process."
 
 `review_diff`'s `base_ref`/`head_ref`, by contrast, are safe from injection
 by construction regardless of content: `review.Review`'s `git diff`
 invocation uses an argv slice (`exec.CommandContext`), never a shell — a bad
 ref just makes the git command fail, surfaced as a `StatusUnavailable`
 result, never as arbitrary code execution.
+
+## `root` only gates tool availability — it never becomes a working directory
+
+`run_verification` and `review_diff`'s `root` parameter is passed only to
+`discovery.Discover` to detect which tools (`go`, `git`, `golangci-lint`,
+...) are on `PATH`, gating each check's `RequiredTool`. It does **not**
+control where the underlying commands actually run: `verify.Run`'s shelled
+checks and `review.Review`'s `git diff` invocation always run in the MCP
+server process's own actual working directory, regardless of `root`. In
+normal use this is not surprising — a host spawns `mcpserver` with the
+target repository already as its working directory — but a caller pointing
+`root` at a *different* checkout than the server process's cwd will get
+results computed against the server's cwd, not `root`, with no error
+signaling the mismatch. `discover_repository` and `read_contract`, by
+contrast, genuinely scan whatever `root` names, since `discovery.Discover`
+and the `modulex.agent.yaml` read both take `root` as a real filesystem
+path, not merely a hint.
 
 ## Worked example
 

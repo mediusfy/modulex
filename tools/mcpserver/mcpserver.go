@@ -79,7 +79,7 @@ func NewServer() *mcp.Server {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "run_verification",
-		Description: "Run a list of verification checks (e.g. from recommend_verification or review_diff) and report each one's pass/fail/skipped/unavailable status. Executes each check's Command verbatim via a shell — see this tool's full description in docs/planning/agent-mcp-server-guide.md for the trust boundary this implies.",
+		Description: "Run a list of verification checks (e.g. from recommend_verification or review_diff) and report each one's pass/fail/skipped/unavailable/approval-required status. Each Command is classified via discovery.ClassifyCommand before running; a destructive or approval-required command is reported as approval-required instead of executed — see this tool's full description in docs/planning/agent-mcp-server-guide.md for the trust boundary this implies.",
 	}, runVerificationHandler)
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -113,9 +113,30 @@ func resolveRoot(root string) string {
 // a CheckSpec.RequiredTool. Shared by run_verification and review_diff so
 // both tools resolve tool availability identically.
 func resolveTools(root string) ([]discovery.ToolStatus, error) {
-	repo, err := discovery.Discover(resolveRoot(root))
+	resolvedRoot := resolveRoot(root)
+	repo, err := discovery.Discover(resolvedRoot)
 	if err != nil {
-		return nil, fmt.Errorf("mcpserver: discover %q: %w", root, err)
+		return nil, fmt.Errorf("mcpserver: discover %q: %w", resolvedRoot, err)
 	}
 	return repo.Tools, nil
+}
+
+// unwrapErrors flattens an error tree built by errors.Join (as
+// contract.Contract.Validate and provenance.Envelope.Validate both return)
+// into one string per leaf error, for a caller that wants per-error detail
+// rather than one opaque multi-line message. errors.Join's result
+// implements Unwrap() []error (Go 1.20+); falling back to a single-element
+// slice for any other error shape keeps this safe to call on an arbitrary
+// error, not just one from errors.Join. Shared by read_contract and
+// create_handoff.
+func unwrapErrors(err error) []string {
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		errs := joined.Unwrap()
+		out := make([]string, len(errs))
+		for i, e := range errs {
+			out[i] = e.Error()
+		}
+		return out
+	}
+	return []string{err.Error()}
 }

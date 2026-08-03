@@ -79,8 +79,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   adapter over `discovery.Discover`, `contract.Contract`, `verify.PlanFor`/
   `Run`, `review.Review`, and `provenance.Envelope`, with no new domain
   logic. Implements ADR-0032's "MCP boundary" (Jira MOD-68). See
-  `docs/planning/agent-mcp-server-guide.md`, including its safety note on
-  `run_verification` executing caller-supplied `Command` strings verbatim.
+  `docs/planning/agent-mcp-server-guide.md`, including its safety notes on
+  `run_verification` and `root`'s semantics.
+  - `run_verification` classifies each check's `Command` with
+    `discovery.ClassifyCommand` before running it: a command classifying as
+    destructive or approval-required is reported as
+    `StatusApprovalRequired` instead of executed. Not a new approval/auth
+    mechanism (no grant, no token, nothing stateful) — it closes the gap a
+    caller-supplied `Command` would otherwise leave in this package's
+    "nothing here can mutate the target repository" guarantee, using only
+    the already-built `discovery` package.
 
 ## [0.6.0] - 2026-07-30
 

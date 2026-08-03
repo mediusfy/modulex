@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -39,7 +40,7 @@ func TestBuildHandoffEnvelope(t *testing.T) {
 	t.Run("valid git repo with valid verification results", func(t *testing.T) {
 		dir := newGitFixture(t)
 
-		env, err := buildHandoffEnvelope(dir, "claude", []provenance.VerificationResult{
+		env, err := buildHandoffEnvelope(context.Background(), dir, "claude", []provenance.VerificationResult{
 			{Name: "lint", Category: provenance.VerificationFull, Status: provenance.StatusPass},
 		})
 		if err != nil {
@@ -62,7 +63,7 @@ func TestBuildHandoffEnvelope(t *testing.T) {
 	t.Run("skipped result without reason fails validation", func(t *testing.T) {
 		dir := newGitFixture(t)
 
-		_, err := buildHandoffEnvelope(dir, "claude", []provenance.VerificationResult{
+		_, err := buildHandoffEnvelope(context.Background(), dir, "claude", []provenance.VerificationResult{
 			{Name: "lint", Category: provenance.VerificationFull, Status: provenance.StatusSkipped},
 		})
 		if err == nil {
@@ -73,7 +74,7 @@ func TestBuildHandoffEnvelope(t *testing.T) {
 	t.Run("non-git root returns an error", func(t *testing.T) {
 		dir := t.TempDir()
 
-		_, err := buildHandoffEnvelope(dir, "claude", nil)
+		_, err := buildHandoffEnvelope(context.Background(), dir, "claude", nil)
 		if err == nil {
 			t.Fatal("buildHandoffEnvelope() error = nil, want an error (not a git repository)")
 		}

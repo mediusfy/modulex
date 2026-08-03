@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -53,11 +54,31 @@ type ReadContractOut struct {
 //   - File present and fully valid: {Present: true, Contract: <parsed>,
 //     ValidationErrors: nil}.
 //
-// A real error is returned only for a genuine I/O failure other than "file
-// does not exist" (e.g. a permission error) — not a normal outcome for this
-// tool to model in its output.
+// A real error is returned for a bad root itself (nonexistent, or not a
+// directory) or a genuine I/O failure other than "file does not exist"
+// (e.g. a permission error) — neither is a normal outcome for this tool to
+// model in its output; only "root is valid but has no modulex.agent.yaml"
+// is.
 func readContract(root string) (ReadContractOut, error) {
-	path := filepath.Join(resolveRoot(root), contractFileName)
+	resolvedRoot := resolveRoot(root)
+
+	// A bad root (nonexistent, or not a directory) must be a real error, not
+	// {Present: false} — os.ReadFile's error alone can't distinguish "root
+	// is valid but has no modulex.agent.yaml" from "root itself doesn't
+	// exist," since both fail with an error satisfying errors.Is(err,
+	// os.ErrNotExist) (a missing ancestor directory reports the same
+	// ENOENT as a missing leaf file). Stat-ing resolvedRoot first, mirroring
+	// discoverRepository's contract for the identical bad-root input,
+	// disambiguates the two.
+	info, err := os.Stat(resolvedRoot)
+	if err != nil {
+		return ReadContractOut{}, fmt.Errorf("read_contract: %w", err)
+	}
+	if !info.IsDir() {
+		return ReadContractOut{}, fmt.Errorf("read_contract: root %q is not a directory", root)
+	}
+
+	path := filepath.Join(resolvedRoot, contractFileName)
 
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -84,23 +105,6 @@ func readContract(root string) (ReadContractOut, error) {
 	}
 
 	return ReadContractOut{Present: true, Contract: &c}, nil
-}
-
-// unwrapErrors flattens an error tree built by errors.Join (as
-// contract.Contract.Validate returns) into one string per leaf error.
-// errors.Join's result implements Unwrap() []error (Go 1.20+); falling
-// back to a single-element slice for any other error shape keeps this safe
-// to call on an arbitrary error, not just one from errors.Join.
-func unwrapErrors(err error) []string {
-	if joined, ok := err.(interface{ Unwrap() []error }); ok {
-		errs := joined.Unwrap()
-		out := make([]string, len(errs))
-		for i, e := range errs {
-			out[i] = e.Error()
-		}
-		return out
-	}
-	return []string{err.Error()}
 }
 
 func readContractHandler(_ context.Context, _ *mcp.CallToolRequest, in ReadContractIn) (*mcp.CallToolResult, ReadContractOut, error) {

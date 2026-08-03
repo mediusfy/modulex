@@ -92,4 +92,24 @@ schema_version: "1.0.0"
 			t.Errorf("ValidationErrors = %v, want exactly one parse-error string", out.ValidationErrors)
 		}
 	})
+
+	t.Run("nonexistent root is an error, not present=false", func(t *testing.T) {
+		_, err := readContract("/does/not/exist/at/all")
+		if err == nil {
+			t.Fatal("readContract() error = nil, want an error for a root that does not exist itself (distinct from a valid root with no contract file)")
+		}
+	})
+
+	t.Run("root that is a file, not a directory, is an error", func(t *testing.T) {
+		dir := t.TempDir()
+		filePath := filepath.Join(dir, "not-a-dir")
+		if err := os.WriteFile(filePath, []byte("x"), 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+
+		_, err := readContract(filePath)
+		if err == nil {
+			t.Fatal("readContract() error = nil, want an error when root is a file, not a directory")
+		}
+	})
 }

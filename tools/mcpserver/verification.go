@@ -5,6 +5,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/mediusfy/modulex/discovery"
 	"github.com/mediusfy/modulex/provenance"
 	"github.com/mediusfy/modulex/verify"
 )
@@ -77,21 +78,40 @@ type RunVerificationOut struct {
 	Results []provenance.VerificationResult `json:"results"`
 }
 
-// runVerification resolves root's available tools, converts in.Checks to
-// []verify.CheckSpec, and runs them via verify.Run — see that function's
-// doc comment for the tool-availability/network-capability gating and
-// "sh -c" execution this performs.
+// runVerification resolves root's available tools, classifies each check's
+// Command (see "Command classification gate" below), and runs whichever
+// ones clear that gate via verify.Run — see that function's doc comment for
+// the tool-availability/network-capability gating and "sh -c" execution it
+// performs. Exactly one provenance.VerificationResult is produced per input
+// CheckSpecIn, in the same order, whether a check ran, was gated, or was
+// unavailable/skipped by verify.Run itself — mirroring verify.Run's own
+// "never fewer than input" guarantee.
 //
-// # Checks[i].Command is executed verbatim — trust boundary
+// # Checks[i].Command is executed verbatim, but not unconditionally — trust
+// boundary and command classification gate
 //
-// verify.Run executes Command via "sh -c" with no sanitization; this is not
-// new here, verify.CheckSpec has always worked this way for its existing
-// callers (verify.FullGates, review.Checks). Unlike verify.PlanFor, which
-// only ever builds a Command from this repository's own trusted rule
-// table, run_verification lets an MCP caller supply Command directly. This
-// tool is intended for Command values that originated from this
-// repository's own recommend_verification/review_diff output or its
-// documented gate list — not arbitrary caller-authored shell. See
+// verify.Run executes Command via "sh -c" with no sanitization of its own;
+// this is not new here, verify.CheckSpec has always worked this way for its
+// existing callers (verify.FullGates, review.Checks). Unlike verify.PlanFor,
+// which only ever builds a Command from this repository's own trusted rule
+// table, run_verification lets an MCP caller supply Command directly — so
+// before handing any check to verify.Run, runVerification classifies its
+// Command with discovery.ClassifyCommand (the same fail-safe classifier
+// ADR-0032's command-classification model already defines). A Command that
+// classifies as provenance.ClassDestructive or provenance.ClassApprovalRequired
+// is never executed: it is reported as provenance.StatusApprovalRequired
+// instead, with ClassifyCommand's own Reason explaining why. This is not a
+// new approval/auth mechanism (no grant, no token, nothing stateful) — it
+// only refuses to run what the repository's existing, already-built
+// classifier already flags as unsafe to run unattended, closing the gap a
+// caller-supplied Command would otherwise leave in this package's "nothing
+// here can mutate the target repository" guarantee (see mcpserver.go's
+// package doc). A Command classifying as safe/mutating/networked still runs
+// verbatim, exactly as documented: this tool remains intended for Command
+// values that originated from this repository's own
+// recommend_verification/review_diff output or its documented gate list,
+// not arbitrary caller-authored shell — the classifier is defense in depth,
+// not a substitute for that expectation. See
 // docs/planning/agent-mcp-server-guide.md's safety section.
 func runVerification(ctx context.Context, root string, checksIn []CheckSpecIn, allowNetwork bool) (RunVerificationOut, error) {
 	tools, err := resolveTools(root)
@@ -99,12 +119,29 @@ func runVerification(ctx context.Context, root string, checksIn []CheckSpecIn, a
 		return RunVerificationOut{}, err
 	}
 
-	checks := make([]verify.CheckSpec, len(checksIn))
+	results := make([]provenance.VerificationResult, len(checksIn))
+	var runnable []verify.CheckSpec
+	var runnableIdx []int
 	for i, c := range checksIn {
-		checks[i] = toCheckSpec(c)
+		class, reason := discovery.ClassifyCommand(c.Command)
+		if class == provenance.ClassDestructive || class == provenance.ClassApprovalRequired {
+			results[i] = provenance.VerificationResult{
+				Name:     c.Name,
+				Category: c.Category,
+				Status:   provenance.StatusApprovalRequired,
+				Reason:   reason,
+			}
+			continue
+		}
+		runnable = append(runnable, toCheckSpec(c))
+		runnableIdx = append(runnableIdx, i)
 	}
 
-	return RunVerificationOut{Results: verify.Run(ctx, checks, tools, allowNetwork)}, nil
+	for i, r := range verify.Run(ctx, runnable, tools, allowNetwork) {
+		results[runnableIdx[i]] = r
+	}
+
+	return RunVerificationOut{Results: results}, nil
 }
 
 func runVerificationHandler(ctx context.Context, _ *mcp.CallToolRequest, in RunVerificationIn) (*mcp.CallToolResult, RunVerificationOut, error) {
