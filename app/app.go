@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -24,6 +25,8 @@ type options struct {
 	shutdownTimeout time.Duration
 	managerOpts     []modulex.ManagerOption
 	setup           func(*modulex.Manager) error
+	preStop         []func(context.Context) error
+	postStop        []func(context.Context) error
 }
 
 // Option configures Run.
@@ -68,8 +71,38 @@ func WithSetup(fn func(*modulex.Manager) error) Option {
 	}
 }
 
+// WithPreStop registers a hook that runs immediately before
+// modulex.Manager.StopModules, sharing its shutdown-timeout context.
+// Hooks run in registration order. A caller with domain shutdown logic
+// that must complete before modules stop (e.g. draining in-flight
+// requests) should register it here rather than hand-rolling a shutdown
+// sequence around Run. An error does not stop StopModules or any
+// remaining hooks from running; all errors are joined into Run's return
+// value.
+func WithPreStop(fn func(context.Context) error) Option {
+	return func(o *options) {
+		o.preStop = append(o.preStop, fn)
+	}
+}
+
+// WithPostStop registers a hook that runs immediately after
+// modulex.Manager.StopModules, sharing its shutdown-timeout context.
+// Hooks run in registration order, and run even if StopModules or an
+// earlier hook returned an error, so cleanup of resources set up outside
+// the Manager (e.g. shutting down a tracer provider) is never skipped. All
+// errors are joined into Run's return value.
+func WithPostStop(fn func(context.Context) error) Option {
+	return func(o *options) {
+		o.postStop = append(o.postStop, fn)
+	}
+}
+
 // Run constructs a modulex.Manager, registers modules, and drives the full
-// Init -> Start -> wait-for-shutdown -> Stop lifecycle.
+// Init -> Start -> wait-for-shutdown -> Stop lifecycle. A caller with
+// shutdown steps of its own to sequence around StopModules (e.g. an
+// application-level Shutdown before it, or a tracer provider's Shutdown
+// after it) should use WithPreStop/WithPostStop rather than reimplementing
+// this lifecycle by hand.
 func Run(logger *slog.Logger, configLoader func(target interface{}) error, modules []modulex.Module, opts ...Option) error {
 	if logger == nil {
 		logger = slog.Default()
@@ -138,8 +171,19 @@ func Run(logger *slog.Logger, configLoader func(target interface{}) error, modul
 	stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cfg.shutdownTimeout)
 	defer cancel()
 
-	if err := mgr.StopModules(stopCtx); err != nil {
-		return fmt.Errorf("app: stop failed: %w", err)
+	var errs []error
+	for _, hook := range cfg.preStop {
+		if err := hook(stopCtx); err != nil {
+			errs = append(errs, fmt.Errorf("app: pre-stop hook failed: %w", err))
+		}
 	}
-	return nil
+	if err := mgr.StopModules(stopCtx); err != nil {
+		errs = append(errs, fmt.Errorf("app: stop failed: %w", err))
+	}
+	for _, hook := range cfg.postStop {
+		if err := hook(stopCtx); err != nil {
+			errs = append(errs, fmt.Errorf("app: post-stop hook failed: %w", err))
+		}
+	}
+	return errors.Join(errs...)
 }

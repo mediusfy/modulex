@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `app.WithPreStop`/`app.WithPostStop`: hooks that run immediately before
+  and after `modulex.Manager.StopModules` inside `app.Run`, sharing its
+  shutdown-timeout context. Addresses real feedback from Badger's `v0.7.0`
+  adoption review: `cmd/server`'s shutdown is a three-step
+  `app.Shutdown` → `StopModules` → `tracer.Shutdown` sequence that
+  `app.Run` previously had no way to express, since it only ever called
+  `StopModules` with no hook points around it. `WithPostStop` hooks run
+  even if `StopModules` or an earlier hook errored, so cleanup like
+  shutting down a tracer provider is never skipped; all hook and
+  `StopModules` errors are joined into `Run`'s returned error.
+
 ## [0.7.0] - 2026-08-03
 
 ### Docs
