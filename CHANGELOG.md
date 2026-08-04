@@ -23,6 +23,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Watermill) nacked-for-redelivery only after the submitted handler
   completes or the pool rejects the message outright — a message is never
   left unresolved.
+- Benchmarks for ADR-0034's item 1 ("Add benchmarks... before adding
+  pooling or allocation optimizations"): `workerpool_bench_test.go`
+  (JSON decode/encode baseline, `Processor.Submit`+`Wait` latency, and
+  throughput at several worker counts), plus an adapter-level current-path
+  vs `SubscribeWithOptions`-throughput comparison for Watermill and
+  RabbitMQ (`watermill_bench_test.go`, `rabbitmq_bench_test.go`) and a
+  current-path baseline for core NATS (`nats_bench_test.go`, which per
+  ADR-0034 rule 4 does not get a `SubscribeWithOptions` — core NATS has no
+  broker ack/retry semantics for a pool to sit in front of). On a local
+  run, `Processor.Submit`+`Wait` overhead for a no-op task (~310ns,
+  workers=1) is small relative to decoding a representative ~250-byte
+  payload (~1.7µs) — pool overhead is not the bottleneck this workload's
+  JSON handling is, matching ADR-0034's assumption. `ants/v2` is not added
+  by this change; ADR-0034 gates that on these benchmarks justifying it,
+  which is a separate follow-up decision.
 
 - `app.WithPreStop`/`app.WithPostStop`: hooks that run immediately before
   and after `modulex.Manager.StopModules` inside `app.Run`, sharing its

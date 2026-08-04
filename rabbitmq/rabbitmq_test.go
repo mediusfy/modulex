@@ -34,9 +34,9 @@ func rabbitMQURL() string {
 	return "amqp://guest:guest@localhost:5672/"
 }
 
-// connectRabbitMQ attempts to connect to RabbitMQ. Tests that require a live
-// broker call this and skip when it returns an error.
-func connectRabbitMQ(t *testing.T) (*amqp.Connection, *amqp.Channel) {
+// connectRabbitMQ attempts to connect to RabbitMQ. Tests and benchmarks that
+// require a live broker call this and skip when it returns an error.
+func connectRabbitMQ(t testing.TB) (*amqp.Connection, *amqp.Channel) {
 	t.Helper()
 
 	conn, err := amqp.Dial(rabbitMQURL())
