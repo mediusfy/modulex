@@ -79,6 +79,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the same `EventBus` now fails immediately, before touching the channel,
   instead of creating a consumer silently bound by the pool's prefetch.
 
+### Docs
+
+- `scripts/check-api-compat.sh` and `COMPATIBILITY.md` now track `app` and
+  `workerpool` as part of the API-compatibility surface, alongside the
+  existing adapter sub-packages. Both packages gained new exported API in
+  this release (`app.WithPreStop`/`WithPostStop`, all of `workerpool`) but
+  were missing from the compat script's hardcoded package list, so changes
+  to them went unreported.
+- ADR-0034's status is updated from "Proposed" to "Accepted", reflecting
+  that implementation plan items 1-3 and 6 (benchmarks, the `workerpool`
+  processor, and Watermill/RabbitMQ `SubscribeWithOptions` integration)
+  have merged; items 4 (JetStream concurrent mode) and 5 (optional
+  `ants/v2` adapter) remain open follow-up work.
+
 ## [0.7.0] - 2026-08-03
 
 ### Docs

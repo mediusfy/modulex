@@ -52,7 +52,8 @@ patch, minor, or major change once Modulex reaches v1.
 `golang.org/x/exp/cmd/apidiff`) is already wired into CI
 (`.github/workflows/ci.yml`) and runs on every PR, diffing the working
 tree's exported API against the latest git tag for the core package and
-every adapter sub-package (`chi`, `nats`, `rabbitmq`, `watermill`, `otel`).
+every public sub-package (`app`, `chi`, `nats`, `rabbitmq`, `watermill`,
+`otel`, `workerpool`).
 It is advisory during v0 (reports incompatibilities but does not fail the
 build, per the v0 policy above); it is intended to be run with `-strict`
 once the project reaches v1, at which point an incompatible diff against the
