@@ -261,3 +261,33 @@ func TestExampleContract_IsValid(t *testing.T) {
 		t.Errorf("example contract does not describe this repository's module")
 	}
 }
+
+// TestRootContract_MatchesExample guards against
+// testdata/modulex.agent.example.yaml (loaded by TestExampleContract_IsValid
+// above, and by agentdocs' own tests) silently drifting from the real,
+// canonical modulex.agent.yaml checked in at the repository root: the two
+// files intentionally carry different header comments (see each file's own
+// comment), so this compares parsed Contract values, not raw file bytes.
+func TestRootContract_MatchesExample(t *testing.T) {
+	rootData, err := os.ReadFile("../modulex.agent.yaml")
+	if err != nil {
+		t.Fatalf("reading root modulex.agent.yaml: %v", err)
+	}
+	exampleData, err := os.ReadFile("testdata/modulex.agent.example.yaml")
+	if err != nil {
+		t.Fatalf("reading testdata/modulex.agent.example.yaml: %v", err)
+	}
+
+	var root, example Contract
+	if err := yaml.Unmarshal(rootData, &root); err != nil {
+		t.Fatalf("yaml.Unmarshal(root): %v", err)
+	}
+	if err := yaml.Unmarshal(exampleData, &example); err != nil {
+		t.Fatalf("yaml.Unmarshal(example): %v", err)
+	}
+
+	if !reflect.DeepEqual(root, example) {
+		t.Errorf("modulex.agent.yaml and contract/testdata/modulex.agent.example.yaml have drifted apart; " +
+			"edit the root file and copy the change into testdata, or vice versa, so both stay identical")
+	}
+}

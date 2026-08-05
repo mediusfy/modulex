@@ -1,11 +1,16 @@
-# Mirrors this repository's real, canonical modulex.agent.yaml (checked in
-# at the repository root). This copy exists so contract's own schema tests
-# (TestExampleContract_IsValid) and agentdocs' tests can load a fixture with
-# a plain relative path, without reaching across a package boundary into
-# "../../modulex.agent.yaml". TestRootContract_MatchesExample fails CI if
-# this file's parsed content (comments aside) ever drifts from the root
-# file's — edit the root file and copy the change here, not the other way
-# around.
+# This repository's agent contract, per ADR-0032
+# (docs/adr/adr-0032-agent-first-development-experience.md), P0: "Define and
+# validate the Modulex agent repository contract" (Jira MOD-62). See
+# docs/planning/agent-repository-contract-guide.md for the full schema guide.
+#
+# Read by contract.Contract (contract/contract.go), tools/mcpserver's
+# read_contract tool, and tools/agentcli's `modulex agent generate`/other
+# subcommands. A copy is kept at contract/testdata/modulex.agent.example.yaml
+# for contract's own schema tests (contract_test.go's
+# TestExampleContract_IsValid) and agentdocs' tests to load without a
+# cross-package relative path; contract_test.go's TestRootContract_MatchesExample
+# fails CI if the two ever drift apart, so edit this file and copy the change
+# into testdata, not the other way around.
 #
 # No secret VALUES appear anywhere below — only the NAMES of credentials
 # this repository's workflows need (required_credentials). See

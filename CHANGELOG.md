@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `modulex.agent.yaml` at the repository root: this repository's own
+  ADR-0032 agent contract, promoted from
+  `contract/testdata/modulex.agent.example.yaml` (which remains as a
+  schema-test fixture, now kept in sync with the root file by a new
+  `contract.TestRootContract_MatchesExample` drift guard). Previously
+  `contract`'s `read_contract` and `tools/agentcli` (once it exists) had
+  nothing to read for this repository itself.
+- `scripts/install-codegraph-hooks.sh`: installs `post-commit`,
+  `post-checkout`, `post-merge`, and `post-rewrite` git hooks that run
+  `codegraph sync`, per `AGENTS.md`'s "Keeping CodeGraph in sync" section —
+  which referenced this script's path before the script existed.
+  Idempotent (safe to re-run) and never overwrites a hook file that already
+  has other content; it prints the line to add by hand in that case instead.
 - New `workerpool` package (`workerpool.New`, `workerpool.Processor`):
   a small, technology-neutral bounded worker pool — fixed worker count,
   bounded waiting queue, panic recovery, and accept/complete/fail/reject
