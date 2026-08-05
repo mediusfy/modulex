@@ -63,6 +63,17 @@ type EventBus struct {
 	// unblocked by its own ctx instead of hanging until the lock holder's
 	// (potentially stalled) broker RPC returns.
 	consumeMu chan struct{}
+
+	// qosOwnedByPool records that a SubscribeWithOptions call has changed
+	// this channel's per-consumer prefetch default (Channel.Qos with
+	// global=false applies to every consumer created after the call, not
+	// just the one immediately following it, and there is no API to read a
+	// channel's current Qos value back in order to restore it). Once set,
+	// a later plain Subscribe on this EventBus is rejected instead of
+	// silently creating a consumer bound by the pool's prefetch: only
+	// accessed while holding consumeMu, alongside the Qos/Consume pair it
+	// guards.
+	qosOwnedByPool bool
 }
 
 // Option configures an EventBus during construction.
@@ -133,6 +144,14 @@ func (r *EventBus) Publish(ctx context.Context, topic string, payload []byte) er
 // failing handler would otherwise redeliver the same message forever; this
 // matches the acknowledge-and-log policy used by the other EventBus adapters
 // in this module (see watermill.EventBus.Subscribe).
+//
+// Subscribe fails if SubscribeWithOptions has already been called on this
+// EventBus: RabbitMQ's per-consumer Qos default is scoped to the whole
+// channel and stays changed for every consumer created afterward, so a
+// plain consumer created after a pooled one would silently inherit the
+// pool's prefetch instead of the channel's original value. Use a dedicated
+// *amqp.Channel (and EventBus) for plain subscriptions made after any
+// SubscribeWithOptions call.
 func (r *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.EventHandler) error {
 	return r.subscribe(ctx, topic, handler, nil, 0)
 }
@@ -141,6 +160,11 @@ func (r *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 // prefetch is set to Workers plus QueueCapacity, messages are acknowledged or
 // nacked only after their handler completes, and processing order is not
 // guaranteed when Workers is greater than one.
+//
+// Calling SubscribeWithOptions changes this channel's default prefetch for
+// every consumer created afterward, for the rest of this EventBus's
+// lifetime; see Subscribe's doc comment for why a plain Subscribe call made
+// after this one is rejected.
 func (r *EventBus) SubscribeWithOptions(ctx context.Context, topic string, handler modulex.EventHandler, options workerpool.Options) error {
 	if handler == nil {
 		return fmt.Errorf("failed to subscribe to queue %q: handler must not be nil", topic)
@@ -167,8 +191,12 @@ func (r *EventBus) SubscribeWithOptions(ctx context.Context, topic string, handl
 // Subscribe) leaves the channel's existing prefetch untouched entirely,
 // since the channel may be shared with code outside this EventBus that
 // depends on its own Qos setting (see NewEventBus's doc comment) and plain
-// Subscribe must not silently override it. See consumeMu's doc comment for
-// why the Qos call, when made, must happen atomically with Consume.
+// Subscribe must not silently override it. If prefetch is 0 but a prior
+// call with prefetch > 0 already changed the channel's default (see
+// qosOwnedByPool), startConsumer rejects the call instead of silently
+// creating a consumer bound by that leaked prefetch. See consumeMu's doc
+// comment for why the Qos call, when made, must happen atomically with
+// Consume.
 func (r *EventBus) subscribe(ctx context.Context, topic string, handler modulex.EventHandler, processor *workerpool.Processor, prefetch int) error {
 	if handler == nil {
 		return fmt.Errorf("failed to subscribe to queue %q: handler must not be nil", topic)
@@ -225,12 +253,13 @@ func (r *EventBus) startConsumer(ctx context.Context, topic string, prefetch int
 
 	// Qos and Consume must be applied atomically with respect to other
 	// Subscribe/SubscribeWithOptions calls on this shared channel: Qos with
-	// global=false takes effect for consumers created after the call, so an
-	// interleaved Qos call from another goroutine here would leak its
-	// prefetch onto this consumer (or vice versa). consumeMu is acquired via
-	// select so a caller's ctx can still interrupt the wait instead of
-	// blocking forever behind a stalled Qos/Consume broker round trip held
-	// by another goroutine.
+	// global=false takes effect for every consumer created after the call
+	// (not only the one immediately following it), so an interleaved Qos
+	// call from another goroutine here would leak its prefetch onto this
+	// consumer (or vice versa). consumeMu is acquired via select so a
+	// caller's ctx can still interrupt the wait instead of blocking forever
+	// behind a stalled Qos/Consume broker round trip held by another
+	// goroutine.
 	select {
 	case r.consumeMu <- struct{}{}:
 	case <-ctx.Done():
@@ -242,6 +271,18 @@ func (r *EventBus) startConsumer(ctx context.Context, topic string, prefetch int
 		if err := r.ch.Qos(prefetch, 0, false); err != nil {
 			return "", nil, fmt.Errorf("failed to configure prefetch for queue %q: %w", topic, err)
 		}
+		// Recorded only on success: this Qos call has now changed the
+		// channel's default prefetch for every consumer created after it,
+		// for the remaining lifetime of this EventBus. There is no way to
+		// read the prior value back in order to restore it once this
+		// subscription stops, so the leaked default is treated as
+		// permanent for this channel.
+		r.qosOwnedByPool = true
+	} else if r.qosOwnedByPool {
+		return "", nil, fmt.Errorf("failed to consume queue %q: a SubscribeWithOptions call has already changed this "+
+			"channel's default prefetch; a plain Subscribe consumer created now would silently inherit it instead of "+
+			"the channel's original prefetch. Use a dedicated *amqp.Channel for plain Subscribe calls made after "+
+			"SubscribeWithOptions on this EventBus", topic)
 	}
 
 	msgs, err := r.ch.Consume(

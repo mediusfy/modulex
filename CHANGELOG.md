@@ -69,6 +69,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the implemented behavior but was undocumented, so a hook written
   assuming full startup could be surprised by running against
   uninitialized state.
+- `rabbitmq.EventBus.Subscribe` no longer silently inherits a prefetch
+  leaked by an earlier `SubscribeWithOptions` call on the same channel.
+  `Channel.Qos` with `global=false` changes the channel's default prefetch
+  for every consumer created afterward, not only the one immediately
+  following the call, and there is no API to read a channel's current Qos
+  value back in order to restore it once a pooled subscription no longer
+  needs it. A plain `Subscribe` call made after `SubscribeWithOptions` on
+  the same `EventBus` now fails immediately, before touching the channel,
+  instead of creating a consumer silently bound by the pool's prefetch.
 
 ## [0.7.0] - 2026-08-03
 

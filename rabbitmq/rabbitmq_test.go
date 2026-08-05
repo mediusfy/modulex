@@ -145,6 +145,30 @@ collect:
 		"prefetch set by code sharing the channel must survive a plain EventBus.Subscribe call")
 }
 
+// TestEventBus_PlainSubscribeAfterSubscribeWithOptionsIsRejected locks in the
+// fix for a plain Subscribe call silently inheriting a prior
+// SubscribeWithOptions call's prefetch: Channel.Qos with global=false
+// changes the channel's default for every consumer created afterward (not
+// only the one immediately following it), and there is no way to read that
+// value back to restore it once the pooled subscription no longer needs it.
+// A plain Subscribe made on the same EventBus after a pooled one must
+// therefore fail instead of silently creating an under- or over-bounded
+// consumer.
+func TestEventBus_PlainSubscribeAfterSubscribeWithOptionsIsRejected(t *testing.T) {
+	_, ch := connectRabbitMQ(t)
+	eb := rabbitadapter.NewEventBus(ch)
+	defer func() { _ = eb.Close(context.Background()) }()
+
+	pooledQueue := fmt.Sprintf("test.queue.%d", time.Now().UnixNano())
+	require.NoError(t, eb.SubscribeWithOptions(context.Background(), pooledQueue,
+		func(context.Context, []byte) error { return nil },
+		workerpool.Options{Workers: 2, QueueCapacity: 2}))
+
+	plainQueue := fmt.Sprintf("test.queue.%d", time.Now().UnixNano())
+	err := eb.Subscribe(context.Background(), plainQueue, func(context.Context, []byte) error { return nil })
+	assert.ErrorContains(t, err, "SubscribeWithOptions")
+}
+
 func TestEventBus_RejectsInvalidWorkerOptionsBeforeUsingChannel(t *testing.T) {
 	eb := rabbitadapter.NewEventBus(nil)
 	err := eb.SubscribeWithOptions(context.Background(), "queue", func(context.Context, []byte) error { return nil }, workerpool.Options{})
