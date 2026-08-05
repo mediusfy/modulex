@@ -2,6 +2,7 @@ package app_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"sync"
@@ -27,6 +28,7 @@ type recordingModule struct {
 	deps      []string
 	stopDelay time.Duration
 	onInit    func(reg modulex.Registry)
+	initErr   error
 	startedCh chan struct{}
 
 	mu     sync.Mutex
@@ -41,7 +43,7 @@ func (m *recordingModule) Init(_ context.Context, reg modulex.Registry) error {
 	if m.onInit != nil {
 		m.onInit(reg)
 	}
-	return nil
+	return m.initErr
 }
 
 func (m *recordingModule) Start(context.Context) error {
@@ -207,6 +209,138 @@ func TestRun_SetupHookRunsBeforeInit(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for Run to return")
 	}
+}
+
+func TestRun_PreStopAndPostStopHooksRunAroundStopModules(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mod := &recordingModule{name: "mod-a", startedCh: make(chan struct{})}
+
+	var mu sync.Mutex
+	var order []string
+	record := func(name string) func(context.Context) error {
+		return func(context.Context) error {
+			mu.Lock()
+			order = append(order, name)
+			mu.Unlock()
+			return nil
+		}
+	}
+
+	runErr := make(chan error, 1)
+	go func() {
+		runErr <- app.Run(newTestLogger(), nil, []modulex.Module{mod},
+			app.WithContext(ctx),
+			app.WithPreStop(record("pre-1")),
+			app.WithPreStop(record("pre-2")),
+			app.WithPostStop(record("post-1")),
+			app.WithPostStop(record("post-2")),
+		)
+	}()
+
+	select {
+	case <-mod.startedCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for module to start")
+	}
+
+	cancel()
+
+	select {
+	case err := <-runErr:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Run to return")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, []string{"pre-1", "pre-2", "post-1", "post-2"}, order)
+}
+
+func TestRun_PostStopHookRunsEvenWhenPreStopAndStopModulesFail(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mod := &recordingModule{
+		name:      "slow-stop",
+		startedCh: make(chan struct{}),
+		stopDelay: 2 * time.Second,
+	}
+
+	preStopErr := errors.New("pre-stop boom")
+	postStopRan := make(chan struct{})
+
+	runErr := make(chan error, 1)
+	go func() {
+		runErr <- app.Run(newTestLogger(), nil, []modulex.Module{mod},
+			app.WithContext(ctx),
+			app.WithShutdownTimeout(100*time.Millisecond),
+			app.WithPreStop(func(context.Context) error {
+				return preStopErr
+			}),
+			app.WithPostStop(func(context.Context) error {
+				close(postStopRan)
+				return nil
+			}),
+		)
+	}()
+
+	select {
+	case <-mod.startedCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for module to start")
+	}
+
+	cancel()
+
+	select {
+	case <-postStopRan:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for post-stop hook to run")
+	}
+
+	select {
+	case err := <-runErr:
+		require.Error(t, err)
+		assert.ErrorIs(t, err, preStopErr)
+		assert.ErrorIs(t, err, context.DeadlineExceeded)
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for Run to return")
+	}
+}
+
+// TestRun_PreStopAndPostStopHooksRunOnInitFailure locks in the documented
+// (see WithPreStop/WithPostStop) but easy-to-miss behavior that hooks also
+// run on the early-exit cleanup path when InitModules fails, not just on a
+// normal shutdown after the application fully started.
+func TestRun_PreStopAndPostStopHooksRunOnInitFailure(t *testing.T) {
+	initErr := errors.New("init boom")
+	mod := &recordingModule{name: "failing-init", initErr: initErr}
+
+	var mu sync.Mutex
+	var order []string
+	record := func(name string) func(context.Context) error {
+		return func(context.Context) error {
+			mu.Lock()
+			order = append(order, name)
+			mu.Unlock()
+			return nil
+		}
+	}
+
+	err := app.Run(newTestLogger(), nil, []modulex.Module{mod},
+		app.WithPreStop(record("pre")),
+		app.WithPostStop(record("post")),
+	)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, initErr)
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, []string{"pre", "post"}, order)
 }
 
 func TestRun_ShutdownTimeout(t *testing.T) {

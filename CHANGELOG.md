@@ -7,6 +7,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- New `workerpool` package (`workerpool.New`, `workerpool.Processor`):
+  a small, technology-neutral bounded worker pool — fixed worker count,
+  bounded waiting queue, panic recovery, and accept/complete/fail/reject
+  counters via `Stats`. Implements ADR-0034's bounded-processor contract.
+- `watermill.EventBus.SubscribeWithOptions` and
+  `rabbitmq.EventBus.SubscribeWithOptions`: opt-in bounded concurrent
+  message processing backed by `workerpool`. Default `Subscribe` behavior
+  (one handler at a time, existing ack/ordering semantics) is unchanged;
+  concurrency is opt-in only, per ADR-0034. RabbitMQ's prefetch is set to
+  `Workers + QueueCapacity` to bound broker-side deliveries consistently
+  with the pool's own capacity. Messages are acknowledged, nacked, or (for
+  Watermill) nacked-for-redelivery only after the submitted handler
+  completes or the pool rejects the message outright — a message is never
+  left unresolved.
+- Benchmarks for ADR-0034's item 1 ("Add benchmarks... before adding
+  pooling or allocation optimizations"): `workerpool_bench_test.go`
+  (JSON decode/encode baseline, `Processor.Submit`+`Wait` latency, and
+  throughput at several worker counts), plus an adapter-level current-path
+  vs `SubscribeWithOptions`-throughput comparison for Watermill and
+  RabbitMQ (`watermill_bench_test.go`, `rabbitmq_bench_test.go`) and a
+  current-path baseline for core NATS (`nats_bench_test.go`, which per
+  ADR-0034 rule 4 does not get a `SubscribeWithOptions` — core NATS has no
+  broker ack/retry semantics for a pool to sit in front of). On a local
+  run, `Processor.Submit`+`Wait` overhead for a no-op task (~310ns,
+  workers=1) is small relative to decoding a representative ~250-byte
+  payload (~1.7µs) — pool overhead is not the bottleneck this workload's
+  JSON handling is, matching ADR-0034's assumption. `ants/v2` is not added
+  by this change; ADR-0034 gates that on these benchmarks justifying it,
+  which is a separate follow-up decision.
+
+- `app.WithPreStop`/`app.WithPostStop`: hooks that run immediately before
+  and after `modulex.Manager.StopModules` inside `app.Run`, sharing its
+  shutdown-timeout context. Addresses real feedback from Badger's `v0.7.0`
+  adoption review: `cmd/server`'s shutdown is a three-step
+  `app.Shutdown` → `StopModules` → `tracer.Shutdown` sequence that
+  `app.Run` previously had no way to express, since it only ever called
+  `StopModules` with no hook points around it. `WithPostStop` hooks run
+  even if `StopModules` or an earlier hook errored, so cleanup like
+  shutting down a tracer provider is never skipped; all hook and
+  `StopModules` errors are joined into `Run`'s returned error.
+
+### Fixed
+
+- `rabbitmq.EventBus.Subscribe`/`SubscribeWithOptions` waiting on the
+  internal Qos+Consume lock no longer ignores the caller's `ctx`: if
+  another subscription's Qos/Consume broker round trip stalls while
+  holding the lock, a concurrent `Subscribe` call now returns `ctx.Err()`
+  instead of blocking forever.
+- `rabbitmq.EventBus.Subscribe` (the plain, non-pooled path) no longer
+  calls `Qos` on the underlying channel at all, so it can no longer reset
+  a prefetch value set by code sharing that channel outside the EventBus
+  (see `NewEventBus`'s doc comment on channel sharing). Only
+  `SubscribeWithOptions` configures Qos now, since only it needs a bounded
+  prefetch.
+- `app.WithPreStop`/`app.WithPostStop` doc comments now state explicitly
+  that hooks also run on the early-exit cleanup path when `InitModules` or
+  `StartModules` fails, not only after a full startup — this was already
+  the implemented behavior but was undocumented, so a hook written
+  assuming full startup could be surprised by running against
+  uninitialized state.
+- `rabbitmq.EventBus.Subscribe` no longer silently inherits a prefetch
+  leaked by an earlier `SubscribeWithOptions` call on the same channel.
+  `Channel.Qos` with `global=false` changes the channel's default prefetch
+  for every consumer created afterward, not only the one immediately
+  following the call, and there is no API to read a channel's current Qos
+  value back in order to restore it once a pooled subscription no longer
+  needs it. A plain `Subscribe` call made after `SubscribeWithOptions` on
+  the same `EventBus` now fails immediately, before touching the channel,
+  instead of creating a consumer silently bound by the pool's prefetch.
+
 ## [0.7.0] - 2026-08-03
 
 ### Docs

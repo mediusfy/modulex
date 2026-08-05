@@ -17,6 +17,7 @@ import (
 	"github.com/mediusfy/modulex"
 	"github.com/mediusfy/modulex/internal/eventbustest"
 	rabbitadapter "github.com/mediusfy/modulex/rabbitmq"
+	"github.com/mediusfy/modulex/workerpool"
 )
 
 func TestMain(m *testing.M) {
@@ -33,9 +34,9 @@ func rabbitMQURL() string {
 	return "amqp://guest:guest@localhost:5672/"
 }
 
-// connectRabbitMQ attempts to connect to RabbitMQ. Tests that require a live
-// broker call this and skip when it returns an error.
-func connectRabbitMQ(t *testing.T) (*amqp.Connection, *amqp.Channel) {
+// connectRabbitMQ attempts to connect to RabbitMQ. Tests and benchmarks that
+// require a live broker call this and skip when it returns an error.
+func connectRabbitMQ(t testing.TB) (*amqp.Connection, *amqp.Channel) {
 	t.Helper()
 
 	conn, err := amqp.Dial(rabbitMQURL())
@@ -100,6 +101,78 @@ func TestEventBus_RejectsSubscriptionsAfterClose(t *testing.T) {
 
 	err := eb.Subscribe(context.Background(), "queue", func(context.Context, []byte) error { return nil })
 	assert.ErrorContains(t, err, "event bus is closed")
+}
+
+// TestEventBus_PlainSubscribeDoesNotChangeSharedChannelQos locks in the fix
+// for plain Subscribe silently resetting Qos on a channel shared with code
+// outside the EventBus (see NewEventBus's doc comment on channel sharing):
+// a Qos value set before Subscribe is called must still be in effect for
+// consumers created directly on the channel afterward.
+func TestEventBus_PlainSubscribeDoesNotChangeSharedChannelQos(t *testing.T) {
+	_, ch := connectRabbitMQ(t)
+
+	require.NoError(t, ch.Qos(1, 0, false))
+
+	eb := rabbitadapter.NewEventBus(ch)
+	subQueue := fmt.Sprintf("test.queue.%d", time.Now().UnixNano())
+	require.NoError(t, eb.Subscribe(context.Background(), subQueue, func(context.Context, []byte) error { return nil }))
+	require.NoError(t, eb.Close(context.Background()))
+
+	probeQueue := fmt.Sprintf("test.queue.%d", time.Now().UnixNano())
+	_, err := ch.QueueDeclare(probeQueue, true, false, false, false, nil)
+	require.NoError(t, err)
+	for i := 0; i < 3; i++ {
+		require.NoError(t, ch.PublishWithContext(context.Background(), "", probeQueue, false, false,
+			amqp.Publishing{Body: []byte("x")}))
+	}
+
+	msgs, err := ch.Consume(probeQueue, "", false, false, false, false, nil)
+	require.NoError(t, err)
+
+	received := 0
+	deadline := time.After(500 * time.Millisecond)
+collect:
+	for {
+		select {
+		case <-msgs:
+			received++
+		case <-deadline:
+			break collect
+		}
+	}
+
+	assert.Equal(t, 1, received,
+		"prefetch set by code sharing the channel must survive a plain EventBus.Subscribe call")
+}
+
+// TestEventBus_PlainSubscribeAfterSubscribeWithOptionsIsRejected locks in the
+// fix for a plain Subscribe call silently inheriting a prior
+// SubscribeWithOptions call's prefetch: Channel.Qos with global=false
+// changes the channel's default for every consumer created afterward (not
+// only the one immediately following it), and there is no way to read that
+// value back to restore it once the pooled subscription no longer needs it.
+// A plain Subscribe made on the same EventBus after a pooled one must
+// therefore fail instead of silently creating an under- or over-bounded
+// consumer.
+func TestEventBus_PlainSubscribeAfterSubscribeWithOptionsIsRejected(t *testing.T) {
+	_, ch := connectRabbitMQ(t)
+	eb := rabbitadapter.NewEventBus(ch)
+	defer func() { _ = eb.Close(context.Background()) }()
+
+	pooledQueue := fmt.Sprintf("test.queue.%d", time.Now().UnixNano())
+	require.NoError(t, eb.SubscribeWithOptions(context.Background(), pooledQueue,
+		func(context.Context, []byte) error { return nil },
+		workerpool.Options{Workers: 2, QueueCapacity: 2}))
+
+	plainQueue := fmt.Sprintf("test.queue.%d", time.Now().UnixNano())
+	err := eb.Subscribe(context.Background(), plainQueue, func(context.Context, []byte) error { return nil })
+	assert.ErrorContains(t, err, "SubscribeWithOptions")
+}
+
+func TestEventBus_RejectsInvalidWorkerOptionsBeforeUsingChannel(t *testing.T) {
+	eb := rabbitadapter.NewEventBus(nil)
+	err := eb.SubscribeWithOptions(context.Background(), "queue", func(context.Context, []byte) error { return nil }, workerpool.Options{})
+	assert.ErrorContains(t, err, "invalid worker options")
 }
 
 func TestEventBus_HandlerErrorIsLogged(t *testing.T) {
