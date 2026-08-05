@@ -50,6 +50,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shutting down a tracer provider is never skipped; all hook and
   `StopModules` errors are joined into `Run`'s returned error.
 
+### Fixed
+
+- `rabbitmq.EventBus.Subscribe`/`SubscribeWithOptions` waiting on the
+  internal Qos+Consume lock no longer ignores the caller's `ctx`: if
+  another subscription's Qos/Consume broker round trip stalls while
+  holding the lock, a concurrent `Subscribe` call now returns `ctx.Err()`
+  instead of blocking forever.
+- `rabbitmq.EventBus.Subscribe` (the plain, non-pooled path) no longer
+  calls `Qos` on the underlying channel at all, so it can no longer reset
+  a prefetch value set by code sharing that channel outside the EventBus
+  (see `NewEventBus`'s doc comment on channel sharing). Only
+  `SubscribeWithOptions` configures Qos now, since only it needs a bounded
+  prefetch.
+- `app.WithPreStop`/`app.WithPostStop` doc comments now state explicitly
+  that hooks also run on the early-exit cleanup path when `InitModules` or
+  `StartModules` fails, not only after a full startup — this was already
+  the implemented behavior but was undocumented, so a hook written
+  assuming full startup could be surprised by running against
+  uninitialized state.
+
 ## [0.7.0] - 2026-08-03
 
 ### Docs

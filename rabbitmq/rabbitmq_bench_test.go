@@ -8,38 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mediusfy/modulex/internal/eventbustest"
 	rabbitadapter "github.com/mediusfy/modulex/rabbitmq"
 	"github.com/mediusfy/modulex/workerpool"
 )
-
-// benchPayload mirrors workerpool's samplePayload so JSON decode cost is
-// comparable across packages' benchmarks.
-type benchPayload struct {
-	ID        string            `json:"id"`
-	Type      string            `json:"type"`
-	Timestamp int64             `json:"timestamp"`
-	Attempt   int               `json:"attempt"`
-	Metadata  map[string]string `json:"metadata"`
-}
-
-func newBenchPayload(b *testing.B) []byte {
-	b.Helper()
-	data, err := json.Marshal(benchPayload{
-		ID:        "01J8Z9K2N4Q7R8S9T0V1W2X3Y4",
-		Type:      "order.created",
-		Timestamp: 1735689600,
-		Attempt:   1,
-		Metadata: map[string]string{
-			"tenant": "acme-corp",
-			"region": "us-east-1",
-			"source": "checkout-service",
-		},
-	})
-	if err != nil {
-		b.Fatal(err)
-	}
-	return data
-}
 
 func newBenchQueue() string {
 	return fmt.Sprintf("bench.queue.%d", time.Now().UnixNano())
@@ -49,14 +21,14 @@ func newBenchQueue() string {
 // adapter delivery path: one handler invocation, and one ack, at a time.
 func BenchmarkEventBus_Subscribe_Sequential(b *testing.B) {
 	_, ch := connectRabbitMQ(b)
-	payload := newBenchPayload(b)
+	payload := eventbustest.NewBenchPayloadJSON(b)
 	bus := rabbitadapter.NewEventBus(ch)
 	defer func() { _ = bus.Close(context.Background()) }()
 
 	var wg sync.WaitGroup
 	queue := newBenchQueue()
 	if err := bus.Subscribe(context.Background(), queue, func(context.Context, []byte) error {
-		var out benchPayload
+		var out eventbustest.BenchPayload
 		err := json.Unmarshal(payload, &out)
 		wg.Done()
 		return err
@@ -83,14 +55,14 @@ func BenchmarkEventBus_SubscribeWithOptions_Throughput(b *testing.B) {
 	for _, workers := range []int{2, 8, 32} {
 		b.Run(fmt.Sprintf("workers=%d", workers), func(b *testing.B) {
 			_, ch := connectRabbitMQ(b)
-			payload := newBenchPayload(b)
+			payload := eventbustest.NewBenchPayloadJSON(b)
 			bus := rabbitadapter.NewEventBus(ch)
 			defer func() { _ = bus.Close(context.Background()) }()
 
 			var wg sync.WaitGroup
 			queue := newBenchQueue()
 			err := bus.SubscribeWithOptions(context.Background(), queue, func(context.Context, []byte) error {
-				var out benchPayload
+				var out eventbustest.BenchPayload
 				err := json.Unmarshal(payload, &out)
 				wg.Done()
 				return err

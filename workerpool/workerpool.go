@@ -70,11 +70,19 @@ type Processor struct {
 	workers int
 	tasks   chan task
 
-	mu     sync.RWMutex
-	closed bool
-	wg     sync.WaitGroup
+	// mu guards only closed and starting the shutdown sequence exactly once;
+	// it is never held across a blocking operation. inFlight tracks Submit
+	// calls currently attempting to enqueue work, so Close can safely close
+	// tasks only once none remain (avoiding a send on a closed channel)
+	// without making Submit hold a lock across its blocking select.
+	mu       sync.Mutex
+	closed   bool
+	closing  chan struct{} // closed once, to release any blocked Submit calls
+	inFlight sync.WaitGroup
+	done     chan struct{} // closed once fully drained
 
-	queued    atomic.Int64
+	wg sync.WaitGroup
+
 	running   atomic.Int64
 	accepted  atomic.Uint64
 	completed atomic.Uint64
@@ -94,6 +102,8 @@ func New(options Options) (*Processor, error) {
 	p := &Processor{
 		workers: options.Workers,
 		tasks:   make(chan task, options.QueueCapacity),
+		closing: make(chan struct{}),
+		done:    make(chan struct{}),
 	}
 	p.wg.Add(options.Workers)
 	for i := 0; i < options.Workers; i++ {
@@ -114,25 +124,29 @@ func (p *Processor) Submit(ctx context.Context, fn Task) (*Handle, error) {
 		return nil, err
 	}
 
-	h := &Handle{done: make(chan error, 1)}
-	t := task{ctx: ctx, fn: fn, result: h}
-
-	p.mu.RLock()
+	p.mu.Lock()
 	if p.closed {
-		p.mu.RUnlock()
+		p.mu.Unlock()
 		p.rejected.Add(1)
 		return nil, ErrClosed
 	}
+	p.inFlight.Add(1)
+	p.mu.Unlock()
+	defer p.inFlight.Done()
+
+	h := &Handle{done: make(chan error, 1)}
+	t := task{ctx: ctx, fn: fn, result: h}
+
 	select {
 	case p.tasks <- t:
-		p.queued.Add(1)
 		p.accepted.Add(1)
-		p.mu.RUnlock()
 		return h, nil
 	case <-ctx.Done():
-		p.mu.RUnlock()
 		p.rejected.Add(1)
 		return nil, ctx.Err()
+	case <-p.closing:
+		p.rejected.Add(1)
+		return nil, ErrClosed
 	}
 }
 
@@ -143,18 +157,24 @@ func (p *Processor) Close(ctx context.Context) error {
 	p.mu.Lock()
 	if !p.closed {
 		p.closed = true
-		close(p.tasks)
+		close(p.closing)
+		go func() {
+			// No Submit call can still be trying to send on p.tasks once
+			// inFlight reaches zero: closed is already true, so no new
+			// Submit can join inFlight, and every Submit already in flight
+			// is guaranteed to observe either p.tasks or p.closing and
+			// return. It is therefore safe to close p.tasks here without
+			// racing a concurrent send.
+			p.inFlight.Wait()
+			close(p.tasks)
+			p.wg.Wait()
+			close(p.done)
+		}()
 	}
 	p.mu.Unlock()
 
-	done := make(chan struct{})
-	go func() {
-		p.wg.Wait()
-		close(done)
-	}()
-
 	select {
-	case <-done:
+	case <-p.done:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
@@ -165,7 +185,7 @@ func (p *Processor) Close(ctx context.Context) error {
 func (p *Processor) Stats() Stats {
 	return Stats{
 		Workers:   p.workers,
-		Queued:    int(p.queued.Load()),
+		Queued:    len(p.tasks),
 		Running:   int(p.running.Load()),
 		Accepted:  p.accepted.Load(),
 		Completed: p.completed.Load(),
@@ -177,7 +197,6 @@ func (p *Processor) Stats() Stats {
 func (p *Processor) worker() {
 	defer p.wg.Done()
 	for t := range p.tasks {
-		p.queued.Add(-1)
 		p.running.Add(1)
 		err := runTask(t.ctx, t.fn)
 		p.running.Add(-1)

@@ -30,13 +30,6 @@ type subscription struct {
 	processor *workerpool.Processor
 }
 
-// SubscribeOptions enables bounded concurrent handler processing. The zero
-// value is not valid; use Subscribe for the existing sequential behavior.
-type SubscribeOptions struct {
-	Workers       int
-	QueueCapacity int
-}
-
 // NewEventBus creates a configured in-memory Channel PubSub.
 func NewEventBus(bufferSize int64, persistent bool, debug bool) *EventBus {
 	logger := watermill.NewStdLogger(debug, debug)
@@ -80,17 +73,14 @@ func (w *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 // errors retain Watermill's existing acknowledge-and-log policy. Messages are
 // acknowledged only after the handler returns. Processing order is not
 // guaranteed when Workers is greater than one.
-func (w *EventBus) SubscribeWithOptions(ctx context.Context, topic string, handler modulex.EventHandler, options SubscribeOptions) error {
+func (w *EventBus) SubscribeWithOptions(ctx context.Context, topic string, handler modulex.EventHandler, options workerpool.Options) error {
 	if handler == nil {
 		return fmt.Errorf("watermill subscription failed: handler must not be nil")
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	processor, err := workerpool.New(workerpool.Options{
-		Workers:       options.Workers,
-		QueueCapacity: options.QueueCapacity,
-	})
+	processor, err := workerpool.New(options)
 	if err != nil {
 		return fmt.Errorf("watermill subscription failed: invalid worker options: %w", err)
 	}
@@ -155,13 +145,29 @@ func (w *EventBus) subscribe(ctx context.Context, topic string, handler modulex.
 					continue
 				}
 
-				_, err := processor.Submit(msg.Context(), func(taskCtx context.Context) error {
-					err := handler(taskCtx, msg.Payload)
-					if err != nil {
-						w.logger.Error("handler error, message acknowledged to prevent redelivery", err, nil)
-					}
-					msg.Ack()
-					return err
+				// subCtx, not msg.Context(), is submitted here so that a
+				// Submit call blocked waiting for pool capacity is released
+				// by EventBus.Close() (which cancels subCtx): msg.Context()
+				// is derived from gochannel's own subscription context, not
+				// from subCtx, and may never be cancelled by Close().
+				_, err := processor.Submit(subCtx, func(context.Context) (herr error) {
+					// This defer guarantees msg.Ack() always runs, even if
+					// handler panics: workerpool.runTask's own recover
+					// happens after this closure has already unwound, which
+					// would otherwise leave msg permanently unresolved. The
+					// panic is re-thrown after acking so workerpool still
+					// records it as a failed task via its own recovery.
+					defer func() {
+						if p := recover(); p != nil {
+							msg.Ack()
+							panic(p)
+						}
+						if herr != nil {
+							w.logger.Error("handler error, message acknowledged to prevent redelivery", herr, nil)
+						}
+						msg.Ack()
+					}()
+					return handler(msg.Context(), msg.Payload)
 				})
 				if err != nil {
 					w.logger.Error("worker pool rejected message, nacking for redelivery", err, nil)

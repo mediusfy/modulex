@@ -28,6 +28,7 @@ type recordingModule struct {
 	deps      []string
 	stopDelay time.Duration
 	onInit    func(reg modulex.Registry)
+	initErr   error
 	startedCh chan struct{}
 
 	mu     sync.Mutex
@@ -42,7 +43,7 @@ func (m *recordingModule) Init(_ context.Context, reg modulex.Registry) error {
 	if m.onInit != nil {
 		m.onInit(reg)
 	}
-	return nil
+	return m.initErr
 }
 
 func (m *recordingModule) Start(context.Context) error {
@@ -308,6 +309,38 @@ func TestRun_PostStopHookRunsEvenWhenPreStopAndStopModulesFail(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for Run to return")
 	}
+}
+
+// TestRun_PreStopAndPostStopHooksRunOnInitFailure locks in the documented
+// (see WithPreStop/WithPostStop) but easy-to-miss behavior that hooks also
+// run on the early-exit cleanup path when InitModules fails, not just on a
+// normal shutdown after the application fully started.
+func TestRun_PreStopAndPostStopHooksRunOnInitFailure(t *testing.T) {
+	initErr := errors.New("init boom")
+	mod := &recordingModule{name: "failing-init", initErr: initErr}
+
+	var mu sync.Mutex
+	var order []string
+	record := func(name string) func(context.Context) error {
+		return func(context.Context) error {
+			mu.Lock()
+			order = append(order, name)
+			mu.Unlock()
+			return nil
+		}
+	}
+
+	err := app.Run(newTestLogger(), nil, []modulex.Module{mod},
+		app.WithPreStop(record("pre")),
+		app.WithPostStop(record("post")),
+	)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, initErr)
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, []string{"pre", "post"}, order)
 }
 
 func TestRun_ShutdownTimeout(t *testing.T) {

@@ -6,33 +6,9 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/mediusfy/modulex/internal/eventbustest"
 	"github.com/mediusfy/modulex/workerpool"
 )
-
-// samplePayload is representative of a small event/message body: a handful
-// of scalar fields plus one nested object, comparable in size to typical
-// modulex EventBus payloads (~150-250 bytes encoded).
-type samplePayload struct {
-	ID        string            `json:"id"`
-	Type      string            `json:"type"`
-	Timestamp int64             `json:"timestamp"`
-	Attempt   int               `json:"attempt"`
-	Metadata  map[string]string `json:"metadata"`
-}
-
-func newSamplePayload() samplePayload {
-	return samplePayload{
-		ID:        "01J8Z9K2N4Q7R8S9T0V1W2X3Y4",
-		Type:      "order.created",
-		Timestamp: 1735689600,
-		Attempt:   1,
-		Metadata: map[string]string{
-			"tenant": "acme-corp",
-			"region": "us-east-1",
-			"source": "checkout-service",
-		},
-	}
-}
 
 // BenchmarkJSONDecode measures the cost of decoding one message payload in
 // isolation, as a baseline for comparing against Processor.Submit's own
@@ -40,7 +16,7 @@ func newSamplePayload() samplePayload {
 // requires this comparison before any allocation optimization (sync.Pool,
 // etc.) is justified.
 func BenchmarkJSONDecode(b *testing.B) {
-	payload := newSamplePayload()
+	payload := eventbustest.NewBenchPayload()
 	data, err := json.Marshal(payload)
 	if err != nil {
 		b.Fatal(err)
@@ -49,7 +25,7 @@ func BenchmarkJSONDecode(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		var out samplePayload
+		var out eventbustest.BenchPayload
 		if err := json.Unmarshal(data, &out); err != nil {
 			b.Fatal(err)
 		}
@@ -59,7 +35,7 @@ func BenchmarkJSONDecode(b *testing.B) {
 // BenchmarkJSONEncode measures the cost of encoding one message payload in
 // isolation, as a baseline comparable to BenchmarkJSONDecode.
 func BenchmarkJSONEncode(b *testing.B) {
-	payload := newSamplePayload()
+	payload := eventbustest.NewBenchPayload()
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -101,11 +77,11 @@ func BenchmarkProcessor_SubmitWait(b *testing.B) {
 }
 
 // BenchmarkProcessor_SubmitWait_JSONDecode measures Submit+Wait for a task
-// that decodes samplePayload, the realistic per-message unit of work this
+// that decodes eventbustest.BenchPayload, the realistic per-message unit of work this
 // pool is meant to bound. Compare against BenchmarkJSONDecode to see how
 // much of the total cost is pool overhead versus JSON decode itself.
 func BenchmarkProcessor_SubmitWait_JSONDecode(b *testing.B) {
-	data, err := json.Marshal(newSamplePayload())
+	data, err := json.Marshal(eventbustest.NewBenchPayload())
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -120,7 +96,7 @@ func BenchmarkProcessor_SubmitWait_JSONDecode(b *testing.B) {
 
 			ctx := context.Background()
 			task := func(context.Context) error {
-				var out samplePayload
+				var out eventbustest.BenchPayload
 				return json.Unmarshal(data, &out)
 			}
 
@@ -147,7 +123,7 @@ func BenchmarkProcessor_SubmitWait_JSONDecode(b *testing.B) {
 // adapter benchmark should be added alongside this one before ADR-0034's
 // item 5 is decided.
 func BenchmarkProcessor_Throughput(b *testing.B) {
-	data, err := json.Marshal(newSamplePayload())
+	data, err := json.Marshal(eventbustest.NewBenchPayload())
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -162,7 +138,7 @@ func BenchmarkProcessor_Throughput(b *testing.B) {
 
 			ctx := context.Background()
 			task := func(context.Context) error {
-				var out samplePayload
+				var out eventbustest.BenchPayload
 				return json.Unmarshal(data, &out)
 			}
 

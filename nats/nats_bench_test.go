@@ -7,39 +7,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mediusfy/modulex/internal/eventbustest"
 	natsadapter "github.com/mediusfy/modulex/nats"
 	"github.com/nats-io/nats-server/v2/test"
 	"github.com/nats-io/nats.go"
 )
-
-// benchPayload mirrors workerpool's samplePayload so JSON decode cost is
-// comparable across packages' benchmarks.
-type benchPayload struct {
-	ID        string            `json:"id"`
-	Type      string            `json:"type"`
-	Timestamp int64             `json:"timestamp"`
-	Attempt   int               `json:"attempt"`
-	Metadata  map[string]string `json:"metadata"`
-}
-
-func newBenchPayload(b *testing.B) []byte {
-	b.Helper()
-	data, err := json.Marshal(benchPayload{
-		ID:        "01J8Z9K2N4Q7R8S9T0V1W2X3Y4",
-		Type:      "order.created",
-		Timestamp: 1735689600,
-		Attempt:   1,
-		Metadata: map[string]string{
-			"tenant": "acme-corp",
-			"region": "us-east-1",
-			"source": "checkout-service",
-		},
-	})
-	if err != nil {
-		b.Fatal(err)
-	}
-	return data
-}
 
 // BenchmarkEventBus_Subscribe is core NATS's current (and, per ADR-0034
 // rule 4, only) delivery path: core NATS has no broker acknowledgement or
@@ -59,13 +31,13 @@ func BenchmarkEventBus_Subscribe(b *testing.B) {
 	}
 	defer conn.Close()
 
-	payload := newBenchPayload(b)
+	payload := eventbustest.NewBenchPayloadJSON(b)
 	bus := natsadapter.NewEventBus(conn)
 	defer func() { _ = bus.Close(context.Background()) }()
 
 	var wg sync.WaitGroup
 	if err := bus.Subscribe(context.Background(), "bench", func(context.Context, []byte) error {
-		var out benchPayload
+		var out eventbustest.BenchPayload
 		err := json.Unmarshal(payload, &out)
 		wg.Done()
 		return err

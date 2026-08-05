@@ -79,6 +79,11 @@ func WithSetup(fn func(*modulex.Manager) error) Option {
 // sequence around Run. An error does not stop StopModules or any
 // remaining hooks from running; all errors are joined into Run's return
 // value.
+//
+// The hook also runs if InitModules or StartModules fails and Run exits
+// early, since the same pre-stop -> StopModules -> post-stop sequence is
+// used for that cleanup path. The hook must not assume any module or
+// Start-phase state was fully initialized when this happens.
 func WithPreStop(fn func(context.Context) error) Option {
 	return func(o *options) {
 		o.preStop = append(o.preStop, fn)
@@ -91,6 +96,11 @@ func WithPreStop(fn func(context.Context) error) Option {
 // earlier hook returned an error, so cleanup of resources set up outside
 // the Manager (e.g. shutting down a tracer provider) is never skipped. All
 // errors are joined into Run's return value.
+//
+// The hook also runs if InitModules or StartModules fails and Run exits
+// early, since the same pre-stop -> StopModules -> post-stop sequence is
+// used for that cleanup path. The hook must not assume any module or
+// Start-phase state was fully initialized when this happens.
 func WithPostStop(fn func(context.Context) error) Option {
 	return func(o *options) {
 		o.postStop = append(o.postStop, fn)
@@ -145,13 +155,39 @@ func Run(logger *slog.Logger, configLoader func(target interface{}) error, modul
 	ctx, stop := signal.NotifyContext(cfg.ctx(), cfg.signals...)
 	defer stop()
 
-	// Ensure resources are stopped if Init or Start fails midway
+	// runStop drives the shared pre-stop -> StopModules -> post-stop sequence.
+	// It is used both by the normal shutdown path below and by the early-exit
+	// cleanup path if Init or Start fails midway, so WithPostStop hooks (e.g.
+	// shutting down a tracer provider) are never skipped regardless of why
+	// Run is returning.
+	runStop := func() error {
+		stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cfg.shutdownTimeout)
+		defer cancel()
+
+		var errs []error
+		for _, hook := range cfg.preStop {
+			if err := hook(stopCtx); err != nil {
+				errs = append(errs, fmt.Errorf("app: pre-stop hook failed: %w", err))
+			}
+		}
+		if err := mgr.StopModules(stopCtx); err != nil {
+			errs = append(errs, fmt.Errorf("app: stop failed: %w", err))
+		}
+		for _, hook := range cfg.postStop {
+			if err := hook(stopCtx); err != nil {
+				errs = append(errs, fmt.Errorf("app: post-stop hook failed: %w", err))
+			}
+		}
+		return errors.Join(errs...)
+	}
+
+	// Ensure resources are stopped if Init or Start fails midway.
 	var fullyStarted bool
 	defer func() {
 		if !fullyStarted {
-			stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cfg.shutdownTimeout)
-			defer cancel()
-			_ = mgr.StopModules(stopCtx)
+			if err := runStop(); err != nil {
+				logger.Error("cleanup after failed startup encountered errors", slog.Any("error", err))
+			}
 		}
 	}()
 
@@ -168,22 +204,5 @@ func Run(logger *slog.Logger, configLoader func(target interface{}) error, modul
 	<-ctx.Done()
 	logger.Info("shutdown signal received, stopping modules")
 
-	stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cfg.shutdownTimeout)
-	defer cancel()
-
-	var errs []error
-	for _, hook := range cfg.preStop {
-		if err := hook(stopCtx); err != nil {
-			errs = append(errs, fmt.Errorf("app: pre-stop hook failed: %w", err))
-		}
-	}
-	if err := mgr.StopModules(stopCtx); err != nil {
-		errs = append(errs, fmt.Errorf("app: stop failed: %w", err))
-	}
-	for _, hook := range cfg.postStop {
-		if err := hook(stopCtx); err != nil {
-			errs = append(errs, fmt.Errorf("app: post-stop hook failed: %w", err))
-		}
-	}
-	return errors.Join(errs...)
+	return runStop()
 }

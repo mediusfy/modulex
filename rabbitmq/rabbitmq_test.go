@@ -103,6 +103,48 @@ func TestEventBus_RejectsSubscriptionsAfterClose(t *testing.T) {
 	assert.ErrorContains(t, err, "event bus is closed")
 }
 
+// TestEventBus_PlainSubscribeDoesNotChangeSharedChannelQos locks in the fix
+// for plain Subscribe silently resetting Qos on a channel shared with code
+// outside the EventBus (see NewEventBus's doc comment on channel sharing):
+// a Qos value set before Subscribe is called must still be in effect for
+// consumers created directly on the channel afterward.
+func TestEventBus_PlainSubscribeDoesNotChangeSharedChannelQos(t *testing.T) {
+	_, ch := connectRabbitMQ(t)
+
+	require.NoError(t, ch.Qos(1, 0, false))
+
+	eb := rabbitadapter.NewEventBus(ch)
+	subQueue := fmt.Sprintf("test.queue.%d", time.Now().UnixNano())
+	require.NoError(t, eb.Subscribe(context.Background(), subQueue, func(context.Context, []byte) error { return nil }))
+	require.NoError(t, eb.Close(context.Background()))
+
+	probeQueue := fmt.Sprintf("test.queue.%d", time.Now().UnixNano())
+	_, err := ch.QueueDeclare(probeQueue, true, false, false, false, nil)
+	require.NoError(t, err)
+	for i := 0; i < 3; i++ {
+		require.NoError(t, ch.PublishWithContext(context.Background(), "", probeQueue, false, false,
+			amqp.Publishing{Body: []byte("x")}))
+	}
+
+	msgs, err := ch.Consume(probeQueue, "", false, false, false, false, nil)
+	require.NoError(t, err)
+
+	received := 0
+	deadline := time.After(500 * time.Millisecond)
+collect:
+	for {
+		select {
+		case <-msgs:
+			received++
+		case <-deadline:
+			break collect
+		}
+	}
+
+	assert.Equal(t, 1, received,
+		"prefetch set by code sharing the channel must survive a plain EventBus.Subscribe call")
+}
+
 func TestEventBus_RejectsInvalidWorkerOptionsBeforeUsingChannel(t *testing.T) {
 	eb := rabbitadapter.NewEventBus(nil)
 	err := eb.SubscribeWithOptions(context.Background(), "queue", func(context.Context, []byte) error { return nil }, workerpool.Options{})

@@ -53,6 +53,16 @@ type EventBus struct {
 	nextTag int
 	tags    []string
 	cancels []context.CancelFunc // tracks consumer cancellation contexts
+
+	// consumeMu serializes each consumer's Qos+Consume pair on the shared
+	// channel, so a SubscribeWithOptions call's pooled prefetch can never be
+	// interleaved with (and leak onto) a concurrent plain Subscribe call's
+	// consumer, or vice versa. It is a buffered channel used as a
+	// context-cancellable mutex (acquire = send, release = receive) rather
+	// than a sync.Mutex, so a Subscribe call waiting for it can still be
+	// unblocked by its own ctx instead of hanging until the lock holder's
+	// (potentially stalled) broker RPC returns.
+	consumeMu chan struct{}
 }
 
 // Option configures an EventBus during construction.
@@ -76,7 +86,7 @@ func WithLogger(logger *slog.Logger) Option {
 func NewEventBus(ch *amqp.Channel, opts ...Option) *EventBus {
 	stopped := make(chan struct{})
 	close(stopped)
-	r := &EventBus{ch: ch, logger: slog.Default(), stopped: stopped}
+	r := &EventBus{ch: ch, logger: slog.Default(), stopped: stopped, consumeMu: make(chan struct{}, 1)}
 	for _, opt := range opts {
 		opt(r)
 	}
@@ -124,7 +134,7 @@ func (r *EventBus) Publish(ctx context.Context, topic string, payload []byte) er
 // matches the acknowledge-and-log policy used by the other EventBus adapters
 // in this module (see watermill.EventBus.Subscribe).
 func (r *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.EventHandler) error {
-	return r.subscribe(ctx, topic, handler, nil)
+	return r.subscribe(ctx, topic, handler, nil, 0)
 }
 
 // SubscribeWithOptions enables opt-in bounded concurrent processing. RabbitMQ
@@ -145,18 +155,21 @@ func (r *EventBus) SubscribeWithOptions(ctx context.Context, topic string, handl
 	if err != nil {
 		return fmt.Errorf("failed to subscribe to queue %q: invalid worker options: %w", topic, err)
 	}
-	if err := r.ch.Qos(options.Workers+options.QueueCapacity, 0, false); err != nil {
-		_ = processor.Close(context.Background())
-		return fmt.Errorf("failed to configure prefetch for queue %q: %w", topic, err)
-	}
-	if err := r.subscribe(ctx, topic, handler, processor); err != nil {
+	if err := r.subscribe(ctx, topic, handler, processor, options.Workers+options.QueueCapacity); err != nil {
 		_ = processor.Close(context.Background())
 		return err
 	}
 	return nil
 }
 
-func (r *EventBus) subscribe(ctx context.Context, topic string, handler modulex.EventHandler, processor *workerpool.Processor) error {
+// subscribe declares topic and starts consuming it. prefetch configures the
+// channel's Qos immediately before the consumer is created; 0 (used by plain
+// Subscribe) leaves the channel's existing prefetch untouched entirely,
+// since the channel may be shared with code outside this EventBus that
+// depends on its own Qos setting (see NewEventBus's doc comment) and plain
+// Subscribe must not silently override it. See consumeMu's doc comment for
+// why the Qos call, when made, must happen atomically with Consume.
+func (r *EventBus) subscribe(ctx context.Context, topic string, handler modulex.EventHandler, processor *workerpool.Processor, prefetch int) error {
 	if handler == nil {
 		return fmt.Errorf("failed to subscribe to queue %q: handler must not be nil", topic)
 	}
@@ -178,7 +191,7 @@ func (r *EventBus) subscribe(ctx context.Context, topic string, handler modulex.
 		return fmt.Errorf("failed to declare queue %q: %w", topic, err)
 	}
 
-	tag, msgs, err := r.startConsumer(topic)
+	tag, msgs, err := r.startConsumer(ctx, topic, prefetch)
 	if err != nil {
 		return err
 	}
@@ -204,11 +217,32 @@ func (r *EventBus) checkClosed() error {
 	return nil
 }
 
-func (r *EventBus) startConsumer(topic string) (string, <-chan amqp.Delivery, error) {
+func (r *EventBus) startConsumer(ctx context.Context, topic string, prefetch int) (string, <-chan amqp.Delivery, error) {
 	r.mu.Lock()
 	tag := fmt.Sprintf("modulex-consumer-%d", r.nextTag)
 	r.nextTag++
 	r.mu.Unlock()
+
+	// Qos and Consume must be applied atomically with respect to other
+	// Subscribe/SubscribeWithOptions calls on this shared channel: Qos with
+	// global=false takes effect for consumers created after the call, so an
+	// interleaved Qos call from another goroutine here would leak its
+	// prefetch onto this consumer (or vice versa). consumeMu is acquired via
+	// select so a caller's ctx can still interrupt the wait instead of
+	// blocking forever behind a stalled Qos/Consume broker round trip held
+	// by another goroutine.
+	select {
+	case r.consumeMu <- struct{}{}:
+	case <-ctx.Done():
+		return "", nil, ctx.Err()
+	}
+	defer func() { <-r.consumeMu }()
+
+	if prefetch > 0 {
+		if err := r.ch.Qos(prefetch, 0, false); err != nil {
+			return "", nil, fmt.Errorf("failed to configure prefetch for queue %q: %w", topic, err)
+		}
+	}
 
 	msgs, err := r.ch.Consume(
 		topic, // queue
@@ -272,42 +306,68 @@ func (r *EventBus) consumeLoop(ctx context.Context, topic string, handler module
 }
 
 func (r *EventBus) submitDelivery(ctx context.Context, topic string, handler modulex.EventHandler, d amqp.Delivery, processor *workerpool.Processor) {
-	var headers amqp.Table
-	if d.Headers != nil {
-		headers = d.Headers
-	} else {
-		headers = make(amqp.Table)
-	}
-	msgCtx := otel.GetTextMapPropagator().Extract(ctx, amqpHeadersCarrier(headers))
-	_, err := processor.Submit(msgCtx, func(taskCtx context.Context) error {
-		if err := handler(taskCtx, d.Body); err != nil {
-			r.logger.ErrorContext(taskCtx, "handler error, message nacked without requeue",
-				slog.String(logKeyQueue, topic),
-				slog.Any(logKeyError, err),
-			)
-			if nackErr := d.Nack(false, false); nackErr != nil {
-				r.logger.ErrorContext(taskCtx, "failed to nack message",
+	// ctx (the consume loop's subscription-scoped context), not a context
+	// derived from d's headers, is submitted here: header extraction is
+	// deferred to the worker goroutine below so it runs in parallel across
+	// workers instead of serializing on this single consume-loop goroutine.
+	_, err := processor.Submit(ctx, func(taskCtx context.Context) (herr error) {
+		var headers amqp.Table
+		if d.Headers != nil {
+			headers = d.Headers
+		} else {
+			headers = make(amqp.Table)
+		}
+		msgCtx := otel.GetTextMapPropagator().Extract(taskCtx, amqpHeadersCarrier(headers))
+
+		// This defer guarantees the delivery is always resolved (acked or
+		// nacked) exactly once, even if handler panics: workerpool.runTask's
+		// own recover happens after this closure has already unwound, which
+		// would otherwise skip the Ack/Nack below entirely. The panic is
+		// re-thrown after nacking so workerpool still records it as a failed
+		// task via its own panic recovery.
+		defer func() {
+			if p := recover(); p != nil {
+				if nackErr := d.Nack(false, false); nackErr != nil {
+					r.logger.ErrorContext(msgCtx, "failed to nack message after handler panic",
+						slog.String(logKeyQueue, topic),
+						slog.Any(logKeyError, nackErr),
+					)
+				}
+				panic(p)
+			}
+			if herr != nil {
+				r.logger.ErrorContext(msgCtx, "handler error, message nacked without requeue",
 					slog.String(logKeyQueue, topic),
-					slog.Any(logKeyError, nackErr),
+					slog.Any(logKeyError, herr),
+				)
+				if nackErr := d.Nack(false, false); nackErr != nil {
+					r.logger.ErrorContext(msgCtx, "failed to nack message",
+						slog.String(logKeyQueue, topic),
+						slog.Any(logKeyError, nackErr),
+					)
+				}
+				return
+			}
+			if ackErr := d.Ack(false); ackErr != nil {
+				r.logger.ErrorContext(msgCtx, "failed to ack message",
+					slog.String(logKeyQueue, topic),
+					slog.Any(logKeyError, ackErr),
 				)
 			}
-			return err
-		}
-		if ackErr := d.Ack(false); ackErr != nil {
-			r.logger.ErrorContext(taskCtx, "failed to ack message",
-				slog.String(logKeyQueue, topic),
-				slog.Any(logKeyError, ackErr),
-			)
-		}
-		return nil
+		}()
+
+		return handler(msgCtx, d.Body)
 	})
 	if err != nil {
-		r.logger.ErrorContext(msgCtx, "worker pool rejected message",
+		// The handler never ran here (the pool rejected the submission
+		// itself, e.g. because the subscription is shutting down), so the
+		// message is requeued for redelivery rather than dropped.
+		r.logger.ErrorContext(ctx, "worker pool rejected message, requeuing for redelivery",
 			slog.String(logKeyQueue, topic),
 			slog.Any(logKeyError, err),
 		)
-		if nackErr := d.Nack(false, false); nackErr != nil {
-			r.logger.ErrorContext(msgCtx, "failed to nack rejected message",
+		if nackErr := d.Nack(false, true); nackErr != nil {
+			r.logger.ErrorContext(ctx, "failed to nack rejected message",
 				slog.String(logKeyQueue, topic),
 				slog.Any(logKeyError, nackErr),
 			)

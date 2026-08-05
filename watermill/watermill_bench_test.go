@@ -7,37 +7,10 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/mediusfy/modulex/internal/eventbustest"
 	"github.com/mediusfy/modulex/watermill"
+	"github.com/mediusfy/modulex/workerpool"
 )
-
-// benchPayload mirrors workerpool's samplePayload so JSON decode cost is
-// comparable across packages' benchmarks.
-type benchPayload struct {
-	ID        string            `json:"id"`
-	Type      string            `json:"type"`
-	Timestamp int64             `json:"timestamp"`
-	Attempt   int               `json:"attempt"`
-	Metadata  map[string]string `json:"metadata"`
-}
-
-func newBenchPayload(b *testing.B) []byte {
-	b.Helper()
-	data, err := json.Marshal(benchPayload{
-		ID:        "01J8Z9K2N4Q7R8S9T0V1W2X3Y4",
-		Type:      "order.created",
-		Timestamp: 1735689600,
-		Attempt:   1,
-		Metadata: map[string]string{
-			"tenant": "acme-corp",
-			"region": "us-east-1",
-			"source": "checkout-service",
-		},
-	})
-	if err != nil {
-		b.Fatal(err)
-	}
-	return data
-}
 
 // BenchmarkEventBus_Subscribe_Sequential is the default, current adapter
 // delivery path (one handler invocation at a time per subscription),
@@ -45,13 +18,13 @@ func newBenchPayload(b *testing.B) []byte {
 // workers=1 case should roughly match, per ADR-0034's requirement that
 // default behavior remains unchanged.
 func BenchmarkEventBus_Subscribe_Sequential(b *testing.B) {
-	payload := newBenchPayload(b)
+	payload := eventbustest.NewBenchPayloadJSON(b)
 	bus := watermill.NewEventBus(0, false, false)
 	defer func() { _ = bus.Close(context.Background()) }()
 
 	var wg sync.WaitGroup
 	if err := bus.Subscribe(context.Background(), "bench", func(context.Context, []byte) error {
-		var out benchPayload
+		var out eventbustest.BenchPayload
 		err := json.Unmarshal(payload, &out)
 		wg.Done()
 		return err
@@ -77,17 +50,17 @@ func BenchmarkEventBus_Subscribe_Sequential(b *testing.B) {
 func BenchmarkEventBus_SubscribeWithOptions_Throughput(b *testing.B) {
 	for _, workers := range []int{2, 8, 32} {
 		b.Run(fmt.Sprintf("workers=%d", workers), func(b *testing.B) {
-			payload := newBenchPayload(b)
+			payload := eventbustest.NewBenchPayloadJSON(b)
 			bus := watermill.NewEventBus(0, false, false)
 			defer func() { _ = bus.Close(context.Background()) }()
 
 			var wg sync.WaitGroup
 			err := bus.SubscribeWithOptions(context.Background(), "bench", func(context.Context, []byte) error {
-				var out benchPayload
+				var out eventbustest.BenchPayload
 				err := json.Unmarshal(payload, &out)
 				wg.Done()
 				return err
-			}, watermill.SubscribeOptions{Workers: workers, QueueCapacity: workers * 4})
+			}, workerpool.Options{Workers: workers, QueueCapacity: workers * 4})
 			if err != nil {
 				b.Fatal(err)
 			}
