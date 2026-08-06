@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/mediusfy/modulex/provenance"
 )
 
 func TestChangedFiles(t *testing.T) {
@@ -35,50 +37,7 @@ func TestChangedFiles_BadRefReturnsError(t *testing.T) {
 	}
 }
 
-func TestCheckProtectedPaths_NoPatternsPassesTrivially(t *testing.T) {
-	root := newTestRepo(t)
-
-	writeFile(t, root, "go.mod", "module example.com/app\n")
-	runGit(t, root, "add", "go.mod")
-	runGit(t, root, "commit", "--quiet", "-m", "base")
-	runGit(t, root, "branch", "base")
-
-	writeFile(t, root, "go.mod", "module example.com/app\n\nrequire nothing v0.0.0\n")
-	runGit(t, root, "commit", "--quiet", "-am", "touch go.mod")
-
-	result := CheckProtectedPaths(context.Background(), root, "base", "HEAD", nil)
-
-	if result.Status != "pass" {
-		t.Fatalf("Status = %q, want pass (no protected paths declared)", result.Status)
-	}
-}
-
-// TestCheckProtectedPaths_ExactMatchFails uses SECURITY.md, a protected
-// file with no file-scoped exception (unlike go.mod and CHANGELOG.md — see
-// the dedicated tests below), to exercise plain "any change is a hit"
-// matching.
-func TestCheckProtectedPaths_ExactMatchFails(t *testing.T) {
-	root := newTestRepo(t)
-
-	writeFile(t, root, "SECURITY.md", "# Security\n")
-	runGit(t, root, "add", "SECURITY.md")
-	runGit(t, root, "commit", "--quiet", "-m", "base")
-	runGit(t, root, "branch", "base")
-
-	writeFile(t, root, "SECURITY.md", "# Security\n\nReport issues privately.\n")
-	runGit(t, root, "commit", "--quiet", "-am", "touch SECURITY.md")
-
-	result := CheckProtectedPaths(context.Background(), root, "base", "HEAD", []string{"SECURITY.md"})
-
-	if result.Status != "fail" {
-		t.Fatalf("Status = %q, want fail; Message: %s", result.Status, result.Message)
-	}
-	if !strings.Contains(result.Message, "SECURITY.md") {
-		t.Errorf("Message = %q, want it to name SECURITY.md", result.Message)
-	}
-}
-
-// changelogFixture is CHANGELOG.md's real structure, trimmed to what
+// changelogFixtureBase is CHANGELOG.md's real structure, trimmed to what
 // unreleasedSectionRange needs: a preamble, an "## [Unreleased]" section,
 // and one already-released version section after it.
 const changelogFixtureBase = `# Changelog
@@ -96,132 +55,122 @@ const changelogFixtureBase = `# Changelog
 - first release
 `
 
-func TestCheckProtectedPaths_ChangelogAdditionWithinUnreleasedPasses(t *testing.T) {
-	root := newTestRepo(t)
-
-	writeFile(t, root, "CHANGELOG.md", changelogFixtureBase)
-	runGit(t, root, "add", "CHANGELOG.md")
-	runGit(t, root, "commit", "--quiet", "-m", "base")
-	runGit(t, root, "branch", "base")
-
-	updated := strings.Replace(changelogFixtureBase, "- initial entry\n", "- initial entry\n- a new entry, added like the check-changelog gate requires\n", 1)
-	writeFile(t, root, "CHANGELOG.md", updated)
-	runGit(t, root, "commit", "--quiet", "-am", "changelog: document a change")
-
-	result := CheckProtectedPaths(context.Background(), root, "base", "HEAD", []string{"CHANGELOG.md"})
-
-	if result.Status != "pass" {
-		t.Fatalf("Status = %q, want pass (addition stayed within ## [Unreleased]); Message: %s", result.Status, result.Message)
+// TestCheckProtectedPaths_SingleFileScenarios covers every CheckProtectedPaths
+// outcome that a single file, changed once between a "base" commit and HEAD,
+// can exercise — plain file/glob matching, an unrelated change, no
+// protectedPaths declared, and the CHANGELOG.md/go.mod file-scoped
+// exceptions (see protectedpaths.go's "File-scoped exceptions" doc
+// section). Table-driven because every case shares the exact same
+// repo-setup shape (write file, commit as "base", branch "base", rewrite
+// file, commit again, run CheckProtectedPaths base...HEAD) and differs only
+// in the file/content/protectedPaths/expected outcome.
+func TestCheckProtectedPaths_SingleFileScenarios(t *testing.T) {
+	tests := []struct {
+		name           string
+		file           string
+		initial        string
+		updated        string
+		protectedPaths []string
+		wantStatus     provenance.Status
+		wantMessageHas string
+	}{
+		{
+			name:           "exact match on a file with no exception fails",
+			file:           "SECURITY.md",
+			initial:        "# Security\n",
+			updated:        "# Security\n\nReport issues privately.\n",
+			protectedPaths: []string{"SECURITY.md"},
+			wantStatus:     provenance.StatusFail,
+			wantMessageHas: "SECURITY.md",
+		},
+		{
+			name:           "glob match fails",
+			file:           ".github/workflows/ci.yml",
+			initial:        "name: ci\n",
+			updated:        "name: ci\non: push\n",
+			protectedPaths: []string{".github/workflows/*.yml"},
+			wantStatus:     provenance.StatusFail,
+		},
+		{
+			name:           "unrelated change passes",
+			file:           "app.go",
+			initial:        "package app\n",
+			updated:        "package app\n\nfunc Hello() {}\n",
+			protectedPaths: []string{"go.mod", ".github/workflows/*.yml"},
+			wantStatus:     provenance.StatusPass,
+		},
+		{
+			name:           "no protected paths declared passes trivially",
+			file:           "go.mod",
+			initial:        "module example.com/app\n",
+			updated:        "module example.com/app\n\nrequire nothing v0.0.0\n",
+			protectedPaths: nil,
+			wantStatus:     provenance.StatusPass,
+		},
+		{
+			name:    "changelog addition within Unreleased passes",
+			file:    "CHANGELOG.md",
+			initial: changelogFixtureBase,
+			updated: strings.Replace(changelogFixtureBase, "- initial entry\n",
+				"- initial entry\n- a new entry, added like the check-changelog gate requires\n", 1),
+			protectedPaths: []string{"CHANGELOG.md"},
+			wantStatus:     provenance.StatusPass,
+		},
+		{
+			name:           "changelog edit outside Unreleased fails",
+			file:           "CHANGELOG.md",
+			initial:        changelogFixtureBase,
+			updated:        strings.Replace(changelogFixtureBase, "- first release\n", "- first release, rewritten\n", 1),
+			protectedPaths: []string{"CHANGELOG.md"},
+			wantStatus:     provenance.StatusFail,
+		},
+		{
+			name:    "changelog release cut fails",
+			file:    "CHANGELOG.md",
+			initial: changelogFixtureBase,
+			updated: strings.Replace(changelogFixtureBase, "## [Unreleased]\n",
+				"## [Unreleased]\n\n## [1.1.0] - 2026-02-01\n", 1),
+			protectedPaths: []string{"CHANGELOG.md"},
+			wantStatus:     provenance.StatusFail,
+		},
+		{
+			name:           "go.mod retract edit fails",
+			file:           "go.mod",
+			initial:        "module example.com/app\n\nretract v0.1.0\n",
+			updated:        "module example.com/app\n\nretract v0.1.0\nretract v0.2.0\n",
+			protectedPaths: []string{"go.mod"},
+			wantStatus:     provenance.StatusFail,
+		},
+		{
+			name:           "go.mod require edit passes",
+			file:           "go.mod",
+			initial:        "module example.com/app\n\nretract v0.1.0\n",
+			updated:        "module example.com/app\n\nrequire example.com/dep v1.2.3\n\nretract v0.1.0\n",
+			protectedPaths: []string{"go.mod"},
+			wantStatus:     provenance.StatusPass,
+		},
 	}
-}
 
-func TestCheckProtectedPaths_ChangelogEditOutsideUnreleasedFails(t *testing.T) {
-	root := newTestRepo(t)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := newTestRepo(t)
+			writeFile(t, root, tt.file, tt.initial)
+			runGit(t, root, "add", tt.file)
+			runGit(t, root, "commit", "--quiet", "-m", "base")
+			runGit(t, root, "branch", "base")
 
-	writeFile(t, root, "CHANGELOG.md", changelogFixtureBase)
-	runGit(t, root, "add", "CHANGELOG.md")
-	runGit(t, root, "commit", "--quiet", "-m", "base")
-	runGit(t, root, "branch", "base")
+			writeFile(t, root, tt.file, tt.updated)
+			runGit(t, root, "commit", "--quiet", "-am", "update "+tt.file)
 
-	updated := strings.Replace(changelogFixtureBase, "- first release\n", "- first release, rewritten\n", 1)
-	writeFile(t, root, "CHANGELOG.md", updated)
-	runGit(t, root, "commit", "--quiet", "-am", "changelog: rewrite a released entry")
+			result := CheckProtectedPaths(context.Background(), root, "base", "HEAD", tt.protectedPaths)
 
-	result := CheckProtectedPaths(context.Background(), root, "base", "HEAD", []string{"CHANGELOG.md"})
-
-	if result.Status != "fail" {
-		t.Fatalf("Status = %q, want fail (edit touched an already-released version section); Message: %s", result.Status, result.Message)
-	}
-}
-
-func TestCheckProtectedPaths_ChangelogReleaseCutFails(t *testing.T) {
-	root := newTestRepo(t)
-
-	writeFile(t, root, "CHANGELOG.md", changelogFixtureBase)
-	runGit(t, root, "add", "CHANGELOG.md")
-	runGit(t, root, "commit", "--quiet", "-m", "base")
-	runGit(t, root, "branch", "base")
-
-	cut := strings.Replace(changelogFixtureBase, "## [Unreleased]\n", "## [Unreleased]\n\n## [1.1.0] - 2026-02-01\n", 1)
-	writeFile(t, root, "CHANGELOG.md", cut)
-	runGit(t, root, "commit", "--quiet", "-am", "changelog: cut a release")
-
-	result := CheckProtectedPaths(context.Background(), root, "base", "HEAD", []string{"CHANGELOG.md"})
-
-	if result.Status != "fail" {
-		t.Fatalf("Status = %q, want fail (a version-section boundary was inserted); Message: %s", result.Status, result.Message)
-	}
-}
-
-func TestCheckProtectedPaths_GoModRetractEditFails(t *testing.T) {
-	root := newTestRepo(t)
-
-	writeFile(t, root, "go.mod", "module example.com/app\n\nretract v0.1.0\n")
-	runGit(t, root, "add", "go.mod")
-	runGit(t, root, "commit", "--quiet", "-m", "base")
-	runGit(t, root, "branch", "base")
-
-	writeFile(t, root, "go.mod", "module example.com/app\n\nretract v0.1.0\nretract v0.2.0\n")
-	runGit(t, root, "commit", "--quiet", "-am", "go.mod: retract v0.2.0")
-
-	result := CheckProtectedPaths(context.Background(), root, "base", "HEAD", []string{"go.mod"})
-
-	if result.Status != "fail" {
-		t.Fatalf("Status = %q, want fail (a retract directive was added); Message: %s", result.Status, result.Message)
-	}
-}
-
-func TestCheckProtectedPaths_GoModRequireEditPasses(t *testing.T) {
-	root := newTestRepo(t)
-
-	writeFile(t, root, "go.mod", "module example.com/app\n\nretract v0.1.0\n")
-	runGit(t, root, "add", "go.mod")
-	runGit(t, root, "commit", "--quiet", "-m", "base")
-	runGit(t, root, "branch", "base")
-
-	writeFile(t, root, "go.mod", "module example.com/app\n\nrequire example.com/dep v1.2.3\n\nretract v0.1.0\n")
-	runGit(t, root, "commit", "--quiet", "-am", "go.mod: add a dependency")
-
-	result := CheckProtectedPaths(context.Background(), root, "base", "HEAD", []string{"go.mod"})
-
-	if result.Status != "pass" {
-		t.Fatalf("Status = %q, want pass (only a require line changed, retract v0.1.0 untouched); Message: %s", result.Status, result.Message)
-	}
-}
-
-func TestCheckProtectedPaths_GlobMatchFails(t *testing.T) {
-	root := newTestRepo(t)
-
-	writeFile(t, root, ".github/workflows/ci.yml", "name: ci\n")
-	runGit(t, root, "add", ".github/workflows/ci.yml")
-	runGit(t, root, "commit", "--quiet", "-m", "base")
-	runGit(t, root, "branch", "base")
-
-	writeFile(t, root, ".github/workflows/ci.yml", "name: ci\non: push\n")
-	runGit(t, root, "commit", "--quiet", "-am", "touch workflow")
-
-	result := CheckProtectedPaths(context.Background(), root, "base", "HEAD", []string{".github/workflows/*.yml"})
-
-	if result.Status != "fail" {
-		t.Fatalf("Status = %q, want fail; Message: %s", result.Status, result.Message)
-	}
-}
-
-func TestCheckProtectedPaths_UnrelatedChangePasses(t *testing.T) {
-	root := newTestRepo(t)
-
-	writeFile(t, root, "app.go", "package app\n")
-	runGit(t, root, "add", "app.go")
-	runGit(t, root, "commit", "--quiet", "-m", "base")
-	runGit(t, root, "branch", "base")
-
-	writeFile(t, root, "app.go", "package app\n\nfunc Hello() {}\n")
-	runGit(t, root, "commit", "--quiet", "-am", "unrelated change")
-
-	result := CheckProtectedPaths(context.Background(), root, "base", "HEAD", []string{"go.mod", ".github/workflows/*.yml"})
-
-	if result.Status != "pass" {
-		t.Fatalf("Status = %q, want pass (changed file matches no protected pattern); Message: %s", result.Status, result.Message)
+			if result.Status != tt.wantStatus {
+				t.Fatalf("Status = %q, want %q; Message: %s", result.Status, tt.wantStatus, result.Message)
+			}
+			if tt.wantMessageHas != "" && !strings.Contains(result.Message, tt.wantMessageHas) {
+				t.Errorf("Message = %q, want it to contain %q", result.Message, tt.wantMessageHas)
+			}
+		})
 	}
 }
 
