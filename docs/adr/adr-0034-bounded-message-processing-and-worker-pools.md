@@ -2,7 +2,11 @@
 
 ## Status
 
-Proposed
+Accepted. Implementation plan items 1-3 and 6 are complete: benchmarks,
+the `workerpool` processor, and opt-in `SubscribeWithOptions` integration
+for Watermill and RabbitMQ have merged. Item 4 (explicit concurrent
+JetStream mode) and item 5 (optional `ants/v2` adapter, gated on benchmark
+evidence) remain open follow-up work.
 
 ## Context
 

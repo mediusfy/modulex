@@ -50,7 +50,7 @@ git worktree add --detach "$worktree_dir" "$latest_tag" --quiet
 
 # Public packages that make up the compatibility surface. Examples, tools,
 # and mocks are not part of the published API and are excluded.
-packages=(. ./chi ./nats ./rabbitmq ./watermill ./otel)
+packages=(. ./app ./chi ./nats ./rabbitmq ./watermill ./otel ./workerpool)
 
 found_incompatible=0
 for pkg in "${packages[@]}"; do
