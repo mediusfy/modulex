@@ -62,6 +62,7 @@ package contract
 import (
 	"errors"
 	"fmt"
+	"path"
 	"strings"
 
 	"github.com/mediusfy/modulex/provenance"
@@ -334,6 +335,18 @@ func (c *Contract) Validate() error {
 				"commands[%d] (%q): unknown command class %q; must be one of: %s",
 				i, cmd.Name, cmd.Class, validCommandClassNames,
 			))
+		}
+	}
+
+	// review.CheckProtectedPaths matches each pattern with path.Match and
+	// silently skips a pattern that fails to compile (path.ErrBadPattern),
+	// treating it as "never matches" rather than failing the whole check —
+	// so a typo here must be caught at validation time, or it goes
+	// unenforced with no warning anywhere. path.Match validates pattern
+	// syntax independently of the name argument, so "" is just a probe.
+	for i, p := range c.ProtectedPaths {
+		if _, err := path.Match(p, ""); err != nil {
+			errs = append(errs, fmt.Errorf("protected_paths[%d] (%q): invalid glob pattern: %w", i, p, err))
 		}
 	}
 

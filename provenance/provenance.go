@@ -130,6 +130,12 @@ const (
 	VerificationSecurity      VerificationCategory = "security"
 	VerificationSecretScan    VerificationCategory = "secret_scan"
 	VerificationChangelog     VerificationCategory = "changelog"
+	// VerificationProtectedPaths categorizes a check of whether a diff
+	// touches a path contract.Contract.ProtectedPaths declares off-limits
+	// without explicit human approval, per ADR-0032's "generated and
+	// protected paths" and docs/planning/agent-safety-policy.md's
+	// protected-paths list. See review.CheckProtectedPaths.
+	VerificationProtectedPaths VerificationCategory = "protected_paths"
 )
 
 // RepoState records the repository path, branch, commit, and dirty-worktree

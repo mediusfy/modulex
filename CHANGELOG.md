@@ -40,6 +40,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   drifts from `modulex.agent.yaml` again, operationalizing `agentdocs.Drift`
   (which existed since MOD-67 but nothing previously called against a real
   checked-in file). Added to `make check-nested-modules`.
+- `provenance.VerificationProtectedPaths` and `review.CheckProtectedPaths`/
+  `review.ChangedFiles`: `contract.Contract.ProtectedPaths` was, until now,
+  schema and documentation only — `contract.RenderText` and
+  `agentdocs.Generate` both render a contract's protected paths, but
+  nothing checked a real diff against them. `review.Review` now runs
+  `CheckProtectedPaths` automatically (alongside the existing secret scan)
+  and `tools/mcpserver`'s `review_diff` wires it through from
+  `read_contract` automatically. **Breaking change** (advisory-only per
+  `COMPATIBILITY.md`'s v0 policy): `review.Review` gained a
+  `protectedPaths []string` parameter. See
+  `docs/planning/agent-diff-review-guide.md`'s new "Protected paths"
+  section. `CheckProtectedPaths` now applies the file-scoped exceptions
+  `docs/planning/agent-safety-policy.md` documents for `CHANGELOG.md`
+  (adding to `## [Unreleased]` is allowed) and `go.mod` (only `retract`
+  directives are protected) instead of flagging every change to either
+  file — the naive whole-file match would have flagged this very changelog
+  entry. `contract.Contract.Validate` now also rejects a malformed
+  `protected_paths` glob pattern instead of letting it silently go
+  unenforced, and `tools/mcpserver`'s `review_diff` now propagates a real
+  `readContract` error (e.g. an unreadable `modulex.agent.yaml`) as a
+  handler error instead of silently treating it as "no protected paths."
 - New `workerpool` package (`workerpool.New`, `workerpool.Processor`):
   a small, technology-neutral bounded worker pool — fixed worker count,
   bounded waiting queue, panic recovery, and accept/complete/fail/reject

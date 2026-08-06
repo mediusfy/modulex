@@ -46,6 +46,7 @@ underlying command.
 | `check-api-compat` | `make check-api-compat` | `VerificationCompatibility` |
 | `check-changelog` | `make check-changelog` | `VerificationChangelog` |
 | `check-secrets` (`ScanSecrets`, not a make target) | — | `VerificationSecretScan` |
+| `check-protected-paths` (`CheckProtectedPaths`, not a make target) | — | `VerificationProtectedPaths` |
 
 ## Boundary and compatibility checks are not diff-scoped
 
@@ -170,6 +171,79 @@ compute the diff is not evidence either way about whether a secret was
 added, mirroring `verify.Run`'s existing rule that a missing dependency is
 never confused with an actual failure.
 
+## Protected paths
+
+```go
+func ChangedFiles(ctx context.Context, dir, baseRef, headRef string) ([]string, error)
+func CheckProtectedPaths(ctx context.Context, dir, baseRef, headRef string, protectedPaths []string) provenance.VerificationResult
+```
+
+`contract.Contract.ProtectedPaths` (`modulex.agent.yaml`'s `protected_paths`
+list) was, until `CheckProtectedPaths` (`review/protectedpaths.go`), schema
+and documentation only: `contract.RenderText` and `agentdocs.Generate` both
+render a contract's protected paths, but nothing checked a real diff
+against them — nothing stood between an agent and editing `go.mod` or a CI
+workflow file except `CODEOWNERS` (a GitHub-side, PR-review-only control,
+not something a local diff review can rely on).
+
+`ChangedFiles` is `git diff --name-only` over the same `baseRef...headRef`
+triple-dot range `ScanSecrets` uses, exported so `find_affected_modules`
+(see `docs/planning/agent-mcp-server-guide.md`) can reuse it rather than
+shelling out to git a second time. `CheckProtectedPaths` matches every
+changed file against every pattern in `protectedPaths` with `path.Match`
+(not `filepath.Match` — paths from `git diff --name-only` are always
+`/`-separated regardless of host OS), which gives `*` the same
+single-path-segment glob semantics `modulex.agent.yaml`'s own examples
+assume (e.g. `.github/workflows/*.yml`). `contract.Contract.Validate`
+rejects a malformed `protected_paths` pattern (`path.ErrBadPattern`) at
+contract-load time, so a typo like an unmatched `[` is caught before it can
+silently go unenforced; `CheckProtectedPaths` itself still treats a
+malformed pattern as "never matches" rather than failing the whole check,
+as a defense-in-depth fallback for a contract that bypassed validation.
+
+| Outcome | `Status` | When |
+|---|---|---|
+| `protectedPaths` is empty | `StatusPass` | No contract, or a contract declaring no protected paths — a normal state, not a finding |
+| No changed file matches any pattern | `StatusPass` | — |
+| One or more changed files match | `StatusFail` | `Message` lists each `<file> matches protected path <pattern>` |
+| `git diff` itself fails | `StatusUnavailable` | Same failure mode as `ScanSecrets` |
+
+### `CHANGELOG.md` and `go.mod` carry file-scoped exceptions
+
+`agent-safety-policy.md`'s protected-paths list is narrower than "any
+change" for two of its six entries, and `CheckProtectedPaths` matches that
+narrower scope by inspecting diff content, not just the changed-file list,
+for exactly these two well-known file names:
+
+- **`CHANGELOG.md`**: adding to `## [Unreleased]` is "expected and
+  encouraged"; only already-released version-section boundaries are
+  protected. `changelogEditIsWithinUnreleased` finds the `## [Unreleased]`
+  section's line range in both the base and head content (via `git show
+  <ref>:CHANGELOG.md`) and checks every diff hunk stays inside it on both
+  sides — a hunk that touches an already-released section, or that inserts
+  a new version header (a release cut), still counts as a hit.
+- **`go.mod`**: only `retract` directives (and published tags, which are
+  not part of a source diff) are protected; an ordinary `require`/version
+  edit is not. `goModEditTouchesOnlyNonRetractLines` finds every `retract`
+  directive's line range (a single `retract vX.Y.Z` line, or a
+  parenthesized `retract ( ... )` block) in both base and head content, and
+  checks no diff hunk overlaps one on either side.
+
+Both functions are fail-safe: if `CHANGELOG.md`/`go.mod` can't be read at
+either ref, or the single-file diff itself fails, the exception does not
+apply and the file-level match stands as a hit — an inability to prove the
+exception applies is never treated as the exception applying. Every other
+`protectedPaths` entry (`.github/workflows/*.yml`, `SECURITY.md`,
+`CODEOWNERS`, ...) keeps plain "any change to this path is a hit" matching.
+
+`review.Review`'s `protectedPaths` parameter is `[]string`, not a
+`contract.Contract`, so this package stays decoupled from `contract`'s
+YAML/validation concerns — the same reason `Review` already takes
+`tools []discovery.ToolStatus` rather than importing `discovery` to compute
+it. The caller (`tools/mcpserver`'s `review_diff`, or a future CLI) is
+responsible for reading `modulex.agent.yaml` and extracting
+`ProtectedPaths` before calling `Review`.
+
 ## The boundary/compatibility/changelog checks
 
 ```go
@@ -186,16 +260,23 @@ mechanics in full; this package does not re-implement or re-document them.
 ## `Review`: the combined entry point
 
 ```go
-func Review(ctx context.Context, baseRef, headRef string, tools []discovery.ToolStatus, allowNetwork bool) []provenance.VerificationResult
+func Review(ctx context.Context, dir, baseRef, headRef string, tools []discovery.ToolStatus, allowNetwork bool, protectedPaths []string) []provenance.VerificationResult
 ```
 
 `Review` runs `Checks` via `verify.Run(ctx, Checks, tools, allowNetwork)`
-and appends `ScanSecrets(ctx, baseRef, headRef)`, returning
-`len(Checks) + 1` results, always in that fixed order (`Checks` order, then
-the secret scan). `tools` should be `discovery.Discover`'s `Tools` field (or
-an equivalent slice); `allowNetwork` is accepted for symmetry with
+(each `CheckSpec.Dir` set to `dir`) and appends `ScanSecrets(ctx, dir,
+baseRef, headRef)` and `CheckProtectedPaths(ctx, dir, baseRef, headRef,
+protectedPaths)`, returning `len(Checks) + 2` results, always in that fixed
+order (`Checks` order, then the secret scan, then the protected-paths
+check). `dir` is the repository root every check, the secret scan's git
+diff, and the protected-paths check's git diff all run against; an empty
+`dir` leaves every command's working directory unset (the calling
+process's own cwd). `tools` should be `discovery.Discover`'s `Tools` field
+(or an equivalent slice); `allowNetwork` is accepted for symmetry with
 `verify.Run` and forward compatibility, though none of `Checks` is
-currently `Networked`.
+currently `Networked`. `protectedPaths` should be `contract.Contract.
+ProtectedPaths`, if the caller has a `modulex.agent.yaml` to read one from
+— see "Protected paths" above.
 
 Because the result is `[]provenance.VerificationResult` — the same type
 `verify.Run` produces — `verify.RenderText(results)` renders it as a
@@ -210,7 +291,15 @@ if err != nil {
     return err
 }
 
-results := review.Review(ctx, "origin/main", "HEAD", repo.Tools, false /* allowNetwork */)
+var protectedPaths []string
+if data, err := os.ReadFile("modulex.agent.yaml"); err == nil {
+    var c contract.Contract
+    if yaml.Unmarshal(data, &c) == nil {
+        protectedPaths = c.ProtectedPaths
+    }
+}
+
+results := review.Review(ctx, ".", "origin/main", "HEAD", repo.Tools, false /* allowNetwork */, protectedPaths)
 fmt.Println(verify.RenderText(results))
 
 for _, r := range results {
