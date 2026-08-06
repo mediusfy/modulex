@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `modulex.agent.yaml` at the repository root: this repository's own
+  ADR-0032 agent contract, promoted from
+  `contract/testdata/modulex.agent.example.yaml` (which remains as a
+  schema-test fixture, now kept in sync with the root file by a new
+  `contract.TestRootContract_MatchesExample` drift guard). Previously
+  `contract`'s `read_contract` and `tools/agentcli` (once it exists) had
+  nothing to read for this repository itself. In the process of promoting
+  it, corrected `verification.full`: it was missing `check-module-boundary`
+  and `check-api-compat`, both of which are in `verify.FullGates` (the
+  actual authoritative full-gate list); the example fixture had never been
+  kept in sync with that list.
+- `scripts/install-codegraph-hooks.sh`: installs `post-commit`,
+  `post-checkout`, `post-merge`, and `post-rewrite` git hooks that run
+  `codegraph sync`, per `AGENTS.md`'s "Keeping CodeGraph in sync" section —
+  which referenced this script's path before the script existed.
+  Idempotent (safe to re-run) and never overwrites a hook file that already
+  has other content; it prints the line to add by hand in that case instead.
+- `tools/agentcli`: a new nested Go module providing the `modulex` CLI
+  binary (`tools/agentcli/cmd/modulex`), starting with `modulex agent
+  generate`. It renders `AGENTS.md` and `CLAUDE.md` from
+  `modulex.agent.yaml` via `agentdocs.Generate`, plus a static "CodeGraph"
+  addendum (`tools/agentcli`'s `toolingAddendum`) covering tooling that has
+  no `contract.Contract` field — CodeGraph usage and the per-agent hook
+  setup (Kimi, Claude Code, Antigravity) previously hand-maintained
+  directly in `AGENTS.md`. `AGENTS.md` is now generated (previously
+  hand-written) and `CLAUDE.md` is new — both were regenerated once and
+  checked in as part of this change. A new
+  `agentcli.TestGeneratedFiles_MatchCheckedIn` test fails CI if either file
+  drifts from `modulex.agent.yaml` again, operationalizing `agentdocs.Drift`
+  (which existed since MOD-67 but nothing previously called against a real
+  checked-in file). Added to `make check-nested-modules`.
 - New `workerpool` package (`workerpool.New`, `workerpool.Processor`):
   a small, technology-neutral bounded worker pool — fixed worker count,
   bounded waiting queue, panic recovery, and accept/complete/fail/reject
