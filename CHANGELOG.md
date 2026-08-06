@@ -15,7 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   schema-test fixture, now kept in sync with the root file by a new
   `contract.TestRootContract_MatchesExample` drift guard). Previously
   `contract`'s `read_contract` and `tools/agentcli` (once it exists) had
-  nothing to read for this repository itself.
+  nothing to read for this repository itself. In the process of promoting
+  it, corrected `verification.full`: it was missing `check-module-boundary`
+  and `check-api-compat`, both of which are in `verify.FullGates` (the
+  actual authoritative full-gate list); the example fixture had never been
+  kept in sync with that list.
 - `scripts/install-codegraph-hooks.sh`: installs `post-commit`,
   `post-checkout`, `post-merge`, and `post-rewrite` git hooks that run
   `codegraph sync`, per `AGENTS.md`'s "Keeping CodeGraph in sync" section —

@@ -121,6 +121,14 @@ verification:
       command: make check-consumer-boundary
       reason: verifies the core package has no adapter dependencies
       required_tool: go
+    - name: check-module-boundary
+      command: make check-module-boundary
+      reason: runs the modboundary analyzer against examples/deployment to enforce feature-module boundaries
+      required_tool: go
+    - name: check-api-compat
+      command: make check-api-compat
+      reason: reports public API changes since the latest git tag
+      required_tool: go
     - name: check-changelog
       command: make check-changelog
       reason: verifies CHANGELOG.md is updated when required (PR diff vs origin/main)
