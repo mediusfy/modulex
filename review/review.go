@@ -1,9 +1,9 @@
 // Package review implements "agent diff review": checking a changeset for
-// boundary violations, secret-shaped values, API compatibility breaks, and
-// missing changelog obligations, per ADR-0032 ("Agent-First Development
-// Experience"), P1: "Add diff review for boundaries, secrets, API
-// compatibility, and changelog obligations" (Jira MOD-65), step 6 of the
-// ADR's "Standard agent workflow":
+// boundary violations, secret-shaped values, API compatibility breaks,
+// protected-path edits, and missing changelog obligations, per ADR-0032
+// ("Agent-First Development Experience"), P1: "Add diff review for
+// boundaries, secrets, API compatibility, and changelog obligations" (Jira
+// MOD-65), step 6 of the ADR's "Standard agent workflow":
 //
 //	`modulex agent review` checks the diff for unexpected files, secrets,
 //	boundary violations, API compatibility changes, generated-file drift,
@@ -16,6 +16,14 @@
 // duplicating it) and on provenance for the VerificationResult/
 // VerificationCategory types, so this package's output is exactly what a
 // future `modulex agent handoff` would consume, with no translation layer.
+//
+// # Protected paths are enforced here, not just documented
+//
+// contract.Contract.ProtectedPaths (the "unexpected files" half of the ADR
+// quote above) was, until CheckProtectedPaths (protectedpaths.go), schema
+// and documentation only: contract.RenderText and agentdocs.Generate both
+// render a contract's protected paths, but nothing checked a real diff
+// against them. Review's protectedPaths parameter closes that gap.
 //
 // # Why this package exists separately from verify
 //
@@ -115,10 +123,18 @@ var Checks = []verify.CheckSpec{
 // with a future networked check; none of Checks is currently Networked, so
 // it has no effect today.
 //
+// protectedPaths is contract.Contract.ProtectedPaths, if the caller has a
+// modulex.agent.yaml to read one from — passed as []string rather than a
+// contract.Contract so this package stays decoupled from contract's YAML/
+// validation concerns (see CheckProtectedPaths' doc comment). An empty or
+// nil protectedPaths is a normal state (no contract, or a contract that
+// declares none), not an error; CheckProtectedPaths reports StatusPass for
+// it rather than skipping the check.
+//
 // The result is []provenance.VerificationResult, the same type verify.Run
 // produces, so verify.RenderText(results) renders it as a human-readable,
 // per-category summary without this package needing its own renderer.
-func Review(ctx context.Context, dir, baseRef, headRef string, tools []discovery.ToolStatus, allowNetwork bool) []provenance.VerificationResult {
+func Review(ctx context.Context, dir, baseRef, headRef string, tools []discovery.ToolStatus, allowNetwork bool, protectedPaths []string) []provenance.VerificationResult {
 	checks := make([]verify.CheckSpec, len(Checks))
 	for i, c := range Checks {
 		c.Dir = dir
@@ -126,5 +142,6 @@ func Review(ctx context.Context, dir, baseRef, headRef string, tools []discovery
 	}
 
 	results := verify.Run(ctx, checks, tools, allowNetwork)
-	return append(results, ScanSecrets(ctx, dir, baseRef, headRef))
+	results = append(results, ScanSecrets(ctx, dir, baseRef, headRef))
+	return append(results, CheckProtectedPaths(ctx, dir, baseRef, headRef, protectedPaths))
 }

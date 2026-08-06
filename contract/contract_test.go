@@ -194,6 +194,24 @@ func TestContract_Validate_UnknownCommandClass(t *testing.T) {
 	}
 }
 
+func TestContract_Validate_BadProtectedPathGlob(t *testing.T) {
+	c := validContract()
+	c.ProtectedPaths = []string{"go.mod", ".github/workflows/[.yml"}
+
+	err := c.Validate()
+	if err == nil {
+		t.Fatal("Validate() = nil, want error for a malformed protected_paths glob")
+	}
+
+	msg := err.Error()
+	if !strings.Contains(msg, "protected_paths[1]") {
+		t.Errorf("error %q does not name the offending index", msg)
+	}
+	if !strings.Contains(msg, `".github/workflows/[.yml"`) {
+		t.Errorf("error %q does not name the offending pattern", msg)
+	}
+}
+
 func TestContract_Validate_SecretRejection(t *testing.T) {
 	tests := []struct {
 		name    string

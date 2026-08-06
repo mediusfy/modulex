@@ -92,7 +92,7 @@ type Contract struct {
 | `Boundaries` | "lifecycle and module boundaries" | Named boundaries (`Name`, `Description`, `Paths`, `Rule`) describing what must not cross what, and how it's enforced. |
 | `Commands` | "safe, mutating, networked, destructive, and approval-required commands" | `CommandDecl{Name, Command, Class, Reason}`, where `Class` is `provenance.CommandClass`. |
 | `Verification` | "focused and repository-wide verification commands" | `VerificationDecl{Focused, Full}`, each a `[]CheckDecl{Name, Command, Reason, RequiredTool, Networked}` — mirrors `verify.Plan`'s split (see "Relationship to `verify.CheckSpec`" below). |
-| `ProtectedPaths` | "...protected paths" | Paths agents must not modify without explicit human approval (see `agent-safety-policy.md`). |
+| `ProtectedPaths` | "...protected paths" | Paths agents must not modify without explicit human approval (see `agent-safety-policy.md`). Enforced, not just documented: `review.CheckProtectedPaths` (see `agent-diff-review-guide.md`) fails a diff that touches one, and `tools/mcpserver`'s `review_diff` wires it through automatically via `read_contract`. |
 | `GeneratedPaths` | "generated...paths" | Paths that are machine-generated and should not be hand-edited. |
 | `RequiredTools` | "required tools" | Binary names the declared commands/checks depend on (e.g. `"go"`, `"golangci-lint"`). |
 | `OptionalServices` | "...optional services" | `OptionalService{Name, Description}` — external services that are nice-to-have, never a hard requirement. |
@@ -184,6 +184,14 @@ problem found (not just the first), or `nil` if `c` is valid.
   safe, mutating, networked, destructive, approval_required
   ```
 
+- Every `ProtectedPaths` entry must be a syntactically valid `path.Match`
+  glob pattern. `review.CheckProtectedPaths` (see
+  `agent-diff-review-guide.md`) treats a pattern that fails to compile
+  (`path.ErrBadPattern`) as "never matches" rather than failing the whole
+  diff review, so a typo here — e.g. an unmatched `[` — would otherwise go
+  silently unenforced with no warning anywhere; this check catches it at
+  contract-load time instead.
+
 **Secret checks:** every free-text string field in the schema — project
 names/paths/descriptions/composition-roots, instruction file paths/notes,
 boundary descriptions/rules/paths, command names/commands/reasons, check
@@ -242,16 +250,23 @@ if err := c.Validate(); err != nil {
 fmt.Println(contract.RenderText(c))
 ```
 
-`contract/testdata/modulex.agent.example.yaml` is a complete, valid
-example describing this repository itself: its one Go module
+`modulex.agent.yaml` at the repository root is this repository's own real,
+canonical contract — not just a worked example: its one Go module
 (`github.com/mediusfy/modulex`), its five composition roots under
 `examples/`, its instruction file (`AGENTS.md`), a representative command
 per `CommandClass` value, its focused and full verification checks, its
 protected and generated paths, required tools, optional services, and
-`required_credentials: [GITHUB_TOKEN]` (name only, no value). Loading and
-validating this fixture is itself a test
-(`TestExampleContract_IsValid` in `contract/contract_test.go`), so the
-schema and this worked example can never silently drift apart.
+`required_credentials: [GITHUB_TOKEN]` (name only, no value). It's what
+`read_contract` and `modulex agent generate` (see `tools/agentcli`) both
+read for this repository.
+
+`contract/testdata/modulex.agent.example.yaml` mirrors it, so `contract`'s
+and `agentdocs`' own tests can load a fixture with a plain relative path.
+Loading and validating that fixture is itself a test
+(`TestExampleContract_IsValid` in `contract/contract_test.go`), and a
+second test (`TestRootContract_MatchesExample`) fails if the two files'
+parsed content ever drifts apart — so the schema, the worked example, and
+the real contract can never silently diverge.
 
 ## Human-readable rendering
 
