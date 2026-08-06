@@ -288,22 +288,24 @@ func rangeWithin(start, count int, r [2]int) bool {
 	return start >= r[0] && end <= r[1]
 }
 
-// changelogEditIsWithinUnreleased reports whether every hunk in CHANGELOG.md's
-// diff between baseRef and headRef falls entirely within the "## [Unreleased]"
-// section on both sides — the exception docs/planning/agent-safety-policy.md
-// grants ("adding to `## [Unreleased]` is expected and encouraged", only
-// "version-section boundaries for already-released versions" are
-// protected). Returns false (no exception — CheckProtectedPaths should
-// treat the change as a hit) whenever the answer can't be established
-// safely: CHANGELOG.md missing from either ref, the diff itself failing, or
-// any hunk touching content outside the Unreleased section on either side
-// (including a hunk that touches the "## [Unreleased]" header line itself,
-// e.g. cutting a release) — fail-safe by design, matching this package's
-// existing failure-mode discipline (an inability to prove the exception
-// applies is not the same as the exception applying).
-func changelogEditIsWithinUnreleased(ctx context.Context, dir, baseRef, headRef string) bool {
-	const file = "CHANGELOG.md"
-
+// fileExceptionApplies fetches file's content at baseRef and headRef and the
+// file's own diff between them, then reports whether hunkIsSafe returns true
+// for every hunk in that diff — hunkIsSafe is called once per hunk with the
+// hunk itself plus both full file contents, so it can derive whatever range
+// structure it needs (e.g. unreleasedSectionRange, retractLineRanges) from
+// whichever side it cares about. Returns false (fail-safe — the exception
+// does not apply) if file can't be read at either ref, or the diff itself
+// fails: an inability to prove the exception applies is not the same as the
+// exception applying, matching this package's existing failure-mode
+// discipline. A file with no hunks in range (shouldn't happen, since the
+// caller only reaches here after ChangedFiles already reported file as
+// changed) trivially reports true, since there's nothing left to check.
+//
+// Shared by changelogEditIsWithinUnreleased and
+// goModEditTouchesOnlyNonRetractLines, which otherwise duplicate this exact
+// fetch/diff/iterate shape and differ only in what "safe" means for their
+// file.
+func fileExceptionApplies(ctx context.Context, dir, baseRef, headRef, file string, hunkIsSafe func(h diffHunk, baseContent, headContent string) bool) bool {
 	baseContent, err := gitShow(ctx, dir, baseRef, file)
 	if err != nil {
 		return false
@@ -317,22 +319,28 @@ func changelogEditIsWithinUnreleased(ctx context.Context, dir, baseRef, headRef 
 		return false
 	}
 
-	baseRange := unreleasedSectionRange(baseContent)
-	headRange := unreleasedSectionRange(headContent)
-
-	hunks := parseHunks(diff)
-	if len(hunks) == 0 {
-		return true
-	}
-	for _, h := range hunks {
-		if !rangeWithin(h.oldStart, h.oldCount, baseRange) {
-			return false
-		}
-		if !rangeWithin(h.newStart, h.newCount, headRange) {
+	for _, h := range parseHunks(diff) {
+		if !hunkIsSafe(h, baseContent, headContent) {
 			return false
 		}
 	}
 	return true
+}
+
+// changelogEditIsWithinUnreleased reports whether every hunk in CHANGELOG.md's
+// diff between baseRef and headRef falls entirely within the "## [Unreleased]"
+// section on both sides — the exception docs/planning/agent-safety-policy.md
+// grants ("adding to `## [Unreleased]` is expected and encouraged", only
+// "version-section boundaries for already-released versions" are
+// protected). A hunk touching content outside the Unreleased section on
+// either side (including a hunk that touches the "## [Unreleased]" header
+// line itself, e.g. cutting a release) is unsafe. See fileExceptionApplies
+// for the fail-safe fetch/diff/iterate shape this builds on.
+func changelogEditIsWithinUnreleased(ctx context.Context, dir, baseRef, headRef string) bool {
+	return fileExceptionApplies(ctx, dir, baseRef, headRef, "CHANGELOG.md", func(h diffHunk, baseContent, headContent string) bool {
+		return rangeWithin(h.oldStart, h.oldCount, unreleasedSectionRange(baseContent)) &&
+			rangeWithin(h.newStart, h.newCount, unreleasedSectionRange(headContent))
+	})
 }
 
 // retractLineRanges returns the 1-indexed [start,end] line ranges in a
@@ -393,42 +401,13 @@ func rangeIntersectsAny(start, count int, ranges [][2]int) bool {
 // go.mod's diff between baseRef and headRef avoids every `retract`
 // directive line on both sides — the exception
 // docs/planning/agent-safety-policy.md grants ("go.mod `retract` directives
-// ... are protected"; an ordinary require/version edit is not). Returns
-// false (no exception — CheckProtectedPaths should treat the change as a
-// hit) whenever the answer can't be established safely: go.mod missing
-// from either ref, the diff itself failing, or any hunk overlapping a
-// `retract` directive's line range on either side — fail-safe by design,
-// mirroring changelogEditIsWithinUnreleased.
+// ... are protected"; an ordinary require/version edit is not). A hunk
+// overlapping a `retract` directive's line range on either side is unsafe.
+// See fileExceptionApplies for the fail-safe fetch/diff/iterate shape this
+// builds on.
 func goModEditTouchesOnlyNonRetractLines(ctx context.Context, dir, baseRef, headRef string) bool {
-	const file = "go.mod"
-
-	baseContent, err := gitShow(ctx, dir, baseRef, file)
-	if err != nil {
-		return false
-	}
-	headContent, err := gitShow(ctx, dir, headRef, file)
-	if err != nil {
-		return false
-	}
-	diff, err := singleFileDiff(ctx, dir, baseRef, headRef, file)
-	if err != nil {
-		return false
-	}
-
-	baseRanges := retractLineRanges(baseContent)
-	headRanges := retractLineRanges(headContent)
-
-	hunks := parseHunks(diff)
-	if len(hunks) == 0 {
-		return true
-	}
-	for _, h := range hunks {
-		if rangeIntersectsAny(h.oldStart, h.oldCount, baseRanges) {
-			return false
-		}
-		if rangeIntersectsAny(h.newStart, h.newCount, headRanges) {
-			return false
-		}
-	}
-	return true
+	return fileExceptionApplies(ctx, dir, baseRef, headRef, "go.mod", func(h diffHunk, baseContent, headContent string) bool {
+		return !rangeIntersectsAny(h.oldStart, h.oldCount, retractLineRanges(baseContent)) &&
+			!rangeIntersectsAny(h.newStart, h.newCount, retractLineRanges(headContent))
+	})
 }
