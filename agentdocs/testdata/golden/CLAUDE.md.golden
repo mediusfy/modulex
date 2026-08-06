@@ -48,8 +48,10 @@ Focused checks are recommended for a specific, scoped change. Full gates are alw
 | Name | Command | Reason | Required tool |
 |---|---|---|---|
 | build | `make build` | compiles all packages and examples; required before any push or release | go |
+| check-api-compat | `make check-api-compat` | reports public API changes since the latest git tag | go |
 | check-changelog | `make check-changelog` | verifies CHANGELOG.md is updated when required (PR diff vs origin/main) | git |
 | check-consumer-boundary | `make check-consumer-boundary` | verifies the core package has no adapter dependencies | go |
+| check-module-boundary | `make check-module-boundary` | runs the modboundary analyzer against examples/deployment to enforce feature-module boundaries | go |
 | lint | `make lint` | runs golangci-lint across the repository; required before any push or release | golangci-lint |
 | test | `make test` | runs the full test suite; required before any push or release | go |
 | test-arch | `make test-arch` | runs the full test suite under the race detector; required before any push or release | go |

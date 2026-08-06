@@ -26,6 +26,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which referenced this script's path before the script existed.
   Idempotent (safe to re-run) and never overwrites a hook file that already
   has other content; it prints the line to add by hand in that case instead.
+- `tools/agentcli`: a new nested Go module providing the `modulex` CLI
+  binary (`tools/agentcli/cmd/modulex`), starting with `modulex agent
+  generate`. It renders `AGENTS.md` and `CLAUDE.md` from
+  `modulex.agent.yaml` via `agentdocs.Generate`, plus a static "CodeGraph"
+  addendum (`tools/agentcli`'s `toolingAddendum`) covering tooling that has
+  no `contract.Contract` field — CodeGraph usage and the per-agent hook
+  setup (Kimi, Claude Code, Antigravity) previously hand-maintained
+  directly in `AGENTS.md`. `AGENTS.md` is now generated (previously
+  hand-written) and `CLAUDE.md` is new — both were regenerated once and
+  checked in as part of this change. A new
+  `agentcli.TestGeneratedFiles_MatchCheckedIn` test fails CI if either file
+  drifts from `modulex.agent.yaml` again, operationalizing `agentdocs.Drift`
+  (which existed since MOD-67 but nothing previously called against a real
+  checked-in file). Added to `make check-nested-modules`.
 - New `workerpool` package (`workerpool.New`, `workerpool.Processor`):
   a small, technology-neutral bounded worker pool — fixed worker count,
   bounded waiting queue, panic recovery, and accept/complete/fail/reject
