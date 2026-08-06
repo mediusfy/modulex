@@ -13,23 +13,10 @@ import (
 	"github.com/mediusfy/modulex/provenance"
 )
 
-// gitOutput resolves an absolute path to the git executable via
-// exec.LookPath — rather than letting exec.Command search PATH implicitly
-// at invocation time (SonarQube go:S4036 / CWE-427, "uncontrolled search
-// path element": an attacker able to prepend a malicious "git" earlier in
-// PATH could otherwise have their binary invoked instead of the real one) —
-// then runs `git [-C dir] args...` and returns stdout. dir, if non-empty,
-// is the repository the command runs against; empty leaves off -C
-// entirely, so git resolves the repository from the calling process's own
-// current working directory.
-//
-// Uses an argv slice (exec.CommandContext), never "sh -c", so dir/args —
-// any of which a caller might derive from CI event data or an MCP tool
-// call — cannot inject shell syntax regardless of content; a malformed
-// argument simply makes the git invocation itself fail, returned as an
-// error with git's stderr attached when non-empty. Shared by every git
-// invocation in this file (ChangedFiles, gitShow, singleFileDiff) so the
-// argv-building/stderr-capture/error-wrap logic exists exactly once.
+// gitOutput resolves git via exec.LookPath (rather than an unqualified
+// "git", which SonarQube's go:S4036/CWE-427 flags as a PATH-search risk)
+// and runs `git [-C dir] args...`, returning stdout. Shared by every git
+// invocation in this file.
 func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
 	gitPath, err := exec.LookPath("git")
 	if err != nil {
@@ -55,12 +42,9 @@ func gitOutput(ctx context.Context, dir string, args ...string) (string, error) 
 	return string(out), nil
 }
 
-// ChangedFiles returns the list of file paths changed between baseRef and
-// headRef (git's "A...B" triple-dot form — the same diff scope gitDiff uses
-// for ScanSecrets), via `git diff --name-only`. Exported so other packages
-// (CheckProtectedPaths below, and tools/mcpserver's find_affected_modules)
-// can compute "what changed" once and reuse it, rather than each shelling
-// out to git separately.
+// ChangedFiles returns the file paths changed between baseRef and headRef
+// (`git diff --name-only`). Exported so other packages (CheckProtectedPaths
+// below, find_affected_modules) can reuse it.
 func ChangedFiles(ctx context.Context, dir, baseRef, headRef string) ([]string, error) {
 	out, err := gitOutput(ctx, dir, "diff", "--name-only", "--no-color", fmt.Sprintf("%s...%s", baseRef, headRef))
 	if err != nil {
@@ -75,47 +59,20 @@ func ChangedFiles(ctx context.Context, dir, baseRef, headRef string) ([]string, 
 }
 
 // CheckProtectedPaths reports whether any file changed between baseRef and
-// headRef matches one of protectedPaths (contract.Contract.ProtectedPaths —
-// passed as []string rather than a contract.Contract so this package stays
-// decoupled from contract's YAML/validation concerns, the same way Review
-// already takes tools []discovery.ToolStatus rather than importing
-// discovery to compute it), returning one provenance.VerificationResult
-// with Category VerificationProtectedPaths.
+// headRef matches one of protectedPaths (contract.Contract.ProtectedPaths),
+// returning one provenance.VerificationResult with Category
+// VerificationProtectedPaths.
 //
-// Each pattern is matched with path.Match, not filepath.Match: changed-file
-// paths from `git diff --name-only` are always "/"-separated regardless of
-// the host OS, and path.Match's "*" (matching within one path segment, not
-// across "/") is exactly the glob semantics
-// docs/planning/agent-safety-policy.md's protected-paths examples assume
-// (e.g. ".github/workflows/*.yml"). A malformed pattern (path.ErrBadPattern)
-// is treated as never matching that one pattern rather than failing the
-// whole check — contract.Contract.Validate rejects a malformed pattern at
-// the source, so this is a defense-in-depth fallback for a contract that
-// bypassed validation, not the primary guard against a silent typo.
+// Patterns are matched with path.Match against "/"-separated paths, giving
+// "*" single-segment glob semantics. CHANGELOG.md and go.mod get a
+// file-scoped exception matching docs/planning/agent-safety-policy.md:
+// adding to CHANGELOG.md's "## [Unreleased]" section is allowed, and only
+// go.mod's `retract` directives are protected — see
+// changelogEditIsWithinUnreleased and goModEditTouchesOnlyNonRetractLines.
+// Every other path keeps plain "any change is a hit" matching.
 //
-// # File-scoped exceptions for CHANGELOG.md and go.mod
-//
-// docs/planning/agent-safety-policy.md's protected-paths list is narrower
-// than "any change" for two of its entries: adding to CHANGELOG.md's
-// "## [Unreleased]" section is "expected and encouraged" (only its
-// already-released version-section boundaries are protected), and go.mod's
-// protection is scoped to "retract directives and any published version's
-// git tag" (an ordinary require/version edit is not protected). A
-// file-level match on either name — no line or section granularity — would
-// flag routine, policy-permitted edits (this package's own CHANGELOG.md
-// entries, a dependency bump) as violations on every such change, training
-// reviewers to ignore or override the check. changelogEditIsWithinUnreleased
-// and goModEditTouchesOnlyNonRetractLines inspect the actual diff content
-// for exactly these two well-known file names to apply the same exception
-// the policy document grants; every other protectedPaths entry keeps the
-// simple "any change to this path is a hit" semantics.
-//
-// Empty protectedPaths reports StatusPass trivially: no contract, or a
-// contract that declares no protected paths, is a normal state, not a
-// finding to flag (mirroring ScanSecrets and the rest of this package's
-// "absence is not failure" discipline). A `git diff` failure reports
-// StatusUnavailable, distinguishing "couldn't compute the diff" from "no
-// protected path was touched."
+// Empty protectedPaths passes trivially (no contract, or none declared). A
+// `git diff` failure reports StatusUnavailable, not a pass or fail.
 func CheckProtectedPaths(ctx context.Context, dir, baseRef, headRef string, protectedPaths []string) provenance.VerificationResult {
 	const name = "check-protected-paths"
 
@@ -164,10 +121,8 @@ func CheckProtectedPaths(ctx context.Context, dir, baseRef, headRef string, prot
 		}
 	}
 
-	// changed (and hits, since at most one entry per changed file is
-	// appended, in changed's iteration order) is already in git's sorted
-	// path order — ChangedFiles' `git diff --name-only` output is
-	// lexically sorted — so no separate sort is needed here.
+	// changed is already git-sorted, and at most one hit is appended per
+	// file, so hits needs no separate sort.
 	return provenance.VerificationResult{
 		Name:     name,
 		Category: provenance.VerificationProtectedPaths,
@@ -177,38 +132,28 @@ func CheckProtectedPaths(ctx context.Context, dir, baseRef, headRef string, prot
 	}
 }
 
-// gitShow returns the content of file as it exists at ref, in the
-// repository at dir (or the calling process's cwd if dir is empty).
+// gitShow returns file's content as of ref.
 func gitShow(ctx context.Context, dir, ref, file string) (string, error) {
 	return gitOutput(ctx, dir, "show", ref+":"+file)
 }
 
-// singleFileDiff returns the --unified=0 unified diff for exactly file
-// between baseRef and headRef, in the repository at dir. Scoping the
-// pathspec (`-- file`) keeps this cheap even on a large changeset, since
-// it's only called for the two file names (CHANGELOG.md, go.mod) that need
-// content-aware exception handling, and only once each has already been
-// confirmed present in ChangedFiles' output.
+// singleFileDiff returns the --unified=0 diff for exactly file between
+// baseRef and headRef.
 func singleFileDiff(ctx context.Context, dir, baseRef, headRef, file string) (string, error) {
 	return gitOutput(ctx, dir, "diff", "--unified=0", "--no-color", fmt.Sprintf("%s...%s", baseRef, headRef), "--", file)
 }
 
-// diffHunk is one @@ ... @@ hunk from a --unified=0 unified diff: the
-// 1-indexed starting line and line count on each side. A count of 0 means
-// that side contributes no lines (a pure insertion has oldCount 0; a pure
-// deletion has newCount 0).
+// diffHunk is one @@ ... @@ hunk: the 1-indexed starting line and line
+// count on each side. Count 0 means that side contributes no lines.
 type diffHunk struct {
 	oldStart, oldCount int
 	newStart, newCount int
 }
 
-// fullHunkHeaderPattern captures all four @@ -oldStart[,oldCount]
-// +newStart[,newCount] @@ fields; a missing ",count" means count 1 (git's
-// own convention for a single-line side).
+// fullHunkHeaderPattern matches @@ -oldStart[,oldCount] +newStart[,newCount] @@.
 var fullHunkHeaderPattern = regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@`)
 
-// parseHunks extracts every hunk header from a single-file --unified=0 diff
-// (as produced by singleFileDiff).
+// parseHunks extracts every hunk header from a --unified=0 diff.
 func parseHunks(diff string) []diffHunk {
 	var hunks []diffHunk
 	for _, line := range strings.Split(diff, "\n") {
@@ -234,11 +179,9 @@ func parseHunks(diff string) []diffHunk {
 	return hunks
 }
 
-// splitLines splits content into 1-indexed lines (lines[i-1] is line i),
-// dropping the single trailing empty element strings.Split produces for
-// content ending in "\n" — so len(lines) matches the line count git itself
-// uses in hunk headers, rather than being off by one for any file with a
-// trailing newline (the common case).
+// splitLines splits content into 1-indexed lines, dropping the trailing
+// empty element a trailing "\n" produces so len(lines) matches git's own
+// line count.
 func splitLines(content string) []string {
 	lines := strings.Split(content, "\n")
 	if n := len(lines); n > 0 && lines[n-1] == "" {
@@ -247,15 +190,12 @@ func splitLines(content string) []string {
 	return lines
 }
 
-// versionSectionHeaderPattern matches a Keep a Changelog-style version
-// section header, e.g. "## [Unreleased]" or "## [1.2.0] - 2026-01-01".
+// versionSectionHeaderPattern matches a Keep a Changelog version header,
+// e.g. "## [Unreleased]" or "## [1.2.0] - 2026-01-01".
 var versionSectionHeaderPattern = regexp.MustCompile(`^## \[`)
 
 // unreleasedSectionRange returns the 1-indexed [start,end] line range of
-// content's "## [Unreleased]" section: the header line itself through the
-// line before the next version-section header, or through the end of the
-// file if it's the last section. The zero value ([2]int{}) means no
-// "## [Unreleased]" header was found at all.
+// content's "## [Unreleased]" section, or the zero value if not found.
 func unreleasedSectionRange(content string) [2]int {
 	lines := splitLines(content)
 	for i, line := range lines {
@@ -273,10 +213,9 @@ func unreleasedSectionRange(content string) [2]int {
 	return [2]int{}
 }
 
-// rangeWithin reports whether the 1-indexed [start, start+count-1] span is
-// entirely inside r. A count of 0 (nothing on that side of a diff hunk) is
-// vacuously within any range, including the zero range. A non-empty span is
-// never within the zero range (no "## [Unreleased]" section was found).
+// rangeWithin reports whether [start, start+count-1] is entirely inside r.
+// count 0 is vacuously within any range; a non-empty span is never within
+// the zero range.
 func rangeWithin(start, count int, r [2]int) bool {
 	if count == 0 {
 		return true
@@ -288,23 +227,11 @@ func rangeWithin(start, count int, r [2]int) bool {
 	return start >= r[0] && end <= r[1]
 }
 
-// fileExceptionApplies fetches file's content at baseRef and headRef and the
-// file's own diff between them, then reports whether hunkIsSafe returns true
-// for every hunk in that diff — hunkIsSafe is called once per hunk with the
-// hunk itself plus both full file contents, so it can derive whatever range
-// structure it needs (e.g. unreleasedSectionRange, retractLineRanges) from
-// whichever side it cares about. Returns false (fail-safe — the exception
-// does not apply) if file can't be read at either ref, or the diff itself
-// fails: an inability to prove the exception applies is not the same as the
-// exception applying, matching this package's existing failure-mode
-// discipline. A file with no hunks in range (shouldn't happen, since the
-// caller only reaches here after ChangedFiles already reported file as
-// changed) trivially reports true, since there's nothing left to check.
-//
+// fileExceptionApplies fetches file's content at baseRef and headRef and
+// their diff, then reports whether hunkIsSafe holds for every hunk. Returns
+// false (fail-safe) if file can't be read at either ref or the diff fails.
 // Shared by changelogEditIsWithinUnreleased and
-// goModEditTouchesOnlyNonRetractLines, which otherwise duplicate this exact
-// fetch/diff/iterate shape and differ only in what "safe" means for their
-// file.
+// goModEditTouchesOnlyNonRetractLines.
 func fileExceptionApplies(ctx context.Context, dir, baseRef, headRef, file string, hunkIsSafe func(h diffHunk, baseContent, headContent string) bool) bool {
 	baseContent, err := gitShow(ctx, dir, baseRef, file)
 	if err != nil {
@@ -327,15 +254,9 @@ func fileExceptionApplies(ctx context.Context, dir, baseRef, headRef, file strin
 	return true
 }
 
-// changelogEditIsWithinUnreleased reports whether every hunk in CHANGELOG.md's
-// diff between baseRef and headRef falls entirely within the "## [Unreleased]"
-// section on both sides — the exception docs/planning/agent-safety-policy.md
-// grants ("adding to `## [Unreleased]` is expected and encouraged", only
-// "version-section boundaries for already-released versions" are
-// protected). A hunk touching content outside the Unreleased section on
-// either side (including a hunk that touches the "## [Unreleased]" header
-// line itself, e.g. cutting a release) is unsafe. See fileExceptionApplies
-// for the fail-safe fetch/diff/iterate shape this builds on.
+// changelogEditIsWithinUnreleased reports whether every hunk in
+// CHANGELOG.md's diff stays within the "## [Unreleased]" section on both
+// sides — docs/planning/agent-safety-policy.md's exception for CHANGELOG.md.
 func changelogEditIsWithinUnreleased(ctx context.Context, dir, baseRef, headRef string) bool {
 	return fileExceptionApplies(ctx, dir, baseRef, headRef, "CHANGELOG.md", func(h diffHunk, baseContent, headContent string) bool {
 		return rangeWithin(h.oldStart, h.oldCount, unreleasedSectionRange(baseContent)) &&
@@ -343,16 +264,9 @@ func changelogEditIsWithinUnreleased(ctx context.Context, dir, baseRef, headRef 
 	})
 }
 
-// retractLineRanges returns the 1-indexed [start,end] line ranges in a
-// go.mod file's content that belong to a `retract` directive: either a
-// single line (`retract v1.2.3 // reason`, or bare `retract vX.Y.Z`) or a
-// parenthesized block:
-//
-//	retract (
-//	    v1.2.3 // reason
-//	)
-//
-// covering the `retract (` line through the matching `)` line.
+// retractLineRanges returns the 1-indexed [start,end] ranges in go.mod
+// content belonging to a `retract` directive — a single line, or a
+// `retract ( ... )` block.
 func retractLineRanges(content string) [][2]int {
 	var ranges [][2]int
 	lines := splitLines(content)
@@ -381,9 +295,8 @@ func retractLineRanges(content string) [][2]int {
 	return ranges
 }
 
-// rangeIntersectsAny reports whether the 1-indexed [start, start+count-1]
-// span overlaps any range in ranges. A count of 0 (nothing on that side of
-// a diff hunk) never overlaps anything.
+// rangeIntersectsAny reports whether [start, start+count-1] overlaps any
+// range in ranges. count 0 never overlaps.
 func rangeIntersectsAny(start, count int, ranges [][2]int) bool {
 	if count == 0 {
 		return false
@@ -398,13 +311,8 @@ func rangeIntersectsAny(start, count int, ranges [][2]int) bool {
 }
 
 // goModEditTouchesOnlyNonRetractLines reports whether every hunk in
-// go.mod's diff between baseRef and headRef avoids every `retract`
-// directive line on both sides — the exception
-// docs/planning/agent-safety-policy.md grants ("go.mod `retract` directives
-// ... are protected"; an ordinary require/version edit is not). A hunk
-// overlapping a `retract` directive's line range on either side is unsafe.
-// See fileExceptionApplies for the fail-safe fetch/diff/iterate shape this
-// builds on.
+// go.mod's diff avoids every `retract` directive line on both sides —
+// docs/planning/agent-safety-policy.md's exception for go.mod.
 func goModEditTouchesOnlyNonRetractLines(ctx context.Context, dir, baseRef, headRef string) bool {
 	return fileExceptionApplies(ctx, dir, baseRef, headRef, "go.mod", func(h diffHunk, baseContent, headContent string) bool {
 		return !rangeIntersectsAny(h.oldStart, h.oldCount, retractLineRanges(baseContent)) &&
