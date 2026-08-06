@@ -13,40 +13,61 @@ import (
 	"github.com/mediusfy/modulex/provenance"
 )
 
+// gitOutput resolves an absolute path to the git executable via
+// exec.LookPath — rather than letting exec.Command search PATH implicitly
+// at invocation time (SonarQube go:S4036 / CWE-427, "uncontrolled search
+// path element": an attacker able to prepend a malicious "git" earlier in
+// PATH could otherwise have their binary invoked instead of the real one) —
+// then runs `git [-C dir] args...` and returns stdout. dir, if non-empty,
+// is the repository the command runs against; empty leaves off -C
+// entirely, so git resolves the repository from the calling process's own
+// current working directory.
+//
+// Uses an argv slice (exec.CommandContext), never "sh -c", so dir/args —
+// any of which a caller might derive from CI event data or an MCP tool
+// call — cannot inject shell syntax regardless of content; a malformed
+// argument simply makes the git invocation itself fail, returned as an
+// error with git's stderr attached when non-empty. Shared by every git
+// invocation in this file (ChangedFiles, gitShow, singleFileDiff) so the
+// argv-building/stderr-capture/error-wrap logic exists exactly once.
+func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		return "", err
+	}
+
+	fullArgs := make([]string, 0, len(args)+2)
+	if dir != "" {
+		fullArgs = append(fullArgs, "-C", dir)
+	}
+	fullArgs = append(fullArgs, args...)
+
+	var stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, gitPath, fullArgs...)
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return "", fmt.Errorf("%w: %s", err, msg)
+		}
+		return "", err
+	}
+	return string(out), nil
+}
+
 // ChangedFiles returns the list of file paths changed between baseRef and
 // headRef (git's "A...B" triple-dot form — the same diff scope gitDiff uses
 // for ScanSecrets), via `git diff --name-only`. Exported so other packages
 // (CheckProtectedPaths below, and tools/mcpserver's find_affected_modules)
 // can compute "what changed" once and reuse it, rather than each shelling
 // out to git separately.
-//
-// Uses an argv slice (exec.CommandContext), never "sh -c", so dir/baseRef/
-// headRef — any of which a caller might derive from CI event data or an MCP
-// tool call — cannot inject shell syntax regardless of content; a malformed
-// ref or dir simply makes the git invocation fail, returned as an error.
-//
-// dir, if non-empty, is the repository `git -C dir diff ...` runs against;
-// empty leaves off -C entirely, so git resolves the repository from the
-// calling process's current working directory.
 func ChangedFiles(ctx context.Context, dir, baseRef, headRef string) ([]string, error) {
-	args := make([]string, 0, 6)
-	if dir != "" {
-		args = append(args, "-C", dir)
-	}
-	args = append(args, "diff", "--name-only", "--no-color", fmt.Sprintf("%s...%s", baseRef, headRef))
-
-	var stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
+	out, err := gitOutput(ctx, dir, "diff", "--name-only", "--no-color", fmt.Sprintf("%s...%s", baseRef, headRef))
 	if err != nil {
-		if msg := strings.TrimSpace(stderr.String()); msg != "" {
-			return nil, fmt.Errorf("%w: %s", err, msg)
-		}
 		return nil, err
 	}
 
-	trimmed := strings.TrimSpace(string(out))
+	trimmed := strings.TrimSpace(out)
 	if trimmed == "" {
 		return nil, nil
 	}
@@ -157,27 +178,9 @@ func CheckProtectedPaths(ctx context.Context, dir, baseRef, headRef string, prot
 }
 
 // gitShow returns the content of file as it exists at ref, in the
-// repository at dir (or the calling process's cwd if dir is empty). Uses an
-// argv slice (exec.CommandContext), never "sh -c", for the same
-// injection-safety reason as ChangedFiles and gitDiff.
+// repository at dir (or the calling process's cwd if dir is empty).
 func gitShow(ctx context.Context, dir, ref, file string) (string, error) {
-	args := make([]string, 0, 4)
-	if dir != "" {
-		args = append(args, "-C", dir)
-	}
-	args = append(args, "show", ref+":"+file)
-
-	var stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
-		if msg := strings.TrimSpace(stderr.String()); msg != "" {
-			return "", fmt.Errorf("%w: %s", err, msg)
-		}
-		return "", err
-	}
-	return string(out), nil
+	return gitOutput(ctx, dir, "show", ref+":"+file)
 }
 
 // singleFileDiff returns the --unified=0 unified diff for exactly file
@@ -187,23 +190,7 @@ func gitShow(ctx context.Context, dir, ref, file string) (string, error) {
 // content-aware exception handling, and only once each has already been
 // confirmed present in ChangedFiles' output.
 func singleFileDiff(ctx context.Context, dir, baseRef, headRef, file string) (string, error) {
-	args := make([]string, 0, 7)
-	if dir != "" {
-		args = append(args, "-C", dir)
-	}
-	args = append(args, "diff", "--unified=0", "--no-color", fmt.Sprintf("%s...%s", baseRef, headRef), "--", file)
-
-	var stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
-		if msg := strings.TrimSpace(stderr.String()); msg != "" {
-			return "", fmt.Errorf("%w: %s", err, msg)
-		}
-		return "", err
-	}
-	return string(out), nil
+	return gitOutput(ctx, dir, "diff", "--unified=0", "--no-color", fmt.Sprintf("%s...%s", baseRef, headRef), "--", file)
 }
 
 // diffHunk is one @@ ... @@ hunk from a --unified=0 unified diff: the
