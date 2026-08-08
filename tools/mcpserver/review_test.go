@@ -105,12 +105,9 @@ func newProtectedPathsFixture(t *testing.T, protectedPaths []string, goModConten
 	return dir
 }
 
-// TestReviewDiff_ProtectedPathFromRealContract builds a fixture repository
-// with its own modulex.agent.yaml declaring go.mod as protected, then
-// changes go.mod between two commits — an end-to-end check that reviewDiff
-// actually reads the contract (via readContract) and threads
-// ProtectedPaths through to review.Review, not just that the two pieces
-// each work in isolation.
+// TestReviewDiff_ProtectedPathFromRealContract checks reviewDiff actually
+// reads the contract and threads ProtectedPaths through to review.Review,
+// not just that the two pieces work in isolation.
 func TestReviewDiff_ProtectedPathFromRealContract(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available on PATH")
@@ -118,11 +115,8 @@ func TestReviewDiff_ProtectedPathFromRealContract(t *testing.T) {
 
 	dir := newProtectedPathsFixture(t, []string{"go.mod"}, "module example.com/fixture\n\nretract v0.1.0\n")
 
-	// go.mod carries a file-scoped exception (review.
-	// goModEditTouchesOnlyNonRetractLines): only an edit that touches a
-	// `retract` directive line counts as a protected-path hit, per
-	// docs/planning/agent-safety-policy.md. Add a second retract entry so
-	// this end-to-end test still exercises a real hit, not a false pass.
+	// go.mod only flags retract-directive edits as hits; add a second one
+	// so this still exercises a real hit, not a false pass.
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/fixture\n\nretract v0.1.0\nretract v0.2.0\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile(go.mod): %v", err)
 	}

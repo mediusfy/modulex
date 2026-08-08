@@ -10,10 +10,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/mediusfy/modulex/agentdocs"
+	"github.com/mediusfy/modulex/approval"
 	"github.com/mediusfy/modulex/contract"
 )
 
@@ -44,6 +46,40 @@ func LoadContract(root string) (contract.Contract, error) {
 		return contract.Contract{}, fmt.Errorf("%s failed validation: %w", path, err)
 	}
 	return c, nil
+}
+
+// Approve grants an approval for action (and, if non-empty, resource),
+// attributed to approvedBy, valid for ttl, in root's approval.FileStore
+// (approval.DefaultStorePath) — the same store tools/mcpserver's
+// run_verification reads via the non-consuming Broker.DryRunCheck. This is
+// the only supported way to make a grant visible to a separately-running
+// MCP server process: `modulex agent approve` and the MCP server are
+// different processes with no shared memory, so the grant only bridges
+// between them via this file. See the Agent Approval Broker Guide's
+// "Wired for visibility, not yet for granting" section.
+//
+// The returned Grant carries the raw Token — the caller (runApprove) is
+// responsible for treating it as sensitive, per approval's "Token
+// sensitivity" section: this function itself never logs or persists it
+// unredacted (FileStore.Save only ever writes it to root's own approvals
+// file, whose whole purpose is holding exactly this).
+func Approve(root, action, resource, approvedBy string, ttl time.Duration) (approval.Grant, error) {
+	store := approval.NewFileStore(approval.DefaultStorePath(root))
+
+	b, err := store.Load()
+	if err != nil {
+		return approval.Grant{}, fmt.Errorf("loading approvals: %w", err)
+	}
+
+	grant, err := b.Grant(approval.Scope{Action: action, Resource: resource}, approvedBy, ttl)
+	if err != nil {
+		return approval.Grant{}, err
+	}
+
+	if err := store.Save(b); err != nil {
+		return approval.Grant{}, fmt.Errorf("saving approvals: %w", err)
+	}
+	return grant, nil
 }
 
 // outputFile pairs the repository-root file name `modulex agent generate`

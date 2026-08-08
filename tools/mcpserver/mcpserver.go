@@ -26,9 +26,18 @@
 // # No write-capable tools
 //
 // Nothing in this package can mutate the target repository, run git commands
-// beyond read-only ones (status/diff/rev-parse), grant or check approvals,
-// or apply a patch. A future ticket may add a separate, explicitly
+// beyond read-only ones (status/diff/rev-parse), grant or consume an
+// approval, or apply a patch. A future ticket may add a separate, explicitly
 // write-capable tool set; this package intentionally does not.
+//
+// run_verification does consult an approval.FileStore for a blocked check,
+// but only via the non-consuming Broker.DryRunCheck (see approval's guide's
+// "Dry runs" section) — reporting whether a grant already exists, never
+// granting or consuming one. A grant can only be created by
+// `modulex agent approve` (tools/agentcli), a separate CLI process; nothing
+// in this package can call Broker.Grant, so this remains read-only in the
+// same sense run_verification's own subprocess execution is: reporting on
+// state, not changing it.
 //
 // # "Read-only" does not mean "never runs a subprocess"
 //
@@ -79,7 +88,7 @@ func NewServer() *mcp.Server {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "run_verification",
-		Description: "Run a list of verification checks (e.g. from recommend_verification or review_diff) and report each one's pass/fail/skipped/unavailable/approval-required status. Each check runs with root as its working directory. Each Command is classified via discovery.ClassifyCommand before running; a mutating, destructive, or approval-required command is reported as approval-required instead of executed — see this tool's full description in docs/planning/agent-mcp-server-guide.md for the trust boundary this implies.",
+		Description: "Run a list of verification checks (e.g. from recommend_verification or review_diff) and report each one's pass/fail/skipped/unavailable/approval-required status. Each check runs with root as its working directory. Each Command is classified via discovery.ClassifyCommand before running; a mutating, destructive, or approval-required command is never executed and is reported approval-required, with approval_status reporting (non-consuming, read from root's approvals file) whether it has already been approved via `modulex agent approve` — see docs/planning/agent-mcp-server-guide.md for the trust boundary this implies.",
 	}, runVerificationHandler)
 
 	mcp.AddTool(s, &mcp.Tool{

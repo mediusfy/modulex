@@ -37,9 +37,8 @@ func TestChangedFiles_BadRefReturnsError(t *testing.T) {
 	}
 }
 
-// changelogFixtureBase is CHANGELOG.md's real structure, trimmed to what
-// unreleasedSectionRange needs: a preamble, an "## [Unreleased]" section,
-// and one already-released version section after it.
+// changelogFixtureBase has a preamble, an "## [Unreleased]" section, and
+// one already-released version section.
 const changelogFixtureBase = `# Changelog
 
 ## [Unreleased]
@@ -55,15 +54,10 @@ const changelogFixtureBase = `# Changelog
 - first release
 `
 
-// TestCheckProtectedPaths_SingleFileScenarios covers every CheckProtectedPaths
-// outcome that a single file, changed once between a "base" commit and HEAD,
-// can exercise — plain file/glob matching, an unrelated change, no
-// protectedPaths declared, and the CHANGELOG.md/go.mod file-scoped
-// exceptions (see protectedpaths.go's "File-scoped exceptions" doc
-// section). Table-driven because every case shares the exact same
-// repo-setup shape (write file, commit as "base", branch "base", rewrite
-// file, commit again, run CheckProtectedPaths base...HEAD) and differs only
-// in the file/content/protectedPaths/expected outcome.
+// TestCheckProtectedPaths_SingleFileScenarios covers plain file/glob
+// matching, an unrelated change, no protectedPaths declared, and the
+// CHANGELOG.md/go.mod exceptions — table-driven since every case shares the
+// same repo-setup shape.
 func TestCheckProtectedPaths_SingleFileScenarios(t *testing.T) {
 	tests := []struct {
 		name           string

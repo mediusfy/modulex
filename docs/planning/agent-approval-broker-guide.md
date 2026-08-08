@@ -24,16 +24,29 @@ convention already used by `provenance`, `discovery`, `verify`, and
 `contract`. It uses `crypto/rand`, never `math/rand`, for token generation,
 since these tokens are meant to be unguessable.
 
-## Not yet wired into anything
+## Wired end to end: `modulex agent approve` grants, `run_verification` sees it
 
-**This is a design and mechanism, not an integration.** No CLI, no MCP
-server, and no other call site in this repository invokes `approval` yet.
-It is the trust boundary a future `modulex agent` CLI or MCP server is
-expected to consult before actually running `git push`, `gh pr create`, a
-Jira transition, a database migration, or an infrastructure change. Nothing
-here reaches out to git, GitHub, Jira, or any other external system — it
-only tracks and checks the *decision* of whether such an action is
-currently authorized.
+Two real call sites, in two separate processes, bridged by `FileStore`
+(below):
+
+- **`modulex agent approve`** (`tools/agentcli`, Jira MOD-69's CLI half) —
+  a human-run command, not something an agent invokes on its own behalf:
+  granting is meant to require a human acting outside the agent's own
+  tool-calling loop. It loads root's `FileStore`, calls `Broker.Grant`,
+  and saves the result back to the same file.
+- **`tools/mcpserver`'s `run_verification`** (see the
+  [Agent MCP Server Guide](agent-mcp-server-guide.md)) — for every blocked
+  check, loads the *same* root's `FileStore` fresh (not cached) and calls
+  the non-consuming `Broker.DryRunCheck`, surfacing the result as
+  `approval_status`. It still never calls `Broker.Grant` — only
+  `modulex agent approve` does.
+
+These are different OS processes with no shared memory — a CLI-run grant
+only reaches the MCP server's broker because both resolve
+`approval.DefaultStorePath(root)` to the identical file. Nothing here
+reaches out to git, GitHub, Jira, or any other external system — it only
+tracks and checks the *decision* of whether an action is currently
+authorized.
 
 ## Why this is not just `provenance.Approval`
 
@@ -330,19 +343,38 @@ Converts a grant to a `provenance.Approval` record — `Action` from
 can be folded into a `provenance.Envelope`'s `Approvals` list for handoff
 continuity.
 
-## No persistence (by design, not a gap)
+## `Broker` itself has no persistence — `FileStore` is opt-in, on top
 
-A `Broker`'s grants live in process memory only. **A process restart
-invalidates every outstanding grant.** This is intentional: an approval
-broker whose grants survived a restart with no operator involvement would
-be a *wider*, harder-to-audit trust boundary than one that requires
-re-approval after any restart — silently persisted elevated-action
-approvals are exactly the kind of thing that should require a human to
-notice and re-grant, not something a crash-and-restart should hand back
-for free. A durable, file- or database-backed grant store is future work,
-only worth building if a real CLI/MCP integration needs approvals to
-outlive a single process — this ticket is scoped to the in-memory
-mechanism only.
+A bare `Broker`'s grants live in process memory only: a process restart
+invalidates every outstanding grant. This is intentional, not a gap —
+an approval broker whose grants survived a restart with no operator
+involvement would be a *wider*, harder-to-audit trust boundary than one
+that requires re-approval after any restart.
+
+`FileStore` (`store.go`) is a separate, opt-in persistence layer built on
+top, for exactly the case this section originally called out as the only
+reason to add one: "a real CLI/MCP integration needs approvals to outlive
+a single process." It doesn't weaken the "no silent persistence"
+principle above — a grant only ever reaches the file because a human
+explicitly ran `modulex agent approve`, the same explicit act that would
+otherwise create an in-memory-only grant. Nothing auto-persists.
+
+```go
+func NewFileStore(path string) *FileStore
+func DefaultStorePath(root string) string // <root>/.modulex/approvals.json
+func (s *FileStore) Save(b *Broker) error
+func (s *FileStore) Load() (*Broker, error)
+```
+
+`Save` writes every grant in `b` (active or not) to `path`, via a
+write-to-temp-then-rename so a concurrent `Load` never sees a
+partially-written file. `Load` reconstructs a fresh `Broker` from the file
+— a missing file is not an error, returning an empty `Broker` exactly like
+`NewBroker()`. `Load`/`Save` are not safe for concurrent writers across
+processes (last write wins); this targets an infrequent, human-run grant,
+not concurrent automated writers. Treat the file exactly like a
+credentials file (`Save` writes it `0o600`) — see "Token sensitivity"
+above; it round-trips the raw `Token`, unlike `Grant`'s own JSON encoding.
 
 ## Example
 
@@ -399,6 +431,10 @@ func main() {
   `provenance.Approval`/`provenance.Status`, which `Grant.ToProvenanceApproval`
   and `Broker.Check`'s return type reuse for consistency with the handoff
   schema.
+- [Agent MCP Server Guide](agent-mcp-server-guide.md) — `run_verification`'s
+  `approval_status`, the `FileStore` read side.
+- [Agent CLI Guide](agent-cli-guide.md) — `modulex agent approve`, the
+  `FileStore` write side.
 - Jira MOD-69: this package (`approval.Broker`, `approval.Grant`,
   `approval.RequiresApproval`).
 - Jira MOD-62/63/66: `contract`, `verify`, and `provenance` — the sibling

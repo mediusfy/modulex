@@ -5,6 +5,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/mediusfy/modulex/approval"
 	"github.com/mediusfy/modulex/discovery"
 	"github.com/mediusfy/modulex/provenance"
 	"github.com/mediusfy/modulex/verify"
@@ -78,60 +79,45 @@ type RunVerificationIn struct {
 // RunVerificationOut is run_verification's output.
 type RunVerificationOut struct {
 	Results []provenance.VerificationResult `json:"results"`
+	// ApprovalStatus, keyed by check Name, is set only for a check whose
+	// Results entry is StatusApprovalRequired: it reports whether an
+	// approval grant already exists for that check's Scope, read from
+	// root's approval.FileStore (approval.DefaultStorePath) via the
+	// non-consuming Broker.DryRunCheck. This tool still never runs a
+	// blocked check; it only reports whether a human has already approved
+	// it elsewhere — see `modulex agent approve` (tools/agentcli) for how
+	// a grant gets created.
+	ApprovalStatus map[string]provenance.Status `json:"approval_status,omitempty"`
 }
 
 // runVerification resolves root's available tools, classifies each check's
-// Command (see "Command classification gate" below), and runs whichever
-// ones clear that gate via verify.Run, with each CheckSpec.Dir set to
-// root so Command actually executes there (see "root is a real working
-// directory" below) — see verify.Run's doc comment for the tool-
-// availability/network-capability gating and "sh -c" execution it performs
-// beyond that. Exactly one provenance.VerificationResult is produced per
-// input CheckSpecIn, in the same order, whether a check ran, was gated, or
-// was unavailable/skipped by verify.Run itself — mirroring verify.Run's own
-// "never fewer than input" guarantee.
+// Command via discovery.ClassifyCommand, and runs whichever ones clear
+// that gate via verify.Run (each CheckSpec.Dir set to root, so Command
+// actually executes there). A Command classified Mutating, Destructive, or
+// ApprovalRequired is never executed — reported StatusApprovalRequired
+// instead, with ClassifyCommand's Reason. Mutating is blocked alongside
+// the other two because this package's whole premise is that nothing here
+// can mutate the target repository, and a Mutating command (e.g. `git
+// commit`, `make fmt`) is, definitionally, unsafe for that. Only Safe and
+// Networked commands run, the latter still gated by allowNetwork.
 //
-// # Checks[i].Command is executed verbatim, but not unconditionally — trust
-// boundary and command classification gate
+// For every blocked check, ApprovalStatus[name] additionally reports
+// whether an approval already exists for it, via a fresh
+// approval.FileStore.Load() from root's approvals file
+// (approval.DefaultStorePath) and a non-consuming Broker.DryRunCheck —
+// loaded fresh on every call, not cached, so a grant created by a separate
+// `modulex agent approve` process after this server started is still
+// seen. A Load failure (e.g. a corrupt approvals file) falls back to an
+// empty Broker rather than failing the whole call — approval status is an
+// enrichment, not a hard dependency of this tool's core result. This does
+// not add an execution path; see mcpserver.go's package doc for why a
+// non-consuming dry-run check does not compromise this package's
+// read-only guarantee.
 //
-// verify.Run executes Command via "sh -c" with no sanitization of its own;
-// this is not new here, verify.CheckSpec has always worked this way for its
-// existing callers (verify.FullGates, review.Checks). Unlike verify.PlanFor,
-// which only ever builds a Command from this repository's own trusted rule
-// table, run_verification lets an MCP caller supply Command directly — so
-// before handing any check to verify.Run, runVerification classifies its
-// Command with discovery.ClassifyCommand (the same fail-safe classifier
-// ADR-0032's command-classification model already defines). A Command that
-// classifies as provenance.ClassMutating, provenance.ClassDestructive, or
-// provenance.ClassApprovalRequired is never executed: it is reported as
-// provenance.StatusApprovalRequired instead, with ClassifyCommand's own
-// Reason explaining why. Mutating is blocked alongside Destructive/
-// ApprovalRequired (not merely those two) because this package's whole
-// premise is that nothing in it can mutate the target repository — a
-// classifier-approved "safe to run unattended" is not the same question as
-// "safe for a read-only tool to run," and ClassMutating commands (e.g.
-// `git add`/`git commit`, `make fmt`) are, definitionally, neither. Only
-// ClassSafe and ClassNetworked commands run; ClassNetworked remains subject
-// to Networked/allowNetwork gating in verify.Run exactly as before. This is
-// not a new approval/auth mechanism (no grant, no token, nothing stateful)
-// — it only refuses to run what the repository's existing, already-built
-// classifier already flags as unsafe or mutating, closing the gap a
-// caller-supplied Command would otherwise leave in this package's "nothing
-// here can mutate the target repository" guarantee (see mcpserver.go's
-// package doc). This tool remains intended for Command values that
-// originated from this repository's own recommend_verification/
-// review_diff output or its documented gate list, not arbitrary
-// caller-authored shell — the classifier is defense in depth, not a
-// substitute for that expectation. See
-// docs/planning/agent-mcp-server-guide.md's safety section.
-//
-// # root is a real working directory, not just a tool-detection hint
-//
-// Every runnable check's verify.CheckSpec.Dir is set to root (resolved via
-// resolveRoot), so Command genuinely executes there — this was previously
-// not the case (root only gated tool detection, while Command always ran
-// in the server process's own cwd); see verify.CheckSpec.Dir's doc comment
-// for the underlying mechanism.
+// This tool remains intended for Command values that originated from this
+// repository's own recommend_verification/review_diff output or its
+// documented gate list, not arbitrary caller-authored shell — the
+// classifier is defense in depth, not a substitute for that expectation.
 func runVerification(ctx context.Context, root string, checksIn []CheckSpecIn, allowNetwork bool) (RunVerificationOut, error) {
 	tools, err := resolveTools(root)
 	if err != nil {
@@ -139,7 +125,13 @@ func runVerification(ctx context.Context, root string, checksIn []CheckSpecIn, a
 	}
 	resolvedRoot := resolveRoot(root)
 
+	broker, err := approval.NewFileStore(approval.DefaultStorePath(resolvedRoot)).Load()
+	if err != nil {
+		broker = approval.NewBroker()
+	}
+
 	results := make([]provenance.VerificationResult, len(checksIn))
+	var approvalStatus map[string]provenance.Status
 	var runnable []verify.CheckSpec
 	var runnableIdx []int
 	for i, c := range checksIn {
@@ -151,6 +143,10 @@ func runVerification(ctx context.Context, root string, checksIn []CheckSpecIn, a
 				Status:   provenance.StatusApprovalRequired,
 				Reason:   reason,
 			}
+			if approvalStatus == nil {
+				approvalStatus = make(map[string]provenance.Status, len(checksIn))
+			}
+			approvalStatus[c.Name] = broker.DryRunCheck(approval.Scope{Action: c.Name})
 			continue
 		}
 		runnable = append(runnable, toCheckSpec(c, resolvedRoot))
@@ -161,7 +157,7 @@ func runVerification(ctx context.Context, root string, checksIn []CheckSpecIn, a
 		results[runnableIdx[i]] = r
 	}
 
-	return RunVerificationOut{Results: results}, nil
+	return RunVerificationOut{Results: results, ApprovalStatus: approvalStatus}, nil
 }
 
 func runVerificationHandler(ctx context.Context, _ *mcp.CallToolRequest, in RunVerificationIn) (*mcp.CallToolResult, RunVerificationOut, error) {

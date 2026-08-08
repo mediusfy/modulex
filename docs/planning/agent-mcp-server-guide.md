@@ -33,11 +33,20 @@ modules by `make check-nested-modules`.
 ## No write-capable tools
 
 Nothing in this package can mutate the target repository, run a git command
-beyond a read-only one (`status`, `diff`, `rev-parse`), grant or check an
+beyond a read-only one (`status`, `diff`, `rev-parse`), grant or consume an
 approval, or apply a patch. This is what makes the server "read-only" per
 the ADR. A future ticket may add a separate, explicitly write-capable tool
 set (behind its own approval mechanism, per ADR-0032's "Safety and
 governance" section) — this package intentionally does not.
+
+`run_verification` does consult a blocked check's approval status, but only
+by loading root's `approval.FileStore` (`approval.DefaultStorePath`) and
+calling the non-consuming `Broker.DryRunCheck` (see the
+[Agent Approval Broker Guide](agent-approval-broker-guide.md)'s "Dry runs"
+section) — it reports whether an approval already exists elsewhere,
+nothing more. No tool here can call `Broker.Grant`; a grant can only be
+created by `modulex agent approve` (see the
+[Agent CLI Guide](agent-cli-guide.md)), a separate, human-run CLI process.
 
 ## The six tools
 
@@ -46,7 +55,7 @@ governance" section) — this package intentionally does not.
 | `discover_repository` | `root` | `repository` (`discovery.Repository`) | `discovery.Discover` |
 | `read_contract` | `root` | `present`, `contract`, `validation_errors` | read `<root>/modulex.agent.yaml` + `yaml.Unmarshal` + `contract.Contract.Validate` |
 | `recommend_verification` | `changed_files` | `plan` (`verify.Plan`) | `verify.PlanFor` |
-| `run_verification` | `root`, `checks`, `allow_network` | `results` (`[]provenance.VerificationResult`) | `discovery.Discover` (tools) + `verify.Run` |
+| `run_verification` | `root`, `checks`, `allow_network` | `results` (`[]provenance.VerificationResult`), `approval_status` (`map[string]provenance.Status`) | `discovery.Discover` (tools) + `verify.Run` + `approval.Broker.DryRunCheck` |
 | `review_diff` | `root`, `base_ref`, `head_ref`, `allow_network` | `results` (`[]provenance.VerificationResult`) | `discovery.Discover` (tools) + `review.Review` |
 | `create_handoff` | `root`, `agent_name`, `verification` | `envelope` (`provenance.Envelope`) | `discovery.Discover` + `git rev-parse` + `provenance.Envelope.Redact`/`Validate` |
 
@@ -104,11 +113,24 @@ premise is that nothing in it can mutate the target repository, and a
 definitionally, exactly that; "the classifier says it's safe to run
 unattended" is a different question from "safe for a read-only tool to
 run." Only `safe` and `networked` commands run (`networked` still subject
-to the existing `Networked`/`allow_network` gate in `verify.Run`). This is
-*not* a new approval/auth mechanism — no grant, no token, nothing stateful
-— it only refuses to run what the repository's existing classifier already
-flags as unsafe or mutating, closing the gap a caller-supplied `Command`
-would otherwise leave open.
+to the existing `Networked`/`allow_network` gate in `verify.Run`). This
+does not itself grant, consume, or authenticate anything — it only refuses
+to run what the repository's existing classifier already flags as unsafe
+or mutating, closing the gap a caller-supplied `Command` would otherwise
+leave open.
+
+For every blocked check, `approval_status[name]` additionally reports
+whether an [`approval.Broker`](agent-approval-broker-guide.md) grant
+already exists for `approval.Scope{Action: name}`, via a fresh
+`approval.FileStore.Load()` from root's `.modulex/approvals.json`
+(`approval.DefaultStorePath`) and the non-consuming `Broker.DryRunCheck` —
+so a caller can distinguish "blocked, no approval yet" from "blocked,
+already approved elsewhere" without this tool ever gaining an execution
+path for a blocked command. Loaded fresh on every call, not cached, so a
+grant created by a separate `modulex agent approve` invocation (see the
+[Agent CLI Guide](agent-cli-guide.md)) — even one run after this server
+started — is still seen. Nothing in this package can call `Broker.Grant`;
+this tool only ever reads the file `modulex agent approve` writes.
 
 **`run_verification` remains intended for `Command` values that originated
 from this repository's own tooling** — copied from a prior
@@ -198,5 +220,9 @@ the same way `tools/provenanceci`'s CLI is invoked from a CI step, except
   `modulex.agent.yaml`'s schema, which `read_contract` parses
 - [`docs/planning/provenance-handoff-schema.md`](provenance-handoff-schema.md) —
   `provenance.Envelope`, which `create_handoff` assembles
+- [Agent Approval Broker Guide](agent-approval-broker-guide.md) —
+  `approval.Broker`/`FileStore`, which `run_verification`'s `approval_status` reads
+- [Agent CLI Guide](agent-cli-guide.md) —
+  `modulex agent approve`, the only way to write a grant this server can see
 - Jira MOD-63/MOD-65/MOD-64/MOD-66: `verify`/`review`/`discovery`/`provenance`,
   the packages this server wraps

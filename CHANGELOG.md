@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `docs/blog/agent-provider-hooks.md`: an audit of which agent-facing
+  surfaces ADR-0032 promised versus what's actually reachable today —
+  `tools/mcpserver`'s six tools and `tools/agentcli generate` are wired
+  end to end, while `approval`, `patchapply`, and `semindex` were, at the
+  time of writing, fully implemented but had no CLI or MCP call site. The
+  approval-package gap it identified is now closed (see the entries
+  below).
+- `tools/mcpserver`'s `run_verification` now consults an approval for every
+  blocked (mutating/destructive/approval-required) check, adding
+  `approval_status` (keyed by check name) to its output — whether a grant
+  already exists, via the non-consuming `Broker.DryRunCheck`. This does not
+  add an execution path: a blocked check is still never run, and nothing
+  in `tools/mcpserver` can call `Broker.Grant`.
+- `approval.FileStore` (`approval/store.go`): durable, file-backed grant
+  storage (`Save`/`Load`, `DefaultStorePath`), bridging an approval across
+  process boundaries — a grant made by one process must be visible to a
+  separately-running MCP server, which has no way to share an in-memory
+  `Broker` with it. `Broker` itself remains pure in-memory, unchanged.
+- `tools/agentcli` gained a second `modulex agent` subcommand, `approve`
+  (`agentcli.Approve`): grants an approval into `<root>/.modulex/approvals.json`
+  (`approval.DefaultStorePath`) — the exact file `run_verification` reads —
+  closing the loop the `approval_status` field above opened. Deliberately
+  a human-run CLI command, not an MCP tool: an approval is only meaningful
+  if granted outside the agent's own tool-calling loop. New
+  `docs/planning/agent-cli-guide.md` documents both `generate` and
+  `approve`; see also the Agent Approval Broker Guide's "Wired end to end"
+  section.
 - `modulex.agent.yaml` at the repository root: this repository's own
   ADR-0032 agent contract, promoted from
   `contract/testdata/modulex.agent.example.yaml` (which remains as a
@@ -182,6 +209,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   processor, and Watermill/RabbitMQ `SubscribeWithOptions` integration)
   have merged; items 4 (JetStream concurrent mode) and 5 (optional
   `ants/v2` adapter) remain open follow-up work.
+- Trimmed several oversized doc comments in `review/protectedpaths.go`,
+  `review/review.go`, `tools/mcpserver/review.go`, `contract/contract.go`,
+  and the corresponding sections of `agent-diff-review-guide.md`/
+  `agent-repository-contract-guide.md` — added during the protected-paths
+  work (MOD-65), several restated the same rationale two or three times
+  over. No behavior change.
 
 ## [0.7.0] - 2026-08-03
 

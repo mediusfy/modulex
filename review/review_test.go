@@ -66,13 +66,10 @@ func TestReview_ComposesChecksAndSecretScan(t *testing.T) {
 	}
 }
 
-// TestReview_ProtectedPathHit passes a non-nil protectedPaths and asserts
-// Review's last result fails when the diff touches one of them. Uses
-// SECURITY.md rather than go.mod or CHANGELOG.md, since those two carry
-// file-scoped exceptions (see protectedpaths.go) exercised by their own
-// dedicated tests in protectedpaths_test.go — this test is about Review's
-// plumbing (does the last result reflect a hit at all), not the exception
-// logic.
+// TestReview_ProtectedPathHit asserts Review's last result fails when the
+// diff touches a protected path. Uses SECURITY.md rather than go.mod or
+// CHANGELOG.md, which carry their own exceptions tested in
+// protectedpaths_test.go.
 func TestReview_ProtectedPathHit(t *testing.T) {
 	root := newTestRepo(t)
 
