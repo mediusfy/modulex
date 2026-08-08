@@ -96,7 +96,11 @@ func buildHandoffEnvelope(ctx context.Context, root, agentName string, verificat
 // rather than silently degrading into an envelope that only fails later, at
 // Validate, with a less informative cause.
 func gitRevParse(ctx context.Context, root string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", root, "rev-parse"}, args...)...)
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		return "", err
+	}
+	cmd := exec.CommandContext(ctx, gitPath, append([]string{"-C", root, "rev-parse"}, args...)...)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", err

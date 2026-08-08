@@ -91,20 +91,26 @@ func CheckProtectedPaths(ctx context.Context, dir, baseRef, headRef string, prot
 	}
 
 	validPatterns, invalidPatterns := partitionGlobs(protectedPaths)
+	problems := make([]string, 0, len(invalidPatterns))
+	for _, pattern := range invalidPatterns {
+		problems = append(problems, fmt.Sprintf("protected path %q is not a valid glob pattern and cannot be enforced (fix modulex.agent.yaml)", pattern))
+	}
 
 	changed, err := ChangedFiles(ctx, dir, baseRef, headRef)
 	if err != nil {
+		// A diff failure must not swallow the malformed-glob diagnostic —
+		// broken git state and a broken contract can coincide, and the
+		// caller needs to see both.
+		reason := fmt.Sprintf("could not compute diff %s...%s: %v", baseRef, headRef, err)
+		if len(problems) > 0 {
+			reason += "; " + strings.Join(problems, "; ")
+		}
 		return provenance.VerificationResult{
 			Name:     name,
 			Category: provenance.VerificationProtectedPaths,
 			Status:   provenance.StatusUnavailable,
-			Reason:   fmt.Sprintf("could not compute diff %s...%s: %v", baseRef, headRef, err),
+			Reason:   reason,
 		}
-	}
-
-	problems := make([]string, 0, len(invalidPatterns))
-	for _, pattern := range invalidPatterns {
-		problems = append(problems, fmt.Sprintf("protected path %q is not a valid glob pattern and cannot be enforced (fix modulex.agent.yaml)", pattern))
 	}
 
 	var hits []string

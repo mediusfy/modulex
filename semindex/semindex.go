@@ -398,7 +398,11 @@ func WriteMarkerFile(indexDir, markerName, root string) error {
 // (typically the process's own working directory), not arbitrary
 // untrusted text.
 func ResolveWorktreeRoot(dir, fallbackRoot string) (string, error) {
-	out, err := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel").Output()
+	var out []byte
+	gitPath, err := exec.LookPath("git")
+	if err == nil {
+		out, err = exec.Command(gitPath, "-C", dir, "rev-parse", "--show-toplevel").Output()
+	}
 	root := strings.TrimSpace(string(out))
 	if err != nil || root == "" {
 		if strings.TrimSpace(fallbackRoot) != "" {

@@ -119,7 +119,11 @@ func runOne(ctx context.Context, c CheckSpec, present map[string]bool, allowNetw
 // field existed. It returns combined stdout+stderr and the command's error
 // (nil on exit code 0).
 func runCommand(ctx context.Context, command, dir string) (string, error) {
-	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	shPath, err := exec.LookPath("sh")
+	if err != nil {
+		return "", err
+	}
+	cmd := exec.CommandContext(ctx, shPath, "-c", command)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	return string(out), err
