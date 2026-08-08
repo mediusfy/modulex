@@ -158,6 +158,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `protectedpaths.go`'s git invocations already use, instead of letting
   `exec.Command` search `PATH` implicitly (SonarQube go:S4036 / CWE-427,
   "uncontrolled search path element").
+- `.sonarcloud.properties` added: SonarCloud runs as automatic analysis
+  (no scanner step in CI), which reads this file rather than
+  `sonar-project.properties`, so the `tools/provenanceci/go.mod` exclusion
+  below now actually takes effect. The two files' exclusion lists are kept
+  in sync.
 - The remaining five `exec.Command`/`exec.CommandContext` call sites that
   passed a bare command name (`"git"` in
   `tools/mcpserver`'s `gitRevParse`, `tools/provenanceci`'s `isDirty`,
