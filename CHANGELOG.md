@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `docs/blog/agent-provider-hooks.md`: an audit of which agent-facing
+  surfaces ADR-0032 promised versus what's actually reachable today —
+  `tools/mcpserver`'s six tools and `tools/agentcli generate` are wired
+  end to end, while `approval`, `patchapply`, and `semindex` were, at the
+  time of writing, fully implemented but had no CLI or MCP call site. The
+  approval-package gap it identified is now closed (see the entries
+  below).
 - `tools/mcpserver`'s `run_verification` now consults an approval for every
   blocked (mutating/destructive/approval-required) check, adding
   `approval_status` (keyed by check name) to its output — whether a grant
