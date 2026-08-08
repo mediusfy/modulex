@@ -85,8 +85,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   file — the naive whole-file match would have flagged this very changelog
   entry. `contract.Contract.Validate` now also rejects a malformed
   `protected_paths` glob pattern instead of letting it silently go
-  unenforced, and `tools/mcpserver`'s `review_diff` now propagates a real
-  `readContract` error (e.g. an unreadable `modulex.agent.yaml`) as a
+  unenforced; `tools/mcpserver`'s `review_diff` independently re-checks each
+  pattern too (a contract can be read and its `ProtectedPaths` used even
+  when it fails `Validate` for an unrelated reason — see `reviewDiff`'s doc
+  comment — so `Validate` alone does not guarantee a malformed pattern is
+  caught on that path), drops any malformed pattern before enforcement, and
+  reports a `StatusFail` result naming it rather than letting it silently
+  go unenforced. `tools/mcpserver`'s `review_diff` also now propagates a
+  real `readContract` error (e.g. an unreadable `modulex.agent.yaml`) as a
   handler error instead of silently treating it as "no protected paths."
 - New `workerpool` package (`workerpool.New`, `workerpool.Processor`):
   a small, technology-neutral bounded worker pool — fixed worker count,
@@ -131,6 +137,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `Manager.RegisterModule`/`RegisterService` no longer release `stateMu`
+  before acquiring `mu` to perform the actual registration. The two-step
+  lock hand-off reopened a TOCTOU race: a concurrent `InitModules` could
+  transition the manager out of `StateConfiguring` and compute
+  `orderedMods` in the gap between the state check and the registration
+  taking effect, letting a module register successfully (a `nil` return)
+  while being silently excluded from that init pass. Both methods now hold
+  `stateMu` for their entire critical section.
+- `review.retractLineRanges` (`review/protectedpaths.go`) no longer misses
+  a go.mod `retract ( ... )` block whose closing `)` line carries a
+  trailing line comment (e.g. `) // pre-1.0 releases had a critical bug`).
+  Previously the block's line range was only recorded when the closing
+  line was exactly `")"`, so an edit inside such a block went unprotected
+  by `CheckProtectedPaths`.
+- `review.gitDiff` (`review/secrets.go`, used by `ScanSecrets`) now
+  resolves `git` via `exec.LookPath` through the same `gitOutput` helper
+  `protectedpaths.go`'s git invocations already use, instead of letting
+  `exec.Command` search `PATH` implicitly (SonarQube go:S4036 / CWE-427,
+  "uncontrolled search path element").
+- `Manager.startSpan` now checks `loggerCtx.Enabled(ctx, slog.LevelDebug)`
+  before building the "span started" debug log's fields, instead of always
+  calling `DebugContext` and relying on `slog.Logger` to no-op internally.
+  No observable behavior change (a disabled Debug level already suppressed
+  the record); this only skips constructing its arguments when they'd be
+  discarded.
+- `rabbitmq.EventBus.Close` no longer risks blocking on a nil `stopped`
+  channel until `ctx` is done. `stopped` is only ever nil for an `EventBus`
+  constructed as a zero value (bypassing `NewEventBus`, which always sets
+  it to an already-closed channel) with `closed: false` — no consumer ever
+  registered, so there's nothing to wait for; `Close` now returns
+  immediately in that case rather than falling into a `select` that can
+  only be woken by `ctx.Done()`.
 - `rabbitmq.EventBus.Subscribe`/`SubscribeWithOptions` waiting on the
   internal Qos+Consume lock no longer ignores the caller's `ctx`: if
   another subscription's Qos/Consume broker round trip stalls while

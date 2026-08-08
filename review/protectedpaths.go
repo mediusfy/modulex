@@ -16,7 +16,7 @@ import (
 // gitOutput resolves git via exec.LookPath (rather than an unqualified
 // "git", which SonarQube's go:S4036/CWE-427 flags as a PATH-search risk)
 // and runs `git [-C dir] args...`, returning stdout. Shared by every git
-// invocation in this file.
+// invocation in this package, including secrets.go's gitDiff.
 func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
 	gitPath, err := exec.LookPath("git")
 	if err != nil {
@@ -277,7 +277,7 @@ func retractLineRanges(content string) [][2]int {
 		lineNo := i + 1
 		trimmed := strings.TrimSpace(raw)
 		if inBlock {
-			if trimmed == ")" {
+			if isRetractBlockClose(trimmed) {
 				ranges = append(ranges, [2]int{blockStart, lineNo})
 				inBlock = false
 			}
@@ -293,6 +293,17 @@ func retractLineRanges(content string) [][2]int {
 		}
 	}
 	return ranges
+}
+
+// isRetractBlockClose reports whether a trimmed line closes a `retract (
+// ... )` block: a bare ")" or a ")" followed only by a trailing line
+// comment, e.g. `) // pre-1.0 releases had a critical bug`.
+func isRetractBlockClose(trimmed string) bool {
+	if !strings.HasPrefix(trimmed, ")") {
+		return false
+	}
+	rest := strings.TrimSpace(trimmed[1:])
+	return rest == "" || strings.HasPrefix(rest, "//")
 }
 
 // rangeIntersectsAny reports whether [start, start+count-1] overlaps any

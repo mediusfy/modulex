@@ -143,6 +143,14 @@ func TestCheckProtectedPaths_SingleFileScenarios(t *testing.T) {
 			protectedPaths: []string{"go.mod"},
 			wantStatus:     provenance.StatusPass,
 		},
+		{
+			name:           "go.mod retract block edit fails even when the closing paren has a trailing comment",
+			file:           "go.mod",
+			initial:        "module example.com/app\n\nretract (\n\tv0.9.0\n) // pre-1.0 releases had a critical bug\n",
+			updated:        "module example.com/app\n\nretract (\n\tv0.9.0\n\tv0.9.1\n) // pre-1.0 releases had a critical bug\n",
+			protectedPaths: []string{"go.mod"},
+			wantStatus:     provenance.StatusFail,
+		},
 	}
 
 	for _, tt := range tests {

@@ -187,8 +187,15 @@ range `ScanSecrets` uses, exported so `find_affected_modules` can reuse it.
 `CheckProtectedPaths` matches every changed file against every pattern with
 `path.Match` (single-path-segment glob semantics, e.g.
 `.github/workflows/*.yml`). `contract.Contract.Validate` rejects a
-malformed pattern at contract-load time; `CheckProtectedPaths` itself still
-treats one as "never matches" as a defense-in-depth fallback.
+malformed pattern at contract-load time, but a caller can still read
+`ProtectedPaths` from a contract that failed `Validate` for an unrelated
+reason (see `tools/mcpserver`'s `reviewDiff` doc comment), so `Validate`
+alone doesn't guarantee every caller catches the typo.
+`CheckProtectedPaths` itself still treats a malformed pattern as "never
+matches" as a defense-in-depth fallback, not a primary detection
+mechanism — a caller that cares about surfacing the typo, such as
+`reviewDiff`, re-validates each pattern itself, drops the malformed ones,
+and reports a `StatusFail` result naming them.
 
 | Outcome | `Status` | When |
 |---|---|---|

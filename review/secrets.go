@@ -1,10 +1,8 @@
 package review
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
@@ -162,29 +160,14 @@ func ScanSecrets(ctx context.Context, dir, baseRef, headRef string) provenance.V
 // output line is either a hunk header or an actual addition/removal) for
 // everything headRef introduced since it diverged from baseRef, in the
 // repository at dir (or ScanSecrets' calling process's cwd if dir is
-// empty). It shells out via exec.CommandContext with an argv slice (no
-// "sh -c"), so dir/baseRef/headRef — any of which a caller might derive
-// from CI event data or an MCP tool call — cannot inject shell syntax
-// regardless of content; a malformed ref or dir simply makes the git
-// invocation itself fail, which ScanSecrets reports as StatusUnavailable.
+// empty). Delegates to gitOutput (protectedpaths.go) for the actual
+// invocation, so this gets the same exec.LookPath resolution — rather than
+// letting exec.Command search PATH implicitly — and the same argv-slice (no
+// "sh -c") shell-injection immunity every other git invocation in this
+// package shares; a malformed ref or dir simply makes the git invocation
+// itself fail, which ScanSecrets reports as StatusUnavailable.
 func gitDiff(ctx context.Context, dir, baseRef, headRef string) (string, error) {
-	args := make([]string, 0, 6)
-	if dir != "" {
-		args = append(args, "-C", dir)
-	}
-	args = append(args, "diff", "--unified=0", "--no-color", fmt.Sprintf("%s...%s", baseRef, headRef))
-
-	var stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
-		if msg := strings.TrimSpace(stderr.String()); msg != "" {
-			return "", fmt.Errorf("%w: %s", err, msg)
-		}
-		return "", err
-	}
-	return string(out), nil
+	return gitOutput(ctx, dir, "diff", "--unified=0", "--no-color", fmt.Sprintf("%s...%s", baseRef, headRef))
 }
 
 // addedLine is one "+" line from a unified diff, with the file and
