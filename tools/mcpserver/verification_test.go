@@ -164,16 +164,16 @@ func TestRunVerification(t *testing.T) {
 // was never consumed.
 func TestRunVerification_ApprovalStatusReflectsBrokerGrant(t *testing.T) {
 	broker := approval.NewBroker()
-	grant, grantErr := broker.Grant(approval.Scope{Action: "danger"}, "tester", time.Minute)
+	grant, grantErr := broker.Grant(approval.Scope{Action: "would-approve"}, "tester", time.Minute)
 	if grantErr != nil {
 		t.Fatal(grantErr)
 	}
 	t.Logf("granted: %s", grant)
 
 	checks := []CheckSpecIn{
-		{Name: "danger", Command: "git reset --hard", Category: provenance.VerificationFull},
-		{Name: "no-grant", Command: "git reset --hard", Category: provenance.VerificationFull},
-		{Name: "runs-fine", Command: "go vet ./...", Category: provenance.VerificationFull},
+		{Name: "would-approve", Command: "git clean -f", Category: provenance.VerificationSecurity},
+		{Name: "would-deny", Command: "git branch -D stale-branch", Category: provenance.VerificationSecurity},
+		{Name: "clean-check", Command: "go vet ./...", Category: provenance.VerificationFocused},
 	}
 
 	for attempt := 1; attempt <= 2; attempt++ {
@@ -181,13 +181,13 @@ func TestRunVerification_ApprovalStatusReflectsBrokerGrant(t *testing.T) {
 		if err != nil {
 			t.Fatalf("attempt %d: runVerification() error = %v", attempt, err)
 		}
-		if got := out.ApprovalStatus["danger"]; got != provenance.StatusPass {
-			t.Errorf("attempt %d: ApprovalStatus[danger] = %q, want %q (DryRunCheck must not consume the grant)", attempt, got, provenance.StatusPass)
+		if got := out.ApprovalStatus["would-approve"]; got != provenance.StatusPass {
+			t.Errorf("attempt %d: ApprovalStatus[would-approve] = %q, want %q (DryRunCheck must not consume the grant)", attempt, got, provenance.StatusPass)
 		}
-		if got := out.ApprovalStatus["no-grant"]; got != provenance.StatusApprovalRequired {
-			t.Errorf("attempt %d: ApprovalStatus[no-grant] = %q, want %q", attempt, got, provenance.StatusApprovalRequired)
+		if got := out.ApprovalStatus["would-deny"]; got != provenance.StatusApprovalRequired {
+			t.Errorf("attempt %d: ApprovalStatus[would-deny] = %q, want %q", attempt, got, provenance.StatusApprovalRequired)
 		}
-		if _, ok := out.ApprovalStatus["runs-fine"]; ok {
+		if _, ok := out.ApprovalStatus["clean-check"]; ok {
 			t.Errorf("attempt %d: ApprovalStatus has an entry for a check that ran, want none", attempt)
 		}
 	}
