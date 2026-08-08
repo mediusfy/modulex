@@ -170,11 +170,10 @@ func TestRunVerification_ApprovalStatusReflectsBrokerGrant(t *testing.T) {
 	}
 	t.Logf("granted: %s", grant)
 
-	checks := []CheckSpecIn{
-		{Name: "would-approve", Command: "git clean -f", Category: provenance.VerificationSecurity},
-		{Name: "would-deny", Command: "git branch -D stale-branch", Category: provenance.VerificationSecurity},
-		{Name: "clean-check", Command: "go vet ./...", Category: provenance.VerificationFocused},
-	}
+	var checks []CheckSpecIn
+	checks = append(checks, CheckSpecIn{Name: "would-approve", Command: "git clean -f", Category: provenance.VerificationSecurity})
+	checks = append(checks, CheckSpecIn{Name: "would-deny", Command: "git branch -D stale-branch", Category: provenance.VerificationSecurity})
+	checks = append(checks, CheckSpecIn{Name: "clean-check", Command: "go vet ./...", Category: provenance.VerificationFocused})
 
 	for attempt := 1; attempt <= 2; attempt++ {
 		out, err := runVerification(context.Background(), broker, "../..", checks, false)
