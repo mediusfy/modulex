@@ -24,16 +24,20 @@ convention already used by `provenance`, `discovery`, `verify`, and
 `contract`. It uses `crypto/rand`, never `math/rand`, for token generation,
 since these tokens are meant to be unguessable.
 
-## Not yet wired into anything
+## Wired for visibility, not yet for granting
 
-**This is a design and mechanism, not an integration.** No CLI, no MCP
-server, and no other call site in this repository invokes `approval` yet.
-It is the trust boundary a future `modulex agent` CLI or MCP server is
-expected to consult before actually running `git push`, `gh pr create`, a
-Jira transition, a database migration, or an infrastructure change. Nothing
-here reaches out to git, GitHub, Jira, or any other external system — it
-only tracks and checks the *decision* of whether such an action is
-currently authorized.
+`tools/mcpserver`'s `run_verification` (see the
+[Agent MCP Server Guide](agent-mcp-server-guide.md)) is the first real call
+site: it holds one `Broker` per server process and calls `DryRunCheck` for
+every blocked check, surfacing whether a grant already exists as
+`approval_status` in its output. Nothing calls `Broker.Grant` yet — there
+is still no way to actually create a grant through the MCP server, or any
+other tool in this repository. A future `modulex agent` CLI is the
+expected place for that, since granting is meant to require a human acting
+outside the agent's own tool-calling loop, not a tool the agent itself can
+invoke. Nothing here reaches out to git, GitHub, Jira, or any other
+external system — it only tracks and checks the *decision* of whether an
+action is currently authorized.
 
 ## Why this is not just `provenance.Approval`
 
