@@ -171,6 +171,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   processor, and Watermill/RabbitMQ `SubscribeWithOptions` integration)
   have merged; items 4 (JetStream concurrent mode) and 5 (optional
   `ants/v2` adapter) remain open follow-up work.
+- Trimmed several oversized doc comments in `review/protectedpaths.go`,
+  `review/review.go`, `tools/mcpserver/review.go`, `contract/contract.go`,
+  and the corresponding sections of `agent-diff-review-guide.md`/
+  `agent-repository-contract-guide.md` — added during the protected-paths
+  work (MOD-65), several restated the same rationale two or three times
+  over. No behavior change.
 
 ## [0.7.0] - 2026-08-03
 

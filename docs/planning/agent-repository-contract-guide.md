@@ -92,7 +92,7 @@ type Contract struct {
 | `Boundaries` | "lifecycle and module boundaries" | Named boundaries (`Name`, `Description`, `Paths`, `Rule`) describing what must not cross what, and how it's enforced. |
 | `Commands` | "safe, mutating, networked, destructive, and approval-required commands" | `CommandDecl{Name, Command, Class, Reason}`, where `Class` is `provenance.CommandClass`. |
 | `Verification` | "focused and repository-wide verification commands" | `VerificationDecl{Focused, Full}`, each a `[]CheckDecl{Name, Command, Reason, RequiredTool, Networked}` — mirrors `verify.Plan`'s split (see "Relationship to `verify.CheckSpec`" below). |
-| `ProtectedPaths` | "...protected paths" | Paths agents must not modify without explicit human approval (see `agent-safety-policy.md`). Enforced, not just documented: `review.CheckProtectedPaths` (see `agent-diff-review-guide.md`) fails a diff that touches one, and `tools/mcpserver`'s `review_diff` wires it through automatically via `read_contract`. |
+| `ProtectedPaths` | "...protected paths" | Paths agents must not modify without explicit human approval (see `agent-safety-policy.md`). Enforced by `review.CheckProtectedPaths`, wired through `review_diff` via `read_contract`. |
 | `GeneratedPaths` | "generated...paths" | Paths that are machine-generated and should not be hand-edited. |
 | `RequiredTools` | "required tools" | Binary names the declared commands/checks depend on (e.g. `"go"`, `"golangci-lint"`). |
 | `OptionalServices` | "...optional services" | `OptionalService{Name, Description}` — external services that are nice-to-have, never a hard requirement. |
@@ -185,12 +185,9 @@ problem found (not just the first), or `nil` if `c` is valid.
   ```
 
 - Every `ProtectedPaths` entry must be a syntactically valid `path.Match`
-  glob pattern. `review.CheckProtectedPaths` (see
-  `agent-diff-review-guide.md`) treats a pattern that fails to compile
-  (`path.ErrBadPattern`) as "never matches" rather than failing the whole
-  diff review, so a typo here — e.g. an unmatched `[` — would otherwise go
-  silently unenforced with no warning anywhere; this check catches it at
-  contract-load time instead.
+  glob pattern — `review.CheckProtectedPaths` treats a bad pattern as
+  "never matches" rather than failing the review, so a typo would
+  otherwise go silently unenforced.
 
 **Secret checks:** every free-text string field in the schema — project
 names/paths/descriptions/composition-roots, instruction file paths/notes,
