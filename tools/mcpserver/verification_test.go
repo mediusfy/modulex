@@ -34,9 +34,9 @@ func TestRecommendVerification(t *testing.T) {
 // mustRunVerification calls runVerification and fails the test immediately
 // on a non-nil error, returning the result otherwise — shared by every
 // subtest below that expects a successful call.
-func mustRunVerification(t *testing.T, broker *approval.Broker, root string, checks []CheckSpecIn, allowNetwork bool) RunVerificationOut {
+func mustRunVerification(t *testing.T, root string, checks []CheckSpecIn, allowNetwork bool) RunVerificationOut {
 	t.Helper()
-	out, err := runVerification(context.Background(), broker, root, checks, allowNetwork)
+	out, err := runVerification(context.Background(), root, checks, allowNetwork)
 	if err != nil {
 		t.Fatalf("runVerification() error = %v", err)
 	}
@@ -51,9 +51,18 @@ func mustRunVerification(t *testing.T, broker *approval.Broker, root string, che
 // blocked as ClassApprovalRequired (the fail-safe default) before ever
 // reaching verify.Run — these tests need a Command that clears the gate to
 // exercise verify.Run's own tool-availability/network/pass-fail behavior.
+//
+// These subtests all use "../.." (this repository's own root) since none
+// of them grant an approval — runVerification loads
+// approval.DefaultStorePath("../..") on every call, but a repository with
+// no .modulex/approvals.json (the normal case) just yields an empty
+// Broker, identical to before FileStore existed. A test that actually
+// grants something uses an isolated t.TempDir() instead (see
+// TestRunVerification_ApprovalStatusReflectsFileStoreGrant), so it never
+// writes into this repository's real working tree.
 func TestRunVerification(t *testing.T) {
 	t.Run("missing required tool is reported unavailable, never run", func(t *testing.T) {
-		out := mustRunVerification(t, approval.NewBroker(), "../..", []CheckSpecIn{
+		out := mustRunVerification(t, "../..", []CheckSpecIn{
 			{
 				Name:         "fake-check",
 				Command:      "go vet ./...",
@@ -70,7 +79,7 @@ func TestRunVerification(t *testing.T) {
 	})
 
 	t.Run("networked check skipped without allow_network", func(t *testing.T) {
-		out := mustRunVerification(t, approval.NewBroker(), "../..", []CheckSpecIn{
+		out := mustRunVerification(t, "../..", []CheckSpecIn{
 			{Name: "networked", Command: "go vet ./...", Category: provenance.VerificationFull, Networked: true},
 		}, false)
 		if out.Results[0].Status != provenance.StatusSkipped {
@@ -79,7 +88,7 @@ func TestRunVerification(t *testing.T) {
 	})
 
 	t.Run("a trivial passing command", func(t *testing.T) {
-		out := mustRunVerification(t, approval.NewBroker(), "../..", []CheckSpecIn{
+		out := mustRunVerification(t, "../..", []CheckSpecIn{
 			{Name: "trivial", Command: "go vet ./...", Category: provenance.VerificationFocused},
 		}, false)
 		if out.Results[0].Status != provenance.StatusPass {
@@ -88,14 +97,14 @@ func TestRunVerification(t *testing.T) {
 	})
 
 	t.Run("invalid root returns an error", func(t *testing.T) {
-		_, err := runVerification(context.Background(), approval.NewBroker(), "/does/not/exist/at/all", nil, false)
+		_, err := runVerification(context.Background(), "/does/not/exist/at/all", nil, false)
 		if err == nil {
 			t.Fatal("runVerification() error = nil, want an error for an invalid root")
 		}
 	})
 
 	t.Run("destructive command is blocked without running", func(t *testing.T) {
-		out := mustRunVerification(t, approval.NewBroker(), "../..", []CheckSpecIn{
+		out := mustRunVerification(t, "../..", []CheckSpecIn{
 			{Name: "danger", Command: "git reset --hard", Category: provenance.VerificationFull},
 		}, false)
 		if out.Results[0].Status != provenance.StatusApprovalRequired {
@@ -107,7 +116,7 @@ func TestRunVerification(t *testing.T) {
 	})
 
 	t.Run("mutating command is blocked without running, not just destructive", func(t *testing.T) {
-		out := mustRunVerification(t, approval.NewBroker(), "../..", []CheckSpecIn{
+		out := mustRunVerification(t, "../..", []CheckSpecIn{
 			{Name: "would-mutate", Command: "make fmt", Category: provenance.VerificationFull},
 		}, false)
 		if out.Results[0].Status != provenance.StatusApprovalRequired {
@@ -116,7 +125,7 @@ func TestRunVerification(t *testing.T) {
 	})
 
 	t.Run("unrecognized command defaults to approval-required, fail-safe", func(t *testing.T) {
-		out := mustRunVerification(t, approval.NewBroker(), "../..", []CheckSpecIn{
+		out := mustRunVerification(t, "../..", []CheckSpecIn{
 			{Name: "mystery", Command: "some-arbitrary-unrecognized-command", Category: provenance.VerificationFull},
 		}, false)
 		if out.Results[0].Status != provenance.StatusApprovalRequired {
@@ -125,7 +134,7 @@ func TestRunVerification(t *testing.T) {
 	})
 
 	t.Run("a mix of blocked and runnable checks preserves order and count", func(t *testing.T) {
-		out := mustRunVerification(t, approval.NewBroker(), "../..", []CheckSpecIn{
+		out := mustRunVerification(t, "../..", []CheckSpecIn{
 			{Name: "first-blocked", Command: "git push origin main", Category: provenance.VerificationFull},
 			{Name: "second-runs", Command: "go vet ./...", Category: provenance.VerificationFull},
 			{Name: "third-blocked", Command: "git reset --hard", Category: provenance.VerificationFull},
@@ -146,18 +155,46 @@ func TestRunVerification(t *testing.T) {
 	})
 }
 
-// TestRunVerification_ApprovalStatusReflectsBrokerGrant is a decisive
-// differential test for the broker wiring: a blocked check with a matching
-// grant reports ApprovalStatus StatusPass, a blocked check without one
-// reports StatusApprovalRequired, a check that runs gets no ApprovalStatus
-// entry at all, and — since run_verification must use DryRunCheck, never
-// Check — the grant still shows StatusPass on a second call, proving it
-// was never consumed.
-func TestRunVerification_ApprovalStatusReflectsBrokerGrant(t *testing.T) {
-	broker := approval.NewBroker()
-	grant, grantErr := broker.Grant(approval.Scope{Action: "would-approve"}, "tester", time.Minute)
-	if grantErr != nil {
-		t.Fatal(grantErr)
+// writeTinyGoModule writes a minimal go.mod plus one .go file (whatever
+// content the caller supplies, valid or not) into dir, so "go vet ./..."
+// run with dir as its working directory has something real to vet.
+func writeTinyGoModule(t *testing.T, dir, goFileContent string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/tmp\n\ngo 1.25\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile go.mod: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(goFileContent), 0o644); err != nil {
+		t.Fatalf("WriteFile main.go: %v", err)
+	}
+}
+
+// TestRunVerification_ApprovalStatusReflectsFileStoreGrant is a decisive
+// end-to-end test for the file-backed bridge: a grant written via
+// approval.FileStore — simulating a separate `modulex agent approve`
+// process, not anything runVerification itself constructs — is visible to
+// a completely independent runVerification call against the same root. A
+// blocked check with a matching grant reports ApprovalStatus StatusPass, a
+// blocked check without one reports StatusApprovalRequired, a check that
+// runs gets no ApprovalStatus entry at all, and — since runVerification
+// must use DryRunCheck, never Check — the grant still shows StatusPass on
+// a second call, proving it was never consumed. Uses an isolated
+// t.TempDir(), never this repository's own root, so it never writes a
+// real .modulex/approvals.json into the working tree.
+func TestRunVerification_ApprovalStatusReflectsFileStoreGrant(t *testing.T) {
+	root := t.TempDir()
+	writeTinyGoModule(t, root, "package tmp\n")
+
+	store := approval.NewFileStore(approval.DefaultStorePath(root))
+	writer, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	grant, err := writer.Grant(approval.Scope{Action: "would-approve"}, "tester", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(writer); err != nil {
+		t.Fatalf("Save() error = %v", err)
 	}
 	t.Logf("granted: %s", grant)
 
@@ -167,7 +204,7 @@ func TestRunVerification_ApprovalStatusReflectsBrokerGrant(t *testing.T) {
 	checks = append(checks, CheckSpecIn{Name: "clean-check", Command: "go vet ./...", Category: provenance.VerificationFocused})
 
 	for attempt := 1; attempt <= 2; attempt++ {
-		out := mustRunVerification(t, broker, "../..", checks, false)
+		out := mustRunVerification(t, root, checks, false)
 		if got := out.ApprovalStatus["would-approve"]; got != provenance.StatusPass {
 			t.Errorf("attempt %d: ApprovalStatus[would-approve] = %q, want %q (DryRunCheck must not consume the grant)", attempt, got, provenance.StatusPass)
 		}
@@ -180,16 +217,19 @@ func TestRunVerification_ApprovalStatusReflectsBrokerGrant(t *testing.T) {
 	}
 }
 
-// writeTinyGoModule writes a minimal go.mod plus one .go file (whatever
-// content the caller supplies, valid or not) into dir, so "go vet ./..."
-// run with dir as its working directory has something real to vet.
-func writeTinyGoModule(t *testing.T, dir, goFileContent string) {
-	t.Helper()
-	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/tmp\n\ngo 1.25\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile go.mod: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(goFileContent), 0o644); err != nil {
-		t.Fatalf("WriteFile main.go: %v", err)
+// TestRunVerification_NoApprovalsFileIsNotAnError is a differential
+// companion to the grant test above: a root with no .modulex/approvals.json
+// at all (the common case for a repository nobody has ever run `modulex
+// agent approve` in) must behave exactly like an empty grant store — every
+// blocked check reports StatusApprovalRequired, not a handler error.
+func TestRunVerification_NoApprovalsFileIsNotAnError(t *testing.T) {
+	root := t.TempDir()
+
+	out := mustRunVerification(t, root, []CheckSpecIn{
+		{Name: "would-deny", Command: "git branch -D stale-branch", Category: provenance.VerificationSecurity},
+	}, false)
+	if got := out.ApprovalStatus["would-deny"]; got != provenance.StatusApprovalRequired {
+		t.Errorf("ApprovalStatus[would-deny] = %q, want %q (no approvals file at all)", got, provenance.StatusApprovalRequired)
 	}
 }
 
@@ -211,12 +251,12 @@ func TestRunVerification_UsesRootAsWorkingDirectory(t *testing.T) {
 
 	check := []CheckSpecIn{{Name: "vet", Command: "go vet ./...", Category: provenance.VerificationFull}}
 
-	goodOut := mustRunVerification(t, approval.NewBroker(), dirGood, check, false)
+	goodOut := mustRunVerification(t, dirGood, check, false)
 	if goodOut.Results[0].Status != provenance.StatusPass {
 		t.Errorf("dirGood: Status = %q, want %q; Message: %s", goodOut.Results[0].Status, provenance.StatusPass, goodOut.Results[0].Message)
 	}
 
-	badOut := mustRunVerification(t, approval.NewBroker(), dirBad, check, false)
+	badOut := mustRunVerification(t, dirBad, check, false)
 	if badOut.Results[0].Status != provenance.StatusFail {
 		t.Errorf("dirBad: Status = %q, want %q (root must be honored as the working directory, not silently ignored); Message: %s", badOut.Results[0].Status, provenance.StatusFail, badOut.Results[0].Message)
 	}

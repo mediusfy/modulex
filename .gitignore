@@ -20,3 +20,7 @@ coverage.html
 
 # Ad-hoc debug output
 test_output.txt
+
+# Local approval.FileStore state (modulex agent approve), sensitive — see
+# approval's "Token sensitivity" section
+.modulex/

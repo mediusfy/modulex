@@ -81,11 +81,12 @@ type RunVerificationOut struct {
 	Results []provenance.VerificationResult `json:"results"`
 	// ApprovalStatus, keyed by check Name, is set only for a check whose
 	// Results entry is StatusApprovalRequired: it reports whether an
-	// approval.Broker grant already exists for that check's Scope, via
-	// Broker.DryRunCheck — which never consumes a grant. This tool still
-	// never runs a blocked check; it only reports whether a human has
-	// already approved it elsewhere. See approval's guide for how a grant
-	// gets created.
+	// approval grant already exists for that check's Scope, read from
+	// root's approval.FileStore (approval.DefaultStorePath) via the
+	// non-consuming Broker.DryRunCheck. This tool still never runs a
+	// blocked check; it only reports whether a human has already approved
+	// it elsewhere — see `modulex agent approve` (tools/agentcli) for how
+	// a grant gets created.
 	ApprovalStatus map[string]provenance.Status `json:"approval_status,omitempty"`
 }
 
@@ -101,22 +102,33 @@ type RunVerificationOut struct {
 // Networked commands run, the latter still gated by allowNetwork.
 //
 // For every blocked check, ApprovalStatus[name] additionally reports
-// broker.DryRunCheck(approval.Scope{Action: name}) — whether an approval
-// already exists, without ever running the check or consuming the grant.
-// This does not add an execution path; see mcpserver.go's package doc for
-// why a non-consuming dry-run check does not compromise this package's
+// whether an approval already exists for it, via a fresh
+// approval.FileStore.Load() from root's approvals file
+// (approval.DefaultStorePath) and a non-consuming Broker.DryRunCheck —
+// loaded fresh on every call, not cached, so a grant created by a separate
+// `modulex agent approve` process after this server started is still
+// seen. A Load failure (e.g. a corrupt approvals file) falls back to an
+// empty Broker rather than failing the whole call — approval status is an
+// enrichment, not a hard dependency of this tool's core result. This does
+// not add an execution path; see mcpserver.go's package doc for why a
+// non-consuming dry-run check does not compromise this package's
 // read-only guarantee.
 //
 // This tool remains intended for Command values that originated from this
 // repository's own recommend_verification/review_diff output or its
 // documented gate list, not arbitrary caller-authored shell — the
 // classifier is defense in depth, not a substitute for that expectation.
-func runVerification(ctx context.Context, broker *approval.Broker, root string, checksIn []CheckSpecIn, allowNetwork bool) (RunVerificationOut, error) {
+func runVerification(ctx context.Context, root string, checksIn []CheckSpecIn, allowNetwork bool) (RunVerificationOut, error) {
 	tools, err := resolveTools(root)
 	if err != nil {
 		return RunVerificationOut{}, err
 	}
 	resolvedRoot := resolveRoot(root)
+
+	broker, err := approval.NewFileStore(approval.DefaultStorePath(resolvedRoot)).Load()
+	if err != nil {
+		broker = approval.NewBroker()
+	}
 
 	results := make([]provenance.VerificationResult, len(checksIn))
 	var approvalStatus map[string]provenance.Status
@@ -148,9 +160,7 @@ func runVerification(ctx context.Context, broker *approval.Broker, root string, 
 	return RunVerificationOut{Results: results, ApprovalStatus: approvalStatus}, nil
 }
 
-func runVerificationHandler(broker *approval.Broker) func(context.Context, *mcp.CallToolRequest, RunVerificationIn) (*mcp.CallToolResult, RunVerificationOut, error) {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, in RunVerificationIn) (*mcp.CallToolResult, RunVerificationOut, error) {
-		out, err := runVerification(ctx, broker, in.Root, in.Checks, in.AllowNetwork)
-		return nil, out, err
-	}
+func runVerificationHandler(ctx context.Context, _ *mcp.CallToolRequest, in RunVerificationIn) (*mcp.CallToolResult, RunVerificationOut, error) {
+	out, err := runVerification(ctx, in.Root, in.Checks, in.AllowNetwork)
+	return nil, out, err
 }

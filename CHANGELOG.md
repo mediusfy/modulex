@@ -9,13 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `tools/mcpserver`'s `run_verification` now consults an `approval.Broker`
-  for every blocked (mutating/destructive/approval-required) check, adding
+- `tools/mcpserver`'s `run_verification` now consults an approval for every
+  blocked (mutating/destructive/approval-required) check, adding
   `approval_status` (keyed by check name) to its output — whether a grant
   already exists, via the non-consuming `Broker.DryRunCheck`. This does not
   add an execution path: a blocked check is still never run, and nothing
-  in `tools/mcpserver` can call `Broker.Grant`. See the Agent Approval
-  Broker Guide's "Wired for visibility, not yet for granting" section.
+  in `tools/mcpserver` can call `Broker.Grant`.
+- `approval.FileStore` (`approval/store.go`): durable, file-backed grant
+  storage (`Save`/`Load`, `DefaultStorePath`), bridging an approval across
+  process boundaries — a grant made by one process must be visible to a
+  separately-running MCP server, which has no way to share an in-memory
+  `Broker` with it. `Broker` itself remains pure in-memory, unchanged.
+- `tools/agentcli` gained a second `modulex agent` subcommand, `approve`
+  (`agentcli.Approve`): grants an approval into `<root>/.modulex/approvals.json`
+  (`approval.DefaultStorePath`) — the exact file `run_verification` reads —
+  closing the loop the `approval_status` field above opened. Deliberately
+  a human-run CLI command, not an MCP tool: an approval is only meaningful
+  if granted outside the agent's own tool-calling loop. New
+  `docs/planning/agent-cli-guide.md` documents both `generate` and
+  `approve`; see also the Agent Approval Broker Guide's "Wired end to end"
+  section.
 - `modulex.agent.yaml` at the repository root: this repository's own
   ADR-0032 agent contract, promoted from
   `contract/testdata/modulex.agent.example.yaml` (which remains as a
