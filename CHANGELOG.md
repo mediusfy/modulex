@@ -88,7 +88,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unenforced, and `CheckProtectedPaths` itself fails naming any malformed
   pattern (while still enforcing the valid ones) instead of silently
   treating it as "never matches" — so every consumer of the `review`
-  package gets the fail-closed behavior, not just `tools/mcpserver`.
+  package gets the fail-closed behavior, not just `tools/mcpserver`. When
+  the diff itself cannot be computed, the malformed patterns are named in
+  the `StatusUnavailable` reason instead of being dropped.
   `tools/mcpserver`'s `review_diff` also now propagates a
   real `readContract` error (e.g. an unreadable `modulex.agent.yaml`) as a
   handler error instead of silently treating it as "no protected paths."
@@ -156,6 +158,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `protectedpaths.go`'s git invocations already use, instead of letting
   `exec.Command` search `PATH` implicitly (SonarQube go:S4036 / CWE-427,
   "uncontrolled search path element").
+- The remaining five `exec.Command`/`exec.CommandContext` call sites that
+  passed a bare command name (`"git"` in
+  `tools/mcpserver`'s `gitRevParse`, `tools/provenanceci`'s `isDirty`,
+  `semindex.ResolveWorktreeRoot`, and `discovery`'s `discoverGitStatus`;
+  `"sh"` in `verify`'s `runCommand`) now resolve the binary via
+  `exec.LookPath` first, closing out SonarQube go:S4036 / CWE-427 across
+  the repository. Each site keeps its existing error convention: hard
+  errors propagate, best-effort signals (`isDirty`, `discoverGitStatus`)
+  degrade to their documented defaults.
 - `Manager.startSpan` now checks `loggerCtx.Enabled(ctx, slog.LevelDebug)`
   before building the "span started" debug log's fields, instead of always
   calling `DebugContext` and relying on `slog.Logger` to no-op internally.

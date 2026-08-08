@@ -102,7 +102,11 @@ func main() {
 // repository) as "not dirty" rather than failing the whole tool over a
 // best-effort signal.
 func isDirty(repoPath string) bool {
-	cmd := exec.Command("git", "-C", repoPath, "status", "--porcelain")
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		return false
+	}
+	cmd := exec.Command(gitPath, "-C", repoPath, "status", "--porcelain")
 	out, err := cmd.Output()
 	if err != nil {
 		return false

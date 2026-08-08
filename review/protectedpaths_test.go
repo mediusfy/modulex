@@ -227,3 +227,20 @@ func TestCheckProtectedPaths_BadRefReturnsUnavailable(t *testing.T) {
 		t.Error("Reason is empty, want an explanation naming the failed diff computation")
 	}
 }
+
+// TestCheckProtectedPaths_BadRefStillReportsInvalidGlob: a diff failure
+// must not swallow the malformed-glob diagnostic — broken git state and a
+// broken contract can coincide, and the unavailable Reason has to surface
+// both.
+func TestCheckProtectedPaths_BadRefStillReportsInvalidGlob(t *testing.T) {
+	root := newTestRepo(t)
+
+	result := CheckProtectedPaths(context.Background(), root, "this-ref-does-not-exist", "HEAD", []string{"go.mod["})
+
+	if result.Status != "unavailable" {
+		t.Fatalf("Status = %q, want unavailable", result.Status)
+	}
+	if !strings.Contains(result.Reason, `"go.mod["`) {
+		t.Errorf("Reason = %q, want it to name the invalid glob pattern alongside the diff failure", result.Reason)
+	}
+}

@@ -581,7 +581,11 @@ func discoverGitStatus(root string) (isGitRepo, dirty bool) {
 		return false, false
 	}
 
-	out, err := exec.Command("git", "-C", root, "status", "--porcelain").Output()
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		return true, false
+	}
+	out, err := exec.Command(gitPath, "-C", root, "status", "--porcelain").Output()
 	if err != nil {
 		return true, false
 	}
