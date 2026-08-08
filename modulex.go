@@ -951,12 +951,14 @@ func (m *Manager) startSpan(ctx context.Context, spanName string, attrs map[stri
 	childSC := m.tracer.SpanContextFromContext(childCtx)
 
 	if childSC.IsValid() {
-		m.loggerCtx.DebugContext(childCtx, "span started",
-			slog.String("span_name", spanName),
-			slog.String("trace_id", childSC.TraceID()),
-			slog.String("span_id", childSC.SpanID()),
-			slog.String("parent_span_id", parentSC.SpanID()),
-		)
+		if m.loggerCtx.Enabled(childCtx, slog.LevelDebug) {
+			m.loggerCtx.DebugContext(childCtx, "span started",
+				slog.String("span_name", spanName),
+				slog.String("trace_id", childSC.TraceID()),
+				slog.String("span_id", childSC.SpanID()),
+				slog.String("parent_span_id", parentSC.SpanID()),
+			)
+		}
 	}
 	return childCtx, span
 }

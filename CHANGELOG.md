@@ -129,6 +129,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `protectedpaths.go`'s git invocations already use, instead of letting
   `exec.Command` search `PATH` implicitly (SonarQube go:S4036 / CWE-427,
   "uncontrolled search path element").
+- `Manager.startSpan` now checks `loggerCtx.Enabled(ctx, slog.LevelDebug)`
+  before building the "span started" debug log's fields, instead of always
+  calling `DebugContext` and relying on `slog.Logger` to no-op internally.
+  No observable behavior change (a disabled Debug level already suppressed
+  the record); this only skips constructing its arguments when they'd be
+  discarded.
+- `rabbitmq.EventBus.Close` no longer risks blocking on a nil `stopped`
+  channel until `ctx` is done. `stopped` is only ever nil for an `EventBus`
+  constructed as a zero value (bypassing `NewEventBus`, which always sets
+  it to an already-closed channel) with `closed: false` — no consumer ever
+  registered, so there's nothing to wait for; `Close` now returns
+  immediately in that case rather than falling into a `select` that can
+  only be woken by `ctx.Done()`.
 - `rabbitmq.EventBus.Subscribe`/`SubscribeWithOptions` waiting on the
   internal Qos+Consume lock no longer ignores the caller's `ctx`: if
   another subscription's Qos/Consume broker round trip stalls while

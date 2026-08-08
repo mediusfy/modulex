@@ -469,6 +469,9 @@ func (r *EventBus) Close(ctx context.Context) error {
 		cancel()
 	}
 
+	if stopped == nil {
+		return nil
+	}
 	select {
 	case <-stopped:
 		return nil
