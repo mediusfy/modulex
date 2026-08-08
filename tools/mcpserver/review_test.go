@@ -104,6 +104,33 @@ func newProtectedPathsFixture(t *testing.T, protectedPaths []string, goModConten
 	return dir
 }
 
+// commitGoMod overwrites dir's go.mod with content and commits it.
+func commitGoMod(t *testing.T, dir, content, message string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(go.mod): %v", err)
+	}
+	runGit(t, dir, "commit", "--quiet", "-am", message)
+}
+
+// protectedPathsResult runs reviewDiff over base..HEAD in dir and returns
+// its VerificationProtectedPaths result, failing t if reviewDiff errors or
+// produces no such result.
+func protectedPathsResult(t *testing.T, dir string) provenance.VerificationResult {
+	t.Helper()
+	out, err := reviewDiff(context.Background(), dir, "base", "HEAD", false)
+	if err != nil {
+		t.Fatalf("reviewDiff() error = %v", err)
+	}
+	for _, r := range out.Results {
+		if r.Category == provenance.VerificationProtectedPaths {
+			return r
+		}
+	}
+	t.Fatal("no VerificationProtectedPaths result found in Results")
+	return provenance.VerificationResult{}
+}
+
 // TestReviewDiff_ProtectedPathFromRealContract checks reviewDiff actually
 // reads the contract and threads ProtectedPaths through to review.Review,
 // not just that the two pieces work in isolation.
@@ -116,28 +143,10 @@ func TestReviewDiff_ProtectedPathFromRealContract(t *testing.T) {
 
 	// go.mod only flags retract-directive edits as hits; add a second one
 	// so this still exercises a real hit, not a false pass.
-	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/fixture\n\nretract v0.1.0\nretract v0.2.0\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile(go.mod): %v", err)
-	}
-	runGit(t, dir, "commit", "--quiet", "-am", "go.mod: retract v0.2.0")
+	commitGoMod(t, dir, "module example.com/fixture\n\nretract v0.1.0\nretract v0.2.0\n", "go.mod: retract v0.2.0")
 
-	out, err := reviewDiff(context.Background(), dir, "base", "HEAD", false)
-	if err != nil {
-		t.Fatalf("reviewDiff() error = %v", err)
-	}
-
-	var found bool
-	for _, r := range out.Results {
-		if r.Category != provenance.VerificationProtectedPaths {
-			continue
-		}
-		found = true
-		if r.Status != provenance.StatusFail {
-			t.Errorf("protected-paths Status = %q, want fail (go.mod is declared protected and changed)", r.Status)
-		}
-	}
-	if !found {
-		t.Fatal("no VerificationProtectedPaths result found in Results")
+	if r := protectedPathsResult(t, dir); r.Status != provenance.StatusFail {
+		t.Errorf("protected-paths Status = %q, want fail (go.mod is declared protected and changed)", r.Status)
 	}
 }
 
@@ -155,33 +164,16 @@ func TestReviewDiff_InvalidProtectedPathGlob(t *testing.T) {
 
 	dir := newProtectedPathsFixture(t, []string{"go.mod", ".github/workflows/[.yml"}, "module example.com/fixture\n")
 
-	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/fixture\n\nretract v0.1.0\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile(go.mod): %v", err)
-	}
-	runGit(t, dir, "commit", "--quiet", "-am", "go.mod: retract v0.1.0")
+	commitGoMod(t, dir, "module example.com/fixture\n\nretract v0.1.0\n", "go.mod: retract v0.1.0")
 
-	out, err := reviewDiff(context.Background(), dir, "base", "HEAD", false)
-	if err != nil {
-		t.Fatalf("reviewDiff() error = %v", err)
+	r := protectedPathsResult(t, dir)
+	if r.Status != provenance.StatusFail {
+		t.Errorf("protected-paths Status = %q, want fail for a malformed glob plus a retract edit", r.Status)
 	}
-
-	var found bool
-	for _, r := range out.Results {
-		if r.Category != provenance.VerificationProtectedPaths {
-			continue
-		}
-		found = true
-		if r.Status != provenance.StatusFail {
-			t.Errorf("protected-paths Status = %q, want fail for a malformed glob plus a retract edit", r.Status)
-		}
-		if !strings.Contains(r.Message, ".github/workflows/[.yml") {
-			t.Errorf("protected-paths Message = %q, want it to name the bad pattern", r.Message)
-		}
-		if !strings.Contains(r.Message, "go.mod") {
-			t.Errorf("protected-paths Message = %q, want it to report the go.mod hit (valid entries stay enforced)", r.Message)
-		}
+	if !strings.Contains(r.Message, ".github/workflows/[.yml") {
+		t.Errorf("protected-paths Message = %q, want it to name the bad pattern", r.Message)
 	}
-	if !found {
-		t.Fatal("no VerificationProtectedPaths result found in Results")
+	if !strings.Contains(r.Message, "go.mod") {
+		t.Errorf("protected-paths Message = %q, want it to report the go.mod hit (valid entries stay enforced)", r.Message)
 	}
 }
