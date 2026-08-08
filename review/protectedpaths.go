@@ -71,6 +71,11 @@ func ChangedFiles(ctx context.Context, dir, baseRef, headRef string) ([]string, 
 // changelogEditIsWithinUnreleased and goModEditTouchesOnlyNonRetractLines.
 // Every other path keeps plain "any change is a hit" matching.
 //
+// A pattern that fails to compile as a path.Match glob (an unmatched "[")
+// cannot protect anything, so it is reported as a StatusFail naming the
+// pattern rather than silently treated as "never matches" — the remaining
+// valid patterns are still enforced in the same pass.
+//
 // Empty protectedPaths passes trivially (no contract, or none declared). A
 // `git diff` failure reports StatusUnavailable, not a pass or fail.
 func CheckProtectedPaths(ctx context.Context, dir, baseRef, headRef string, protectedPaths []string) provenance.VerificationResult {
@@ -85,6 +90,8 @@ func CheckProtectedPaths(ctx context.Context, dir, baseRef, headRef string, prot
 		}
 	}
 
+	validPatterns, invalidPatterns := partitionGlobs(protectedPaths)
+
 	changed, err := ChangedFiles(ctx, dir, baseRef, headRef)
 	if err != nil {
 		return provenance.VerificationResult{
@@ -95,11 +102,15 @@ func CheckProtectedPaths(ctx context.Context, dir, baseRef, headRef string, prot
 		}
 	}
 
+	problems := make([]string, 0, len(invalidPatterns))
+	for _, pattern := range invalidPatterns {
+		problems = append(problems, fmt.Sprintf("protected path %q is not a valid glob pattern and cannot be enforced (fix modulex.agent.yaml)", pattern))
+	}
+
 	var hits []string
 	for _, file := range changed {
-		for _, pattern := range protectedPaths {
-			matched, matchErr := path.Match(pattern, file)
-			if matchErr != nil || !matched {
+		for _, pattern := range validPatterns {
+			if matched, _ := path.Match(pattern, file); !matched {
 				continue
 			}
 			if file == "CHANGELOG.md" && changelogEditIsWithinUnreleased(ctx, dir, baseRef, headRef) {
@@ -113,7 +124,11 @@ func CheckProtectedPaths(ctx context.Context, dir, baseRef, headRef string, prot
 		}
 	}
 
-	if len(hits) == 0 {
+	// changed is already git-sorted, and at most one hit is appended per
+	// file, so hits needs no separate sort.
+	problems = append(problems, hits...)
+
+	if len(problems) == 0 {
 		return provenance.VerificationResult{
 			Name:     name,
 			Category: provenance.VerificationProtectedPaths,
@@ -121,15 +136,28 @@ func CheckProtectedPaths(ctx context.Context, dir, baseRef, headRef string, prot
 		}
 	}
 
-	// changed is already git-sorted, and at most one hit is appended per
-	// file, so hits needs no separate sort.
 	return provenance.VerificationResult{
 		Name:     name,
 		Category: provenance.VerificationProtectedPaths,
 		Status:   provenance.StatusFail,
-		Message: fmt.Sprintf("%d changed file(s) touch a protected path (requires explicit human approval, see docs/planning/agent-safety-policy.md):\n%s",
-			len(hits), strings.Join(hits, "\n")),
+		Message: fmt.Sprintf("%d protected-paths problem(s) (a protected-path change requires explicit human approval, see docs/planning/agent-safety-policy.md):\n%s",
+			len(problems), strings.Join(problems, "\n")),
 	}
+}
+
+// partitionGlobs splits patterns into those that compile as path.Match
+// globs and those that don't (path.ErrBadPattern) — Match validates the
+// full pattern syntax even when the name doesn't match, so "" suffices as
+// the probe name.
+func partitionGlobs(patterns []string) (valid, invalid []string) {
+	for _, p := range patterns {
+		if _, err := path.Match(p, ""); err != nil {
+			invalid = append(invalid, p)
+		} else {
+			valid = append(valid, p)
+		}
+	}
+	return valid, invalid
 }
 
 // gitShow returns file's content as of ref.
@@ -283,16 +311,43 @@ func retractLineRanges(content string) [][2]int {
 			}
 			continue
 		}
-		if trimmed == "retract (" {
+		rest, isRetract := cutRetractKeyword(trimmed)
+		if !isRetract {
+			continue
+		}
+		if isRetractBlockOpen(rest) {
 			inBlock = true
 			blockStart = lineNo
 			continue
 		}
-		if trimmed == "retract" || strings.HasPrefix(trimmed, "retract ") {
-			ranges = append(ranges, [2]int{lineNo, lineNo})
-		}
+		ranges = append(ranges, [2]int{lineNo, lineNo})
 	}
 	return ranges
+}
+
+// cutRetractKeyword reports whether a trimmed line is a `retract`
+// directive — the keyword alone or followed by whitespace or "(" (the
+// modfile lexer treats "(" as punctuation, so `retract(` is also a block
+// open) — returning what follows the keyword with surrounding whitespace
+// removed. Identifiers merely sharing the prefix ("retracted") don't count.
+func cutRetractKeyword(trimmed string) (rest string, ok bool) {
+	rest, ok = strings.CutPrefix(trimmed, "retract")
+	if !ok || (rest != "" && rest[0] != ' ' && rest[0] != '\t' && rest[0] != '(') {
+		return "", false
+	}
+	return strings.TrimSpace(rest), true
+}
+
+// isRetractBlockOpen reports whether rest (what follows the `retract`
+// keyword) opens a `retract ( ... )` block: a "(" alone or followed only
+// by a trailing line comment, e.g. `retract ( // pre-1.0 was broken`.
+func isRetractBlockOpen(rest string) bool {
+	after, ok := strings.CutPrefix(rest, "(")
+	if !ok {
+		return false
+	}
+	after = strings.TrimSpace(after)
+	return after == "" || strings.HasPrefix(after, "//")
 }
 
 // isRetractBlockClose reports whether a trimmed line closes a `retract (

@@ -37,6 +37,11 @@ func TestChangedFiles_BadRefReturnsError(t *testing.T) {
 	}
 }
 
+// goModRetractOpenComment is a go.mod whose retract block's opening line
+// carries a trailing comment — retractLineRanges must record the whole
+// block, not just the opening line.
+const goModRetractOpenComment = "module example.com/app\n\nretract ( // pre-1.0 releases had a critical bug\n\tv0.9.0\n)\n"
+
 // changelogFixtureBase has a preamble, an "## [Unreleased]" section, and
 // one already-released version section.
 const changelogFixtureBase = `# Changelog
@@ -150,6 +155,40 @@ func TestCheckProtectedPaths_SingleFileScenarios(t *testing.T) {
 			updated:        "module example.com/app\n\nretract (\n\tv0.9.0\n\tv0.9.1\n) // pre-1.0 releases had a critical bug\n",
 			protectedPaths: []string{"go.mod"},
 			wantStatus:     provenance.StatusFail,
+		},
+		{
+			name:           "go.mod retract block edit fails even when the opening paren has a trailing comment",
+			file:           "go.mod",
+			initial:        goModRetractOpenComment,
+			updated:        strings.Replace(goModRetractOpenComment, "\tv0.9.0\n", "\tv0.9.0\n\tv0.9.1\n", 1),
+			protectedPaths: []string{"go.mod"},
+			wantStatus:     provenance.StatusFail,
+		},
+		{
+			name:           "go.mod tab-separated retract addition fails",
+			file:           "go.mod",
+			initial:        "module example.com/app\n",
+			updated:        "module example.com/app\n\nretract\tv0.1.0\n",
+			protectedPaths: []string{"go.mod"},
+			wantStatus:     provenance.StatusFail,
+		},
+		{
+			name:           "invalid glob pattern fails naming the pattern even when no protected file changed",
+			file:           "app.go",
+			initial:        "package app\n",
+			updated:        "package app\n\nfunc Hello() {}\n",
+			protectedPaths: []string{".github/workflows/[.yml"},
+			wantStatus:     provenance.StatusFail,
+			wantMessageHas: `.github/workflows/[.yml`,
+		},
+		{
+			name:           "valid patterns are still enforced alongside an invalid one",
+			file:           "SECURITY.md",
+			initial:        "# Security\n",
+			updated:        "# Security\n\nReport issues privately.\n",
+			protectedPaths: []string{"[", "SECURITY.md"},
+			wantStatus:     provenance.StatusFail,
+			wantMessageHas: `SECURITY.md matches protected path "SECURITY.md"`,
 		},
 	}
 

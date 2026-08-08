@@ -77,8 +77,7 @@ func TestReviewDiff(t *testing.T) {
 // modulex.agent.yaml declaring protectedPaths and an initial go.mod
 // containing goModContent, committed and branched as "base". Shared by
 // TestReviewDiff_ProtectedPathFromRealContract and
-// TestReviewDiff_InvalidProtectedPathGlob, which otherwise duplicate this
-// exact write-contract/write-go.mod/commit/branch setup and differ only in
+// TestReviewDiff_InvalidProtectedPathGlob, which differ only in
 // protectedPaths, the initial go.mod content, and what they do with dir
 // afterward.
 func newProtectedPathsFixture(t *testing.T, protectedPaths []string, goModContent string) string {
@@ -105,6 +104,33 @@ func newProtectedPathsFixture(t *testing.T, protectedPaths []string, goModConten
 	return dir
 }
 
+// commitGoMod overwrites dir's go.mod with content and commits it.
+func commitGoMod(t *testing.T, dir, content, message string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(go.mod): %v", err)
+	}
+	runGit(t, dir, "commit", "--quiet", "-am", message)
+}
+
+// protectedPathsResult runs reviewDiff over base..HEAD in dir and returns
+// its VerificationProtectedPaths result, failing t if reviewDiff errors or
+// produces no such result.
+func protectedPathsResult(t *testing.T, dir string) provenance.VerificationResult {
+	t.Helper()
+	out, err := reviewDiff(context.Background(), dir, "base", "HEAD", false)
+	if err != nil {
+		t.Fatalf("reviewDiff() error = %v", err)
+	}
+	for _, r := range out.Results {
+		if r.Category == provenance.VerificationProtectedPaths {
+			return r
+		}
+	}
+	t.Fatal("no VerificationProtectedPaths result found in Results")
+	return provenance.VerificationResult{}
+}
+
 // TestReviewDiff_ProtectedPathFromRealContract checks reviewDiff actually
 // reads the contract and threads ProtectedPaths through to review.Review,
 // not just that the two pieces work in isolation.
@@ -117,40 +143,20 @@ func TestReviewDiff_ProtectedPathFromRealContract(t *testing.T) {
 
 	// go.mod only flags retract-directive edits as hits; add a second one
 	// so this still exercises a real hit, not a false pass.
-	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/fixture\n\nretract v0.1.0\nretract v0.2.0\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile(go.mod): %v", err)
-	}
-	runGit(t, dir, "commit", "--quiet", "-am", "go.mod: retract v0.2.0")
+	commitGoMod(t, dir, "module example.com/fixture\n\nretract v0.1.0\nretract v0.2.0\n", "go.mod: retract v0.2.0")
 
-	out, err := reviewDiff(context.Background(), dir, "base", "HEAD", false)
-	if err != nil {
-		t.Fatalf("reviewDiff() error = %v", err)
-	}
-
-	var found bool
-	for _, r := range out.Results {
-		if r.Category != provenance.VerificationProtectedPaths {
-			continue
-		}
-		found = true
-		if r.Status != provenance.StatusFail {
-			t.Errorf("protected-paths Status = %q, want fail (go.mod is declared protected and changed)", r.Status)
-		}
-	}
-	if !found {
-		t.Fatal("no VerificationProtectedPaths result found in Results")
+	if r := protectedPathsResult(t, dir); r.Status != provenance.StatusFail {
+		t.Errorf("protected-paths Status = %q, want fail (go.mod is declared protected and changed)", r.Status)
 	}
 }
 
-// TestReviewDiff_InvalidProtectedPathGlob covers the case
-// invalidProtectedPathGlobResult exists for: a contract that parses fine
-// but declares a malformed protected_paths glob (an unmatched "["), which
-// contract.Contract.Validate flags but reviewDiff previously threaded
-// straight into review.Review anyway — where CheckProtectedPaths' own
-// path.ErrBadPattern fallback silently treats it as "never matches,"
-// leaving the typo unenforced with no signal anywhere in Results. reviewDiff
-// must now (a) report a StatusFail result naming the bad pattern, and (b)
-// still enforce the other, valid protected_paths entries.
+// TestReviewDiff_InvalidProtectedPathGlob: a contract that parses fine but
+// declares a malformed protected_paths glob (an unmatched "[") must not
+// fail open. reviewDiff threads the patterns as-is into review.Review,
+// whose CheckProtectedPaths result must (a) fail naming the bad pattern
+// and (b) still enforce the other, valid protected_paths entries — this
+// exercises that end-to-end through the contract file, not just the
+// review package in isolation.
 func TestReviewDiff_InvalidProtectedPathGlob(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available on PATH")
@@ -158,37 +164,16 @@ func TestReviewDiff_InvalidProtectedPathGlob(t *testing.T) {
 
 	dir := newProtectedPathsFixture(t, []string{"go.mod", ".github/workflows/[.yml"}, "module example.com/fixture\n")
 
-	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/fixture\n\nretract v0.1.0\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile(go.mod): %v", err)
-	}
-	runGit(t, dir, "commit", "--quiet", "-am", "go.mod: retract v0.1.0")
+	commitGoMod(t, dir, "module example.com/fixture\n\nretract v0.1.0\n", "go.mod: retract v0.1.0")
 
-	out, err := reviewDiff(context.Background(), dir, "base", "HEAD", false)
-	if err != nil {
-		t.Fatalf("reviewDiff() error = %v", err)
+	r := protectedPathsResult(t, dir)
+	if r.Status != provenance.StatusFail {
+		t.Errorf("protected-paths Status = %q, want fail for a malformed glob plus a retract edit", r.Status)
 	}
-
-	var sawBadGlobFail, sawProtectedPathsFail bool
-	for _, r := range out.Results {
-		if r.Name == "check-protected-paths-contract" {
-			sawBadGlobFail = true
-			if r.Status != provenance.StatusFail {
-				t.Errorf("check-protected-paths-contract Status = %q, want fail", r.Status)
-			}
-			if !strings.Contains(r.Message, ".github/workflows/[.yml") {
-				t.Errorf("check-protected-paths-contract Message = %q, want it to name the bad pattern", r.Message)
-			}
-		}
-		if r.Category == provenance.VerificationProtectedPaths && r.Name == "check-protected-paths" {
-			if r.Status == provenance.StatusFail {
-				sawProtectedPathsFail = true
-			}
-		}
+	if !strings.Contains(r.Message, ".github/workflows/[.yml") {
+		t.Errorf("protected-paths Message = %q, want it to name the bad pattern", r.Message)
 	}
-	if !sawBadGlobFail {
-		t.Fatal("no check-protected-paths-contract result found in Results, want a StatusFail flagging the malformed glob")
-	}
-	if !sawProtectedPathsFail {
-		t.Error("check-protected-paths did not fail even though go.mod (a still-valid protected_paths entry) was changed via a retract edit")
+	if !strings.Contains(r.Message, "go.mod") {
+		t.Errorf("protected-paths Message = %q, want it to report the go.mod hit (valid entries stay enforced)", r.Message)
 	}
 }
