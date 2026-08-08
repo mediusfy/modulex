@@ -5,7 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/mediusfy/modulex/approval"
 	"github.com/mediusfy/modulex/provenance"
 	"github.com/mediusfy/modulex/verify"
 )
@@ -39,7 +41,7 @@ func TestRecommendVerification(t *testing.T) {
 // exercise verify.Run's own tool-availability/network/pass-fail behavior.
 func TestRunVerification(t *testing.T) {
 	t.Run("missing required tool is reported unavailable, never run", func(t *testing.T) {
-		out, err := runVerification(context.Background(), "../..", []CheckSpecIn{
+		out, err := runVerification(context.Background(), approval.NewBroker(), "../..", []CheckSpecIn{
 			{
 				Name:         "fake-check",
 				Command:      "go vet ./...",
@@ -59,7 +61,7 @@ func TestRunVerification(t *testing.T) {
 	})
 
 	t.Run("networked check skipped without allow_network", func(t *testing.T) {
-		out, err := runVerification(context.Background(), "../..", []CheckSpecIn{
+		out, err := runVerification(context.Background(), approval.NewBroker(), "../..", []CheckSpecIn{
 			{Name: "networked", Command: "go vet ./...", Category: provenance.VerificationFull, Networked: true},
 		}, false)
 		if err != nil {
@@ -71,7 +73,7 @@ func TestRunVerification(t *testing.T) {
 	})
 
 	t.Run("a trivial passing command", func(t *testing.T) {
-		out, err := runVerification(context.Background(), "../..", []CheckSpecIn{
+		out, err := runVerification(context.Background(), approval.NewBroker(), "../..", []CheckSpecIn{
 			{Name: "trivial", Command: "go vet ./...", Category: provenance.VerificationFocused},
 		}, false)
 		if err != nil {
@@ -83,14 +85,14 @@ func TestRunVerification(t *testing.T) {
 	})
 
 	t.Run("invalid root returns an error", func(t *testing.T) {
-		_, err := runVerification(context.Background(), "/does/not/exist/at/all", nil, false)
+		_, err := runVerification(context.Background(), approval.NewBroker(), "/does/not/exist/at/all", nil, false)
 		if err == nil {
 			t.Fatal("runVerification() error = nil, want an error for an invalid root")
 		}
 	})
 
 	t.Run("destructive command is blocked without running", func(t *testing.T) {
-		out, err := runVerification(context.Background(), "../..", []CheckSpecIn{
+		out, err := runVerification(context.Background(), approval.NewBroker(), "../..", []CheckSpecIn{
 			{Name: "danger", Command: "git reset --hard", Category: provenance.VerificationFull},
 		}, false)
 		if err != nil {
@@ -105,7 +107,7 @@ func TestRunVerification(t *testing.T) {
 	})
 
 	t.Run("mutating command is blocked without running, not just destructive", func(t *testing.T) {
-		out, err := runVerification(context.Background(), "../..", []CheckSpecIn{
+		out, err := runVerification(context.Background(), approval.NewBroker(), "../..", []CheckSpecIn{
 			{Name: "would-mutate", Command: "make fmt", Category: provenance.VerificationFull},
 		}, false)
 		if err != nil {
@@ -117,7 +119,7 @@ func TestRunVerification(t *testing.T) {
 	})
 
 	t.Run("unrecognized command defaults to approval-required, fail-safe", func(t *testing.T) {
-		out, err := runVerification(context.Background(), "../..", []CheckSpecIn{
+		out, err := runVerification(context.Background(), approval.NewBroker(), "../..", []CheckSpecIn{
 			{Name: "mystery", Command: "some-arbitrary-unrecognized-command", Category: provenance.VerificationFull},
 		}, false)
 		if err != nil {
@@ -129,7 +131,7 @@ func TestRunVerification(t *testing.T) {
 	})
 
 	t.Run("a mix of blocked and runnable checks preserves order and count", func(t *testing.T) {
-		out, err := runVerification(context.Background(), "../..", []CheckSpecIn{
+		out, err := runVerification(context.Background(), approval.NewBroker(), "../..", []CheckSpecIn{
 			{Name: "first-blocked", Command: "git push origin main", Category: provenance.VerificationFull},
 			{Name: "second-runs", Command: "go vet ./...", Category: provenance.VerificationFull},
 			{Name: "third-blocked", Command: "git reset --hard", Category: provenance.VerificationFull},
@@ -151,6 +153,42 @@ func TestRunVerification(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestRunVerification_ApprovalStatusReflectsBrokerGrant is a decisive
+// differential test for the broker wiring: a blocked check with a matching
+// grant reports ApprovalStatus StatusPass, a blocked check without one
+// reports StatusApprovalRequired, a check that runs gets no ApprovalStatus
+// entry at all, and — since run_verification must use DryRunCheck, never
+// Check — the grant still shows StatusPass on a second call, proving it
+// was never consumed.
+func TestRunVerification_ApprovalStatusReflectsBrokerGrant(t *testing.T) {
+	broker := approval.NewBroker()
+	if _, err := broker.Grant(approval.Scope{Action: "danger"}, "tester", time.Minute); err != nil {
+		t.Fatalf("Grant() error = %v", err)
+	}
+
+	checks := []CheckSpecIn{
+		{Name: "danger", Command: "git reset --hard", Category: provenance.VerificationFull},
+		{Name: "no-grant", Command: "git reset --hard", Category: provenance.VerificationFull},
+		{Name: "runs-fine", Command: "go vet ./...", Category: provenance.VerificationFull},
+	}
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		out, err := runVerification(context.Background(), broker, "../..", checks, false)
+		if err != nil {
+			t.Fatalf("attempt %d: runVerification() error = %v", attempt, err)
+		}
+		if got := out.ApprovalStatus["danger"]; got != provenance.StatusPass {
+			t.Errorf("attempt %d: ApprovalStatus[danger] = %q, want %q (DryRunCheck must not consume the grant)", attempt, got, provenance.StatusPass)
+		}
+		if got := out.ApprovalStatus["no-grant"]; got != provenance.StatusApprovalRequired {
+			t.Errorf("attempt %d: ApprovalStatus[no-grant] = %q, want %q", attempt, got, provenance.StatusApprovalRequired)
+		}
+		if _, ok := out.ApprovalStatus["runs-fine"]; ok {
+			t.Errorf("attempt %d: ApprovalStatus has an entry for a check that ran, want none", attempt)
+		}
+	}
 }
 
 // writeTinyGoModule writes a minimal go.mod plus one .go file (whatever
@@ -184,7 +222,7 @@ func TestRunVerification_UsesRootAsWorkingDirectory(t *testing.T) {
 
 	check := []CheckSpecIn{{Name: "vet", Command: "go vet ./...", Category: provenance.VerificationFull}}
 
-	goodOut, err := runVerification(context.Background(), dirGood, check, false)
+	goodOut, err := runVerification(context.Background(), approval.NewBroker(), dirGood, check, false)
 	if err != nil {
 		t.Fatalf("runVerification(dirGood) error = %v", err)
 	}
@@ -192,7 +230,7 @@ func TestRunVerification_UsesRootAsWorkingDirectory(t *testing.T) {
 		t.Errorf("dirGood: Status = %q, want %q; Message: %s", goodOut.Results[0].Status, provenance.StatusPass, goodOut.Results[0].Message)
 	}
 
-	badOut, err := runVerification(context.Background(), dirBad, check, false)
+	badOut, err := runVerification(context.Background(), approval.NewBroker(), dirBad, check, false)
 	if err != nil {
 		t.Fatalf("runVerification(dirBad) error = %v", err)
 	}

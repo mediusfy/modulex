@@ -26,9 +26,16 @@
 // # No write-capable tools
 //
 // Nothing in this package can mutate the target repository, run git commands
-// beyond read-only ones (status/diff/rev-parse), grant or check approvals,
-// or apply a patch. A future ticket may add a separate, explicitly
+// beyond read-only ones (status/diff/rev-parse), grant or consume an
+// approval, or apply a patch. A future ticket may add a separate, explicitly
 // write-capable tool set; this package intentionally does not.
+//
+// run_verification does consult an approval.Broker for a blocked check, but
+// only via Broker.DryRunCheck — which, by design, never grants or consumes
+// anything (see approval's guide's "Dry runs" section). No tool here can
+// call Broker.Grant, so this remains read-only in the same sense
+// run_verification's own subprocess execution is: reporting on state, not
+// changing it.
 //
 // # "Read-only" does not mean "never runs a subprocess"
 //
@@ -46,6 +53,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/mediusfy/modulex/approval"
 	"github.com/mediusfy/modulex/discovery"
 )
 
@@ -61,6 +69,7 @@ const serverName = "modulex"
 // connect it directly for testing (see mcpserver_test.go).
 func NewServer() *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: serverName}, nil)
+	broker := approval.NewBroker()
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "discover_repository",
@@ -79,8 +88,8 @@ func NewServer() *mcp.Server {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "run_verification",
-		Description: "Run a list of verification checks (e.g. from recommend_verification or review_diff) and report each one's pass/fail/skipped/unavailable/approval-required status. Each check runs with root as its working directory. Each Command is classified via discovery.ClassifyCommand before running; a mutating, destructive, or approval-required command is reported as approval-required instead of executed — see this tool's full description in docs/planning/agent-mcp-server-guide.md for the trust boundary this implies.",
-	}, runVerificationHandler)
+		Description: "Run a list of verification checks (e.g. from recommend_verification or review_diff) and report each one's pass/fail/skipped/unavailable/approval-required status. Each check runs with root as its working directory. Each Command is classified via discovery.ClassifyCommand before running; a mutating, destructive, or approval-required command is never executed and is reported approval-required, with approval_status reporting (non-consuming) whether it has already been approved elsewhere — see docs/planning/agent-mcp-server-guide.md for the trust boundary this implies.",
+	}, runVerificationHandler(broker))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "review_diff",

@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `tools/mcpserver`'s `run_verification` now consults an `approval.Broker`
+  for every blocked (mutating/destructive/approval-required) check, adding
+  `approval_status` (keyed by check name) to its output — whether a grant
+  already exists, via the non-consuming `Broker.DryRunCheck`. This does not
+  add an execution path: a blocked check is still never run, and nothing
+  in `tools/mcpserver` can call `Broker.Grant`. See the Agent Approval
+  Broker Guide's "Wired for visibility, not yet for granting" section.
 - `modulex.agent.yaml` at the repository root: this repository's own
   ADR-0032 agent contract, promoted from
   `contract/testdata/modulex.agent.example.yaml` (which remains as a
