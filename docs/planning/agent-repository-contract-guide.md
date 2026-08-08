@@ -185,9 +185,11 @@ problem found (not just the first), or `nil` if `c` is valid.
   ```
 
 - Every `ProtectedPaths` entry must be a syntactically valid `path.Match`
-  glob pattern — `review.CheckProtectedPaths` treats a bad pattern as
-  "never matches" rather than failing the review, so a typo would
-  otherwise go silently unenforced.
+  glob pattern. `review.CheckProtectedPaths` independently validates each
+  pattern at review time and fails naming any malformed one (while still
+  enforcing the valid ones), so this check and that one are two layers of
+  the same defense: `Validate` catches the typo when the contract is
+  loaded, `CheckProtectedPaths` when a diff is reviewed.
 
 **Secret checks:** every free-text string field in the schema — project
 names/paths/descriptions/composition-roots, instruction file paths/notes,

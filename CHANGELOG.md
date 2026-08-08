@@ -214,6 +214,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Docs
 
+- `docs/planning/agent-repository-contract-guide.md` and
+  `docs/planning/agent-diff-review-guide.md` updated for
+  `CheckProtectedPaths`' fail-closed malformed-glob behavior: both
+  previously described the old "never matches" fallback and the deleted
+  `tools/mcpserver` caller-side re-validation; the diff-review guide's
+  outcomes table now documents the merged fail message and the
+  `StatusUnavailable` reason naming malformed patterns.
+- `docs/reviews/28-07-code_review.md` moved to
+  `docs/archive/reviews/2026-07-28-code-review.md` with an archived-status
+  preface: it was a point-in-time review whose findings (rabbitmq `Close`
+  idempotency, Subscribe TOCTOU, and the rest) have all since been
+  addressed, and its code excerpts no longer reflect `main`.
 - `scripts/check-api-compat.sh` and `COMPATIBILITY.md` now track `app` and
   `workerpool` as part of the API-compatibility surface, alongside the
   existing adapter sub-packages. Both packages gained new exported API in

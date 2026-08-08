@@ -189,20 +189,19 @@ range `ScanSecrets` uses, exported so `find_affected_modules` can reuse it.
 `.github/workflows/*.yml`). `contract.Contract.Validate` rejects a
 malformed pattern at contract-load time, but a caller can still read
 `ProtectedPaths` from a contract that failed `Validate` for an unrelated
-reason (see `tools/mcpserver`'s `reviewDiff` doc comment), so `Validate`
-alone doesn't guarantee every caller catches the typo.
-`CheckProtectedPaths` itself still treats a malformed pattern as "never
-matches" as a defense-in-depth fallback, not a primary detection
-mechanism — a caller that cares about surfacing the typo, such as
-`reviewDiff`, re-validates each pattern itself, drops the malformed ones,
-and reports a `StatusFail` result naming them.
+reason, so `CheckProtectedPaths` validates each pattern itself: a
+malformed one (e.g. an unmatched `[`) produces a `StatusFail` naming the
+pattern while the remaining valid patterns stay enforced in the same
+pass. A bad glob is never silently treated as "never matches," and
+callers need no re-validation of their own — `tools/mcpserver`'s
+`reviewDiff` threads the contract's patterns straight through.
 
 | Outcome | `Status` | When |
 |---|---|---|
 | `protectedPaths` is empty | `StatusPass` | No contract, or a contract declaring no protected paths — a normal state, not a finding |
-| No changed file matches any pattern | `StatusPass` | — |
-| One or more changed files match | `StatusFail` | `Message` lists each `<file> matches protected path <pattern>` |
-| `git diff` itself fails | `StatusUnavailable` | Same failure mode as `ScanSecrets` |
+| No changed file matches any pattern, all patterns valid | `StatusPass` | — |
+| One or more changed files match, or any pattern is a malformed glob | `StatusFail` | `Message` opens with `<n> protected-paths problem(s) ...` and lists each `<file> matches protected path <pattern>` hit and each `protected path <pattern> is not a valid glob pattern ...` notice |
+| `git diff` itself fails | `StatusUnavailable` | Same failure mode as `ScanSecrets`; `Reason` still names any malformed patterns so a config typo isn't hidden by broken git state |
 
 ### `CHANGELOG.md` and `go.mod` carry file-scoped exceptions
 

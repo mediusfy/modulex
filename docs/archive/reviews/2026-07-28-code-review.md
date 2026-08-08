@@ -1,5 +1,11 @@
 # Code Review — modulex
 
+> **Archived 2026-08-09.** Point-in-time review from 2026-07-28, predating
+> the v0.6.0/v0.7.0 releases. Its findings (rabbitmq `Close` idempotency,
+> Subscribe TOCTOU, and the rest) have since been addressed on `main` —
+> see CHANGELOG.md. Kept for historical reference only; do not treat the
+> code excerpts below as current.
+
 Review of the local commits ahead of `origin/main` (`bd04af8..HEAD`), covering the RabbitMQ/NATS/Watermill event bus hardening, the `app.Run` bootstrap helper, `WithTypedConfig`, health/readiness checks, and the OTel provider.
 
 ## Summary
