@@ -28,8 +28,9 @@ import (
 // call — cannot inject shell syntax regardless of content; a malformed
 // argument simply makes the git invocation itself fail, returned as an
 // error with git's stderr attached when non-empty. Shared by every git
-// invocation in this file (ChangedFiles, gitShow, singleFileDiff) so the
-// argv-building/stderr-capture/error-wrap logic exists exactly once.
+// invocation in this package (ChangedFiles, gitShow, singleFileDiff, and
+// secrets.go's gitDiff) so the argv-building/stderr-capture/error-wrap/
+// PATH-resolution logic exists exactly once.
 func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
 	gitPath, err := exec.LookPath("git")
 	if err != nil {
@@ -363,7 +364,7 @@ func retractLineRanges(content string) [][2]int {
 		lineNo := i + 1
 		trimmed := strings.TrimSpace(raw)
 		if inBlock {
-			if trimmed == ")" {
+			if isRetractBlockClose(trimmed) {
 				ranges = append(ranges, [2]int{blockStart, lineNo})
 				inBlock = false
 			}
@@ -379,6 +380,17 @@ func retractLineRanges(content string) [][2]int {
 		}
 	}
 	return ranges
+}
+
+// isRetractBlockClose reports whether a trimmed line closes a `retract (
+// ... )` block: a bare ")" or a ")" followed only by a trailing line
+// comment, e.g. `) // pre-1.0 releases had a critical bug`.
+func isRetractBlockClose(trimmed string) bool {
+	if !strings.HasPrefix(trimmed, ")") {
+		return false
+	}
+	rest := strings.TrimSpace(trimmed[1:])
+	return rest == "" || strings.HasPrefix(rest, "//")
 }
 
 // rangeIntersectsAny reports whether the 1-indexed [start, start+count-1]

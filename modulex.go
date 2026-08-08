@@ -861,9 +861,8 @@ func (m *Manager) ReadinessChecks() map[string]func(context.Context) error {
 func (m *Manager) RegisterModule(mod Module) error {
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
-	state := m.state
-	if state != StateConfiguring {
-		return fmt.Errorf("%w: cannot register module while in %q state", ErrRegistryLocked, state)
+	if m.state != StateConfiguring {
+		return fmt.Errorf("%w: cannot register module while in %q state", ErrRegistryLocked, m.state)
 	}
 
 	m.mu.Lock()
@@ -891,9 +890,8 @@ func (m *Manager) RegisterModule(mod Module) error {
 func (m *Manager) RegisterService(name string, svc interface{}) error {
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
-	state := m.state
-	if state != StateConfiguring && state != StateInitializing {
-		return fmt.Errorf("%w: cannot register service while in %q state", ErrRegistryLocked, state)
+	if m.state != StateConfiguring && m.state != StateInitializing {
+		return fmt.Errorf("%w: cannot register service while in %q state", ErrRegistryLocked, m.state)
 	}
 
 	m.mu.Lock()

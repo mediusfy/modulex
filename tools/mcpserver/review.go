@@ -2,6 +2,9 @@ package mcpserver
 
 import (
 	"context"
+	"fmt"
+	"path"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -59,6 +62,16 @@ type ReviewDiffOut struct {
 // contract file gives no basis for concluding protected paths don't apply,
 // so failing open here would silently disable the one check whose entire
 // purpose is catching unauthorized edits.
+//
+// One entry in ProtectedPaths itself can be a malformed glob (an unmatched
+// "["), which is exactly the case contract.Contract.Validate's own
+// protected_paths check exists to catch. CheckProtectedPaths silently
+// treats a bad pattern as "never matches" (path.ErrBadPattern) as a
+// defense-in-depth fallback, not a primary detection mechanism — so
+// reviewDiff re-validates each pattern here, drops the malformed ones
+// before enforcement (the remaining valid patterns still protect what they
+// can), and prepends a StatusFail result naming them, rather than letting
+// the typo go unenforced with no signal in Results.
 func reviewDiff(ctx context.Context, root, baseRef, headRef string, allowNetwork bool) (ReviewDiffOut, error) {
 	tools, err := resolveTools(root)
 	if err != nil {
@@ -75,7 +88,52 @@ func reviewDiff(ctx context.Context, root, baseRef, headRef string, allowNetwork
 		protectedPaths = contractOut.Contract.ProtectedPaths
 	}
 
-	return ReviewDiffOut{Results: review.Review(ctx, resolvedRoot, baseRef, headRef, tools, allowNetwork, protectedPaths)}, nil
+	var results []provenance.VerificationResult
+	if badGlob := invalidProtectedPathGlobResult(protectedPaths); badGlob != nil {
+		results = append(results, *badGlob)
+		protectedPaths = validProtectedPathGlobs(protectedPaths)
+	}
+	results = append(results, review.Review(ctx, resolvedRoot, baseRef, headRef, tools, allowNetwork, protectedPaths)...)
+
+	return ReviewDiffOut{Results: results}, nil
+}
+
+// invalidProtectedPathGlobResult reports a StatusFail VerificationResult
+// naming every entry in protectedPaths that fails to compile as a
+// path.Match glob, or nil if all entries are valid. Mirrors
+// contract.Contract.Validate's own protected_paths glob check so a typo
+// caught there is also flagged here, where it would otherwise silently
+// stop being enforced (see CheckProtectedPaths' path.ErrBadPattern
+// fallback).
+func invalidProtectedPathGlobResult(protectedPaths []string) *provenance.VerificationResult {
+	var bad []string
+	for _, p := range protectedPaths {
+		if _, err := path.Match(p, ""); err != nil {
+			bad = append(bad, fmt.Sprintf("%q: %v", p, err))
+		}
+	}
+	if len(bad) == 0 {
+		return nil
+	}
+	return &provenance.VerificationResult{
+		Name:     "check-protected-paths-contract",
+		Category: provenance.VerificationProtectedPaths,
+		Status:   provenance.StatusFail,
+		Message: fmt.Sprintf("modulex.agent.yaml has %d invalid protected_paths glob pattern(s), excluded from enforcement below:\n%s",
+			len(bad), strings.Join(bad, "\n")),
+	}
+}
+
+// validProtectedPathGlobs returns protectedPaths with every entry that
+// fails to compile as a path.Match glob removed.
+func validProtectedPathGlobs(protectedPaths []string) []string {
+	valid := make([]string, 0, len(protectedPaths))
+	for _, p := range protectedPaths {
+		if _, err := path.Match(p, ""); err == nil {
+			valid = append(valid, p)
+		}
+	}
+	return valid
 }
 
 func reviewDiffHandler(ctx context.Context, _ *mcp.CallToolRequest, in ReviewDiffIn) (*mcp.CallToolResult, ReviewDiffOut, error) {

@@ -196,10 +196,16 @@ changed file against every pattern in `protectedPaths` with `path.Match`
 single-path-segment glob semantics `modulex.agent.yaml`'s own examples
 assume (e.g. `.github/workflows/*.yml`). `contract.Contract.Validate`
 rejects a malformed `protected_paths` pattern (`path.ErrBadPattern`) at
-contract-load time, so a typo like an unmatched `[` is caught before it can
-silently go unenforced; `CheckProtectedPaths` itself still treats a
-malformed pattern as "never matches" rather than failing the whole check,
-as a defense-in-depth fallback for a contract that bypassed validation.
+contract-load time, so a typo like an unmatched `[` is normally caught
+there — but a caller can still read and use `ProtectedPaths` from a
+contract that failed `Validate` for an unrelated reason (see
+`tools/mcpserver`'s `reviewDiff` doc comment), so `Validate` alone does not
+guarantee every caller catches the typo. `CheckProtectedPaths` itself still
+treats a malformed pattern as "never matches" rather than failing the whole
+check (`path.ErrBadPattern`), as a defense-in-depth fallback, not a primary
+detection mechanism — a caller that cares about surfacing the typo, such as
+`reviewDiff`, re-validates each pattern itself, drops the malformed ones
+before calling `Review`, and reports a `StatusFail` result naming them.
 
 | Outcome | `Status` | When |
 |---|---|---|
