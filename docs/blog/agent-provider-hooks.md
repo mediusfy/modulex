@@ -8,6 +8,11 @@ actually promised, and what of that promise is reachable by an agent today
 versus sitting in a Go package nobody calls yet. This post is that audit,
 plus the resulting recommendation.
 
+**Update:** item 1 below (`approval/` wired into `run_verification`) is
+now done — see the [Agent Approval Broker Guide](../planning/agent-approval-broker-guide.md)'s
+"Wired for visibility, not yet for granting" section. The `approval/`
+quotes in this post reflect the state at the time it was written.
+
 ## What "hooks" means here
 
 Two different mechanisms get called "hooks" in this conversation, and
