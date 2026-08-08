@@ -85,13 +85,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   file — the naive whole-file match would have flagged this very changelog
   entry. `contract.Contract.Validate` now also rejects a malformed
   `protected_paths` glob pattern instead of letting it silently go
-  unenforced; `tools/mcpserver`'s `review_diff` independently re-checks each
-  pattern too (a contract can be read and its `ProtectedPaths` used even
-  when it fails `Validate` for an unrelated reason — see `reviewDiff`'s doc
-  comment — so `Validate` alone does not guarantee a malformed pattern is
-  caught on that path), drops any malformed pattern before enforcement, and
-  reports a `StatusFail` result naming it rather than letting it silently
-  go unenforced. `tools/mcpserver`'s `review_diff` also now propagates a
+  unenforced, and `CheckProtectedPaths` itself fails naming any malformed
+  pattern (while still enforcing the valid ones) instead of silently
+  treating it as "never matches" — so every consumer of the `review`
+  package gets the fail-closed behavior, not just `tools/mcpserver`.
+  `tools/mcpserver`'s `review_diff` also now propagates a
   real `readContract` error (e.g. an unreadable `modulex.agent.yaml`) as a
   handler error instead of silently treating it as "no protected paths."
 - New `workerpool` package (`workerpool.New`, `workerpool.Processor`):
@@ -146,11 +144,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   while being silently excluded from that init pass. Both methods now hold
   `stateMu` for their entire critical section.
 - `review.retractLineRanges` (`review/protectedpaths.go`) no longer misses
-  a go.mod `retract ( ... )` block whose closing `)` line carries a
-  trailing line comment (e.g. `) // pre-1.0 releases had a critical bug`).
-  Previously the block's line range was only recorded when the closing
-  line was exactly `")"`, so an edit inside such a block went unprotected
-  by `CheckProtectedPaths`.
+  a go.mod `retract ( ... )` block whose closing `)` line — or opening
+  `retract (` line — carries a trailing line comment (e.g.
+  `retract ( // pre-1.0 releases had a critical bug`). Previously either
+  comment collapsed the block to a single recorded line, so an edit inside
+  it went unprotected by `CheckProtectedPaths`. Tab-separated single-line
+  directives (`retract<TAB>v1.0.0`, valid modfile syntax) are now
+  recognized too.
 - `review.gitDiff` (`review/secrets.go`, used by `ScanSecrets`) now
   resolves `git` via `exec.LookPath` through the same `gitOutput` helper
   `protectedpaths.go`'s git invocations already use, instead of letting

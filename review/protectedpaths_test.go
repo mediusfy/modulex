@@ -151,6 +151,40 @@ func TestCheckProtectedPaths_SingleFileScenarios(t *testing.T) {
 			protectedPaths: []string{"go.mod"},
 			wantStatus:     provenance.StatusFail,
 		},
+		{
+			name:           "go.mod retract block edit fails even when the opening paren has a trailing comment",
+			file:           "go.mod",
+			initial:        "module example.com/app\n\nretract ( // pre-1.0 releases had a critical bug\n\tv0.9.0\n)\n",
+			updated:        "module example.com/app\n\nretract ( // pre-1.0 releases had a critical bug\n\tv0.9.0\n\tv0.9.1\n)\n",
+			protectedPaths: []string{"go.mod"},
+			wantStatus:     provenance.StatusFail,
+		},
+		{
+			name:           "go.mod tab-separated retract addition fails",
+			file:           "go.mod",
+			initial:        "module example.com/app\n",
+			updated:        "module example.com/app\n\nretract\tv0.1.0\n",
+			protectedPaths: []string{"go.mod"},
+			wantStatus:     provenance.StatusFail,
+		},
+		{
+			name:           "invalid glob pattern fails naming the pattern even when no protected file changed",
+			file:           "app.go",
+			initial:        "package app\n",
+			updated:        "package app\n\nfunc Hello() {}\n",
+			protectedPaths: []string{".github/workflows/[.yml"},
+			wantStatus:     provenance.StatusFail,
+			wantMessageHas: `.github/workflows/[.yml`,
+		},
+		{
+			name:           "valid patterns are still enforced alongside an invalid one",
+			file:           "SECURITY.md",
+			initial:        "# Security\n",
+			updated:        "# Security\n\nReport issues privately.\n",
+			protectedPaths: []string{"[", "SECURITY.md"},
+			wantStatus:     provenance.StatusFail,
+			wantMessageHas: `SECURITY.md matches protected path "SECURITY.md"`,
+		},
 	}
 
 	for _, tt := range tests {
