@@ -164,9 +164,11 @@ func TestRunVerification(t *testing.T) {
 // was never consumed.
 func TestRunVerification_ApprovalStatusReflectsBrokerGrant(t *testing.T) {
 	broker := approval.NewBroker()
-	if _, err := broker.Grant(approval.Scope{Action: "danger"}, "tester", time.Minute); err != nil {
-		t.Fatalf("Grant() error = %v", err)
+	grant, grantErr := broker.Grant(approval.Scope{Action: "danger"}, "tester", time.Minute)
+	if grantErr != nil {
+		t.Fatal(grantErr)
 	}
+	t.Logf("granted: %s", grant)
 
 	checks := []CheckSpecIn{
 		{Name: "danger", Command: "git reset --hard", Category: provenance.VerificationFull},
