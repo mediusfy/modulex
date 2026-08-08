@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -72,6 +73,38 @@ func TestReviewDiff(t *testing.T) {
 	})
 }
 
+// newProtectedPathsFixture creates a git fixture repository with a
+// modulex.agent.yaml declaring protectedPaths and an initial go.mod
+// containing goModContent, committed and branched as "base". Shared by
+// TestReviewDiff_ProtectedPathFromRealContract and
+// TestReviewDiff_InvalidProtectedPathGlob, which otherwise duplicate this
+// exact write-contract/write-go.mod/commit/branch setup and differ only in
+// protectedPaths, the initial go.mod content, and what they do with dir
+// afterward.
+func newProtectedPathsFixture(t *testing.T, protectedPaths []string, goModContent string) string {
+	t.Helper()
+	dir := newGitFixture(t)
+
+	var contractYAML strings.Builder
+	contractYAML.WriteString("schema_version: \"1.0.0\"\nprojects:\n  - name: fixture\n    path: .\n")
+	if len(protectedPaths) > 0 {
+		contractYAML.WriteString("protected_paths:\n")
+		for _, p := range protectedPaths {
+			fmt.Fprintf(&contractYAML, "  - %q\n", p)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, contractFileName), []byte(contractYAML.String()), 0o644); err != nil {
+		t.Fatalf("WriteFile(%s): %v", contractFileName, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goModContent), 0o644); err != nil {
+		t.Fatalf("WriteFile(go.mod): %v", err)
+	}
+	runGit(t, dir, "add", contractFileName, "go.mod")
+	runGit(t, dir, "commit", "--quiet", "-m", "add contract and go.mod")
+	runGit(t, dir, "branch", "base")
+	return dir
+}
+
 // TestReviewDiff_ProtectedPathFromRealContract builds a fixture repository
 // with its own modulex.agent.yaml declaring go.mod as protected, then
 // changes go.mod between two commits — an end-to-end check that reviewDiff
@@ -83,24 +116,7 @@ func TestReviewDiff_ProtectedPathFromRealContract(t *testing.T) {
 		t.Skip("git not available on PATH")
 	}
 
-	dir := newGitFixture(t)
-
-	contractYAML := `schema_version: "1.0.0"
-projects:
-  - name: fixture
-    path: .
-protected_paths:
-  - go.mod
-`
-	if err := os.WriteFile(filepath.Join(dir, contractFileName), []byte(contractYAML), 0o644); err != nil {
-		t.Fatalf("WriteFile(%s): %v", contractFileName, err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/fixture\n\nretract v0.1.0\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile(go.mod): %v", err)
-	}
-	runGit(t, dir, "add", contractFileName, "go.mod")
-	runGit(t, dir, "commit", "--quiet", "-m", "add contract and go.mod")
-	runGit(t, dir, "branch", "base")
+	dir := newProtectedPathsFixture(t, []string{"go.mod"}, "module example.com/fixture\n\nretract v0.1.0\n")
 
 	// go.mod carries a file-scoped exception (review.
 	// goModEditTouchesOnlyNonRetractLines): only an edit that touches a
@@ -146,25 +162,7 @@ func TestReviewDiff_InvalidProtectedPathGlob(t *testing.T) {
 		t.Skip("git not available on PATH")
 	}
 
-	dir := newGitFixture(t)
-
-	contractYAML := `schema_version: "1.0.0"
-projects:
-  - name: fixture
-    path: .
-protected_paths:
-  - go.mod
-  - ".github/workflows/[.yml"
-`
-	if err := os.WriteFile(filepath.Join(dir, contractFileName), []byte(contractYAML), 0o644); err != nil {
-		t.Fatalf("WriteFile(%s): %v", contractFileName, err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/fixture\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile(go.mod): %v", err)
-	}
-	runGit(t, dir, "add", contractFileName, "go.mod")
-	runGit(t, dir, "commit", "--quiet", "-m", "add contract and go.mod")
-	runGit(t, dir, "branch", "base")
+	dir := newProtectedPathsFixture(t, []string{"go.mod", ".github/workflows/[.yml"}, "module example.com/fixture\n")
 
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/fixture\n\nretract v0.1.0\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile(go.mod): %v", err)
