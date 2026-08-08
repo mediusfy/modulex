@@ -39,11 +39,14 @@ the ADR. A future ticket may add a separate, explicitly write-capable tool
 set (behind its own approval mechanism, per ADR-0032's "Safety and
 governance" section) — this package intentionally does not.
 
-`run_verification` does consult an `approval.Broker` for a blocked check,
-but only via `Broker.DryRunCheck`, which by design never grants or consumes
-a grant (see the [Agent Approval Broker Guide](agent-approval-broker-guide.md)'s
-"Dry runs" section) — it reports whether an approval already exists
-elsewhere, nothing more. No tool here can call `Broker.Grant`.
+`run_verification` does consult a blocked check's approval status, but only
+by loading root's `approval.FileStore` (`approval.DefaultStorePath`) and
+calling the non-consuming `Broker.DryRunCheck` (see the
+[Agent Approval Broker Guide](agent-approval-broker-guide.md)'s "Dry runs"
+section) — it reports whether an approval already exists elsewhere,
+nothing more. No tool here can call `Broker.Grant`; a grant can only be
+created by `modulex agent approve` (see the
+[Agent CLI Guide](agent-cli-guide.md)), a separate, human-run CLI process.
 
 ## The six tools
 
@@ -118,14 +121,16 @@ leave open.
 
 For every blocked check, `approval_status[name]` additionally reports
 whether an [`approval.Broker`](agent-approval-broker-guide.md) grant
-already exists for `approval.Scope{Action: name}`, via the non-consuming
-`Broker.DryRunCheck` — so a caller can distinguish "blocked, no approval
-yet" from "blocked, already approved elsewhere" without this tool ever
-gaining an execution path for a blocked command. The broker lives in the
-server process's memory only, and nothing in this package can call
-`Broker.Grant` — there is still no way to actually approve a check through
-this server; a grant has to come from a caller that holds the same broker
-instance, which today means only a Go-level caller of this package.
+already exists for `approval.Scope{Action: name}`, via a fresh
+`approval.FileStore.Load()` from root's `.modulex/approvals.json`
+(`approval.DefaultStorePath`) and the non-consuming `Broker.DryRunCheck` —
+so a caller can distinguish "blocked, no approval yet" from "blocked,
+already approved elsewhere" without this tool ever gaining an execution
+path for a blocked command. Loaded fresh on every call, not cached, so a
+grant created by a separate `modulex agent approve` invocation (see the
+[Agent CLI Guide](agent-cli-guide.md)) — even one run after this server
+started — is still seen. Nothing in this package can call `Broker.Grant`;
+this tool only ever reads the file `modulex agent approve` writes.
 
 **`run_verification` remains intended for `Command` values that originated
 from this repository's own tooling** — copied from a prior
@@ -215,5 +220,9 @@ the same way `tools/provenanceci`'s CLI is invoked from a CI step, except
   `modulex.agent.yaml`'s schema, which `read_contract` parses
 - [`docs/planning/provenance-handoff-schema.md`](provenance-handoff-schema.md) —
   `provenance.Envelope`, which `create_handoff` assembles
+- [Agent Approval Broker Guide](agent-approval-broker-guide.md) —
+  `approval.Broker`/`FileStore`, which `run_verification`'s `approval_status` reads
+- [Agent CLI Guide](agent-cli-guide.md) —
+  `modulex agent approve`, the only way to write a grant this server can see
 - Jira MOD-63/MOD-65/MOD-64/MOD-66: `verify`/`review`/`discovery`/`provenance`,
   the packages this server wraps

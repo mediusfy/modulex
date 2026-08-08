@@ -177,7 +177,13 @@ func generateToken() (token, hash string, err error) {
 		return "", "", fmt.Errorf("approval: generating token: %w", err)
 	}
 	token = hex.EncodeToString(buf)
+	return token, hashToken(token), nil
+}
+
+// hashToken returns token's SHA-256 hex digest — the safe-to-log form used
+// as Grant.TokenHash. Shared with FileStore (store.go), which persists
+// Token but recomputes TokenHash on load rather than storing it twice.
+func hashToken(token string) string {
 	sum := sha256.Sum256([]byte(token))
-	hash = hex.EncodeToString(sum[:])
-	return token, hash, nil
+	return hex.EncodeToString(sum[:])
 }
