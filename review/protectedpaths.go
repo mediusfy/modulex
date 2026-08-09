@@ -13,6 +13,20 @@ import (
 	"github.com/mediusfy/modulex/provenance"
 )
 
+// errInvalidRef is returned when a git ref argument is empty or starts with
+// '-', which would be misinterpreted by git as a command-line option.
+var errInvalidRef = fmt.Errorf("git ref must not be empty or start with '-'")
+
+// validateRef returns errInvalidRef if ref is empty or starts with a '-'
+// character, preventing a malicious or malformed ref from being parsed by git
+// as a command-line option.
+func validateRef(ref string) error {
+	if ref == "" || strings.HasPrefix(ref, "-") {
+		return errInvalidRef
+	}
+	return nil
+}
+
 // gitOutput resolves git via exec.LookPath (rather than an unqualified
 // "git", which SonarQube's go:S4036/CWE-427 flags as a PATH-search risk)
 // and runs `git [-C dir] args...`, returning stdout. Shared by every git
@@ -46,6 +60,12 @@ func gitOutput(ctx context.Context, dir string, args ...string) (string, error) 
 // (`git diff --name-only`). Exported so other packages (CheckProtectedPaths
 // below, find_affected_modules) can reuse it.
 func ChangedFiles(ctx context.Context, dir, baseRef, headRef string) ([]string, error) {
+	if err := validateRef(baseRef); err != nil {
+		return nil, err
+	}
+	if err := validateRef(headRef); err != nil {
+		return nil, err
+	}
 	out, err := gitOutput(ctx, dir, "diff", "--name-only", "--no-color", fmt.Sprintf("%s...%s", baseRef, headRef))
 	if err != nil {
 		return nil, err
@@ -168,12 +188,21 @@ func partitionGlobs(patterns []string) (valid, invalid []string) {
 
 // gitShow returns file's content as of ref.
 func gitShow(ctx context.Context, dir, ref, file string) (string, error) {
+	if err := validateRef(ref); err != nil {
+		return "", err
+	}
 	return gitOutput(ctx, dir, "show", ref+":"+file)
 }
 
 // singleFileDiff returns the --unified=0 diff for exactly file between
 // baseRef and headRef.
 func singleFileDiff(ctx context.Context, dir, baseRef, headRef, file string) (string, error) {
+	if err := validateRef(baseRef); err != nil {
+		return "", err
+	}
+	if err := validateRef(headRef); err != nil {
+		return "", err
+	}
 	return gitOutput(ctx, dir, "diff", "--unified=0", "--no-color", fmt.Sprintf("%s...%s", baseRef, headRef), "--", file)
 }
 

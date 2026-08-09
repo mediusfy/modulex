@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/mediusfy/modulex"
+	"github.com/mediusfy/modulex/internal/handlerpanic"
 	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
@@ -100,7 +101,11 @@ func (n *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 	subCtx, cancel := context.WithCancel(ctx)
 	sub, err := n.conn.Subscribe(topic, func(msg *nats.Msg) {
 		msgCtx := messageContext(subCtx, msg)
-		if err := handler(msgCtx, msg.Data); err != nil {
+		// handlerpanic.Recover converts a panicking handler into an error so
+		// it is reported through the same "handler error" log line as any
+		// other handler failure, instead of a separate log shape — see the
+		// package doc comment's acknowledge-and-log policy note.
+		if err := handlerpanic.Recover(func() error { return handler(msgCtx, msg.Data) }); err != nil {
 			n.logger.ErrorContext(msgCtx, "handler error",
 				slog.String(logKeyTopic, topic),
 				slog.Any(logKeyError, err),

@@ -253,6 +253,14 @@ func Boot(t TB, mods ...modulex.Module) *modulex.Manager {
 		}
 	}
 
+	// Register cleanup before driving the lifecycle so StopModules is always
+	// attempted, even if InitModules/StartModules fails or panics.
+	t.Cleanup(func() {
+		if err := mgr.StopModules(context.Background()); err != nil {
+			t.Errorf("modtest: StopModules during cleanup: %v", err)
+		}
+	})
+
 	ctx := context.Background()
 	if err := mgr.InitModules(ctx); err != nil {
 		t.Fatalf("modtest: InitModules: %v", err)
@@ -260,12 +268,6 @@ func Boot(t TB, mods ...modulex.Module) *modulex.Manager {
 	if err := mgr.StartModules(ctx); err != nil {
 		t.Fatalf("modtest: StartModules: %v", err)
 	}
-
-	t.Cleanup(func() {
-		if err := mgr.StopModules(context.Background()); err != nil {
-			t.Errorf("modtest: StopModules during cleanup: %v", err)
-		}
-	})
 
 	return mgr
 }

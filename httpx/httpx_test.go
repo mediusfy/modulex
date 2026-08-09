@@ -209,6 +209,36 @@ func TestServe(t *testing.T) {
 	}
 }
 
+func TestServePreservesCallerContextValues(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	addr := ln.Addr().String()
+	require.NoError(t, ln.Close())
+
+	server := &http.Server{Addr: addr, Handler: http.NewServeMux()}
+
+	manager := newTestManager(t)
+	type ctxKey string
+	ctx := context.WithValue(context.Background(), ctxKey("caller-key"), "caller-value")
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	handle, err := httpx.Serve(ctx, manager, "http-server-values", server, 2*time.Second)
+	require.NoError(t, err)
+
+	cancel()
+
+	waitErr := make(chan error, 1)
+	go func() { waitErr <- handle.Wait() }()
+
+	select {
+	case err := <-waitErr:
+		assert.NoError(t, err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("Serve did not shut down within the expected time")
+	}
+}
+
 func TestServeRejectsNilServer(t *testing.T) {
 	manager := newTestManager(t)
 

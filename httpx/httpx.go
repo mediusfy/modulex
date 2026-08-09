@@ -155,7 +155,17 @@ func Serve(ctx context.Context, spawner modulex.TaskSpawner, name string, server
 		}
 
 		// Detach shutdown context from cancellation using context.WithoutCancel,
-		// ensuring in-flight requests can finish during the shutdown timeout window.
+		// ensuring in-flight requests can finish during the shutdown timeout
+		// window. Derive from taskCtx, not the outer ctx: taskCtx is the
+		// context modulex.Manager.Go actually runs this task under, and it
+		// already carries this task's own tracer span (re-attached from ctx's
+		// span context by the manager before this function ever runs — see
+		// Manager.Go) plus the manager's task-lifecycle cancellation
+		// generation. The outer ctx is a different, unrelated context tree
+		// (typically the caller's Init/Start context) with no such span of
+		// its own; deriving from it instead would leave server.Shutdown's
+		// spans and logs orphaned from this task's span for the whole
+		// shutdown window.
 		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(taskCtx), shutdownTimeout)
 		defer cancel()
 

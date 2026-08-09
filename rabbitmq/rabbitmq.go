@@ -9,6 +9,7 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 
 	"github.com/mediusfy/modulex"
+	"github.com/mediusfy/modulex/internal/handlerpanic"
 	"github.com/mediusfy/modulex/workerpool"
 	"go.opentelemetry.io/otel"
 )
@@ -424,7 +425,10 @@ func (r *EventBus) handleDelivery(ctx context.Context, topic string, handler mod
 		headers = make(amqp.Table)
 	}
 	msgCtx := otel.GetTextMapPropagator().Extract(ctx, amqpHeadersCarrier(headers))
-	if err := handler(msgCtx, d.Body); err != nil {
+
+	err := handlerpanic.Recover(func() error { return handler(msgCtx, d.Body) })
+
+	if err != nil {
 		r.logger.ErrorContext(msgCtx, "handler error, message nacked without requeue",
 			slog.String(logKeyQueue, topic),
 			slog.Any(logKeyError, err),

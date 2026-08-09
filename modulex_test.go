@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -314,6 +315,33 @@ func TestManagerImplementsCapabilityInterfaces(t *testing.T) {
 	var _ modulex.ReadinessRegisterer = manager
 	var _ modulex.ReadinessProvider = manager
 	var _ modulex.Registry = manager
+}
+
+func TestManager_GetConfigConcurrentAccess(t *testing.T) {
+	configLoader := func(target interface{}) error {
+		cfg, ok := target.(*MockConfig)
+		if !ok {
+			return errors.New("invalid config type")
+		}
+		cfg.Value = "concurrent-value"
+		return nil
+	}
+
+	manager, err := modulex.NewManager(modulex.WithConfigLoader(configLoader))
+	require.NoError(t, err)
+
+	const n = 100
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			var cfg MockConfig
+			require.NoError(t, manager.GetConfig(&cfg))
+			assert.Equal(t, "concurrent-value", cfg.Value)
+		}()
+	}
+	wg.Wait()
 }
 
 func TestRegisterHealthCheckValidation(t *testing.T) {
@@ -691,6 +719,25 @@ func TestRegisterServiceValidation(t *testing.T) {
 				return manager.RegisterService("   ", &MockServiceImpl{})
 			},
 			wantErr: modulex.ErrInvalidServiceName,
+		},
+		{
+			name: "nil service instance",
+			act: func(t *testing.T, manager *modulex.Manager) error {
+				return manager.RegisterService("nil-svc", nil)
+			},
+			wantErr: modulex.ErrServiceNil,
+		},
+		{
+			name: "typed-nil pointer service instance",
+			act: func(t *testing.T, manager *modulex.Manager) error {
+				// A non-nil interface{} wrapping a nil concrete pointer must
+				// still be rejected: a literal `svc == nil` check would miss
+				// this (the interface value itself is not nil), letting a
+				// later ResolveService caller dereference a nil pointer.
+				var svc *MockServiceImpl
+				return manager.RegisterService("typed-nil-svc", svc)
+			},
+			wantErr: modulex.ErrServiceNil,
 		},
 	}
 
@@ -2055,6 +2102,56 @@ func TestStopModulesReportsMidWaitTaskErrorExactlyOnce(t *testing.T) {
 	assert.ErrorIs(t, err, taskErr)
 	assert.Equal(t, 1, strings.Count(err.Error(), "mid-wait-task"),
 		"task error must be reported exactly once, got: %v", err)
+}
+
+func TestTaskHandleErrAndDoneAreConsistent(t *testing.T) {
+	manager := newTestManager(nil)
+	sentinelErr := errors.New("task failed")
+
+	handle, err := manager.Go(context.Background(), "consistent-task", func(ctx context.Context) error {
+		return sentinelErr
+	})
+	require.NoError(t, err)
+
+	require.Eventually(t, handle.Done, time.Second, 10*time.Millisecond)
+	assert.ErrorIs(t, handle.Err(), sentinelErr)
+	assert.ErrorIs(t, handle.Wait(), sentinelErr)
+}
+
+func TestStopModulesTimeoutClearsTaskSnapshot(t *testing.T) {
+	manager := newTestManager(nil)
+	taskUnblocked := make(chan struct{})
+
+	mod := newMockModule(t, mockModuleConfig{
+		name: "mod-a",
+		onStart: func() {
+			_, err := manager.Go(context.Background(), "blocking-task", func(ctx context.Context) error {
+				// Deliberately ignore ctx.Done() to force StopModules to time out.
+				<-taskUnblocked
+				return nil
+			})
+			require.NoError(t, err)
+		},
+	})
+
+	require.NoError(t, manager.RegisterModule(mod))
+	require.NoError(t, manager.InitModules(context.Background()))
+	require.NoError(t, manager.StartModules(context.Background()))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	err := manager.StopModules(ctx)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "timed out")
+
+	// The internal task map must be cleared even when StopModules times out,
+	// so the manager does not retain handles for tasks that have already been
+	// orphaned by the shutdown deadline.
+	tasks := reflect.ValueOf(manager).Elem().FieldByName("tasks")
+	require.True(t, tasks.IsValid())
+	assert.Equal(t, 0, tasks.Len(), "task map should be cleared after timeout")
+
+	close(taskUnblocked)
 }
 
 func TestSupervisedTasksConcurrentGo(t *testing.T) {

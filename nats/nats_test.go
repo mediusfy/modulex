@@ -106,6 +106,41 @@ func TestEventBus_RejectsInvalidSubscriptionInputs(t *testing.T) {
 	assert.Error(t, eb.Subscribe(ctx, "topic", func(context.Context, []byte) error { return nil }))
 }
 
+func TestEventBus_PlainHandlerPanicIsRecovered(t *testing.T) {
+	s := startEmbeddedServer(t)
+
+	conn, err := nats.Connect(s.ClientURL())
+	require.NoError(t, err)
+	t.Cleanup(conn.Close)
+
+	eb := natsadapter.NewEventBus(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	panicPayload := []byte("panic-trigger")
+	subsequentPayload := []byte("after-panic")
+	received := make(chan []byte, 1)
+
+	require.NoError(t, eb.Subscribe(ctx, "test.topic", func(_ context.Context, data []byte) error {
+		if string(data) == string(panicPayload) {
+			panic("simulated handler panic")
+		}
+		received <- data
+		return nil
+	}))
+
+	require.NoError(t, eb.Publish(ctx, "test.topic", panicPayload))
+	require.NoError(t, eb.Publish(ctx, "test.topic", subsequentPayload))
+
+	select {
+	case got := <-received:
+		assert.Equal(t, subsequentPayload, got)
+	case <-ctx.Done():
+		t.Fatal("subscription did not continue after handler panic")
+	}
+}
+
 func TestEventBus_HandlerErrorIsLogged(t *testing.T) {
 	s := startEmbeddedServer(t)
 

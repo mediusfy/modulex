@@ -167,6 +167,12 @@ func ScanSecrets(ctx context.Context, dir, baseRef, headRef string) provenance.V
 // package shares; a malformed ref or dir simply makes the git invocation
 // itself fail, which ScanSecrets reports as StatusUnavailable.
 func gitDiff(ctx context.Context, dir, baseRef, headRef string) (string, error) {
+	if err := validateRef(baseRef); err != nil {
+		return "", err
+	}
+	if err := validateRef(headRef); err != nil {
+		return "", err
+	}
 	return gitOutput(ctx, dir, "diff", "--unified=0", "--no-color", fmt.Sprintf("%s...%s", baseRef, headRef))
 }
 
