@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `examples/external-consumer/go.sum` retidied: it still pinned
+  `go.opentelemetry.io/otel/exporters/otlp/otlptrace{,grpc,http}` at
+  v1.44.0, stale since the root module's otel exporters were bumped to
+  v1.45.0 (#98–#100) without re-tidying this nested example module.
+  `go mod tidy`'s `-diff` check in `make release`'s
+  `check-nested-modules` preflight now catches this class of drift before
+  every tag.
+
 ## [0.8.0] - 2026-08-09
 
 ### Added
