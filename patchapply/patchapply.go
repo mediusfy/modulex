@@ -677,7 +677,11 @@ func rollbackEntries(realTargetDir string, entries []JournalEntry) error {
 	var errs []error
 	for i := len(entries) - 1; i >= 0; i-- {
 		e := entries[i]
-		full := filepath.Join(realTargetDir, filepath.Clean(e.Path))
+		full, err := resolvedPath(realTargetDir, e.Path)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("patchapply: rolling back %q: %w", e.Path, err))
+			continue
+		}
 		if err := restoreEntry(full, e); err != nil {
 			errs = append(errs, fmt.Errorf("patchapply: rolling back %q: %w", e.Path, err))
 		}
@@ -738,7 +742,11 @@ func Verify(targetDir string, j Journal) error {
 
 	var errs []error
 	for _, e := range j.Entries {
-		full := filepath.Join(realTargetDir, filepath.Clean(e.Path))
+		full, err := resolvedPath(realTargetDir, e.Path)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("patchapply: verifying %q: %w", e.Path, err))
+			continue
+		}
 		current, existed, err := readCurrent(full)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("patchapply: verifying %q: reading: %w", e.Path, err))

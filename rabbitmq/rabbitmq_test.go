@@ -175,6 +175,38 @@ func TestEventBus_RejectsInvalidWorkerOptionsBeforeUsingChannel(t *testing.T) {
 	assert.ErrorContains(t, err, "invalid worker options")
 }
 
+func TestEventBus_PlainHandlerPanicIsRecovered(t *testing.T) {
+	_, ch := connectRabbitMQ(t)
+
+	eb := rabbitadapter.NewEventBus(ch)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	queue := fmt.Sprintf("test.queue.panic.%d", time.Now().UnixNano())
+	panicPayload := []byte("panic-trigger")
+	subsequentPayload := []byte("after-panic")
+	received := make(chan []byte, 1)
+
+	require.NoError(t, eb.Subscribe(ctx, queue, func(_ context.Context, data []byte) error {
+		if string(data) == string(panicPayload) {
+			panic("simulated handler panic")
+		}
+		received <- data
+		return nil
+	}))
+
+	require.NoError(t, eb.Publish(ctx, queue, panicPayload))
+	require.NoError(t, eb.Publish(ctx, queue, subsequentPayload))
+
+	select {
+	case got := <-received:
+		assert.Equal(t, subsequentPayload, got)
+	case <-ctx.Done():
+		t.Fatal("subscription did not continue after handler panic")
+	}
+}
+
 func TestEventBus_HandlerErrorIsLogged(t *testing.T) {
 	_, ch := connectRabbitMQ(t)
 

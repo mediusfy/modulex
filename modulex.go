@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -56,6 +57,15 @@ var (
 
 	// ErrServiceTypeMismatch is returned when a resolved service cannot be type-asserted to the requested type.
 	ErrServiceTypeMismatch = errors.New("service type mismatch")
+
+	// ErrServiceNil is returned when RegisterService is given a nil service
+	// instance. A nil service would panic if ResolveService returned it and a
+	// caller dereferenced it; rejecting it at registration prevents that. This
+	// also catches a typed-nil pointer/interface/map/slice/chan/func wrapped
+	// in the interface{} parameter (e.g. RegisterService("x", (*T)(nil))),
+	// which a literal `svc == nil` comparison would miss because a non-nil
+	// interface value can wrap a nil concrete value — see isNilServiceValue.
+	ErrServiceNil = errors.New("service must not be nil")
 
 	// ErrInvalidLifecycleState is returned when a lifecycle operation is requested while the manager is in an incompatible state.
 	ErrInvalidLifecycleState = errors.New("invalid lifecycle state")
@@ -200,11 +210,8 @@ func (h *TaskHandle) Err() error {
 
 func (h *TaskHandle) finish(err error) {
 	h.mu.Lock()
+	defer h.mu.Unlock()
 	h.err = err
-	h.mu.Unlock()
-	// close is done outside the lock so Wait() callers blocked on <-h.done can
-	// observe the final error after acquiring the lock. Changing this ordering
-	// would introduce a race.
 	close(h.done)
 }
 
@@ -705,15 +712,20 @@ type Registry interface {
 
 // Manager implements the Registry interface and orchestrates the module lifecycles.
 type Manager struct {
-	mu           sync.RWMutex
-	stateMu      sync.Mutex
-	taskMu       sync.Mutex
-	services     map[string]interface{}
-	modules      map[string]Module
-	moduleOrder  []string
-	orderedMods  []Module
-	eventBus     EventBus
-	loggerCtx    *slog.Logger
+	mu          sync.RWMutex
+	stateMu     sync.Mutex
+	taskMu      sync.Mutex
+	services    map[string]interface{}
+	modules     map[string]Module
+	moduleOrder []string
+	orderedMods []Module
+	eventBus    EventBus
+	loggerCtx   *slog.Logger
+	// configLoader is only ever assigned by a ManagerOption (WithConfigLoader)
+	// applied inside NewManager's option loop, before the constructed Manager
+	// is returned to any caller. There is no exported way to reassign it
+	// afterward, so NewManager's return already provides the happens-before
+	// edge GetConfig needs; no mutex is required here.
 	configLoader func(target interface{}) error
 	state        LifecycleState
 	tracer       Tracer
@@ -885,6 +897,26 @@ func (m *Manager) RegisterModule(mod Module) error {
 	return nil
 }
 
+// isNilServiceValue reports whether svc is nil, either literally (the
+// interface{} itself is nil) or because it wraps a typed-nil pointer,
+// interface, map, slice, channel, or function value. A literal `svc == nil`
+// comparison only catches the first case: a non-nil interface{} that wraps a
+// nil concrete value (e.g. RegisterService("x", (*T)(nil))) compares != nil
+// under Go's interface-equality rules, even though dereferencing the
+// underlying value would panic exactly as a fully-nil svc would.
+func isNilServiceValue(svc interface{}) bool {
+	if svc == nil {
+		return true
+	}
+	v := reflect.ValueOf(svc)
+	switch v.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice, reflect.UnsafePointer:
+		return v.IsNil()
+	default:
+		return false
+	}
+}
+
 // RegisterService implements Registry. It registers a service instance to the service locator.
 // Registration is only permitted before InitModules has completed.
 func (m *Manager) RegisterService(name string, svc interface{}) error {
@@ -900,6 +932,9 @@ func (m *Manager) RegisterService(name string, svc interface{}) error {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return ErrInvalidServiceName
+	}
+	if isNilServiceValue(svc) {
+		return ErrServiceNil
 	}
 	if _, exists := m.services[name]; exists {
 		return fmt.Errorf("%w: %q", ErrDuplicateService, name)
@@ -1510,17 +1545,12 @@ func (m *Manager) waitForTasks(ctx context.Context) error {
 	m.taskMu.Lock()
 	errs := append([]error(nil), m.taskErrs...)
 	m.taskErrs = nil
+	m.tasks = make(map[string]*TaskHandle)
 	m.taskMu.Unlock()
 
 	if ctx.Err() != nil {
 		errs = append(errs, fmt.Errorf("timed out waiting for tasks to finish: %w", ctx.Err()))
-		m.resetTaskCtx()
-		return errors.Join(errs...)
 	}
-
-	m.taskMu.Lock()
-	m.tasks = make(map[string]*TaskHandle)
-	m.taskMu.Unlock()
 
 	m.resetTaskCtx()
 	return errors.Join(errs...)

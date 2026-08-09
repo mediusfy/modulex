@@ -139,6 +139,62 @@ func TestEventBus_RejectsCancelledContextAndNilHandler(t *testing.T) {
 // subscription (run under -race, and under goleak via TestMain) is what
 // would surface the corruption: either a data race on the shared slice/map,
 // or a leaked goroutine because its cancel func was never invoked.
+func TestEventBus_PlainHandlerPanicIsRecovered(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	bus := watermill.NewEventBus(0, false, false)
+	defer func() { _ = bus.Close(ctx) }()
+
+	panicPayload := []byte("panic-trigger")
+	subsequentPayload := []byte("after-panic")
+	received := make(chan []byte, 1)
+
+	require.NoError(t, bus.Subscribe(ctx, "test.topic", func(_ context.Context, payload []byte) error {
+		if string(payload) == string(panicPayload) {
+			panic("simulated handler panic")
+		}
+		received <- payload
+		return nil
+	}))
+
+	require.NoError(t, bus.Publish(ctx, "test.topic", panicPayload))
+	require.NoError(t, bus.Publish(ctx, "test.topic", subsequentPayload))
+
+	select {
+	case got := <-received:
+		assert.Equal(t, subsequentPayload, got)
+	case <-ctx.Done():
+		t.Fatal("subscription did not continue after handler panic")
+	}
+}
+
+func TestEventBus_SubscriptionRespectsCallerContextCancellation(t *testing.T) {
+	bus := watermill.NewEventBus(0, false, false)
+	defer func() { _ = bus.Close(context.Background()) }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	handlerCalled := make(chan struct{})
+	require.NoError(t, bus.Subscribe(ctx, "test.topic", func(_ context.Context, _ []byte) error {
+		close(handlerCalled)
+		return nil
+	}))
+
+	require.NoError(t, bus.Publish(context.Background(), "test.topic", []byte("hello")))
+
+	select {
+	case <-handlerCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler was not invoked")
+	}
+
+	// Canceling the caller context must stop the subscription. goleak will
+	// report a leaked goroutine if the subscription loop ignores the
+	// cancellation.
+	cancel()
+}
+
 func TestEventBus_CloseWithManyConcurrentSubscriptions(t *testing.T) {
 	t.Parallel()
 

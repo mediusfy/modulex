@@ -195,3 +195,57 @@ func TestServerStartThenImmediateStop(t *testing.T) {
 	require.NoError(t, server.Start(context.Background()))
 	require.NoError(t, server.Stop(context.Background()))
 }
+
+func TestServerStopBeforeStart(t *testing.T) {
+	lis := bufconn.Listen(1024)
+	grpcServer := googlegrpc.NewServer()
+	server, err := grpcadapter.NewServer(grpcServer, lis, grpcadapter.WithShutdownTimeout(time.Second))
+	require.NoError(t, err)
+
+	// Stop before Start must return promptly and must not deadlock waiting
+	// for a serving goroutine that was never launched.
+	stopDone := make(chan struct{})
+	var stopErr error
+	go func() {
+		defer close(stopDone)
+		stopErr = server.Stop(context.Background())
+	}()
+
+	select {
+	case <-stopDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop deadlocked when called before Start")
+	}
+	require.NoError(t, stopErr)
+
+	// Start after Stop is rejected so the server cannot be left running
+	// after its lifecycle has already been torn down.
+	require.Error(t, server.Start(context.Background()))
+}
+
+func TestServerStopBeforeStartClosesListener(t *testing.T) {
+	lis := bufconn.Listen(1024)
+	grpcServer := googlegrpc.NewServer()
+	server, err := grpcadapter.NewServer(grpcServer, lis, grpcadapter.WithShutdownTimeout(time.Second))
+	require.NoError(t, err)
+
+	require.NoError(t, server.Stop(context.Background()))
+
+	// Stop must close the listener passed to NewServer even when Start was
+	// never called, so a caller that skips Start (e.g. behind a feature
+	// flag) does not leak the bound listener for the rest of the process.
+	_, err = lis.Accept()
+	require.Error(t, err, "listener should be closed after Stop, even without a prior Start")
+}
+
+func TestServerStartTwice(t *testing.T) {
+	lis := bufconn.Listen(1024)
+	grpcServer := googlegrpc.NewServer()
+	server, err := grpcadapter.NewServer(grpcServer, lis, grpcadapter.WithShutdownTimeout(time.Second))
+	require.NoError(t, err)
+
+	require.NoError(t, server.Start(context.Background()))
+	require.Error(t, server.Start(context.Background()))
+
+	require.NoError(t, server.Stop(context.Background()))
+}

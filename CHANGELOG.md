@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- grpc: `Start`/`Stop` are now idempotent and safe to call out of order;
+  calling `Stop` before `Start` closes the listener instead of leaking it.
+- modulex: `RegisterService` now rejects nil and typed-nil service values
+  (`ErrServiceNil`); fixed a `TaskHandle.finish` race.
+- nats/rabbitmq/watermill: panicking `EventHandler`s are now recovered (via
+  new internal `handlerpanic` package) instead of crashing the process.
+- watermill: `Subscribe`/`SubscribeWithOptions` now derive the subscription
+  context from the caller's `ctx` instead of always detaching it, so
+  cancellation propagates as documented.
+- patchapply: `rollbackEntries`/`Verify` resolve journal paths defensively
+  instead of trusting a plain `filepath.Join`.
+- review: git refs are validated before being shelled out to, preventing
+  them from being parsed as command-line options.
 - `examples/external-consumer/go.sum` retidied: it still pinned
   `go.opentelemetry.io/otel/exporters/otlp/otlptrace{,grpc,http}` at
   v1.44.0, stale since the root module's otel exporters were bumped to

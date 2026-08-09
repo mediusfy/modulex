@@ -54,7 +54,9 @@ const DefaultShutdownTimeout = 10 * time.Second
 // path was taken.
 //
 // Stop is idempotent: calling it more than once returns the result of the
-// first call without repeating the shutdown.
+// first call without repeating the shutdown. Calling Stop before Start is
+// also safe and returns immediately, after closing the listener passed to
+// NewServer so it is never leaked even if Start is never called.
 //
 // # The forced fallback's real bound
 //
@@ -75,9 +77,11 @@ type Server struct {
 	shutdownTimeout time.Duration
 	logger          *slog.Logger
 
-	mu       sync.Mutex
-	serveErr error
-	done     chan struct{}
+	mu            sync.Mutex
+	serveErr      error
+	done          chan struct{}
+	started       bool
+	stopRequested bool
 
 	stopOnce sync.Once
 	stopErr  error
@@ -139,7 +143,27 @@ func NewServer(grpcServer *googlegrpc.Server, listener net.Listener, opts ...Ser
 // goroutine and returns immediately without blocking module initialization.
 // A Serve error (other than the expected error returned after Stop closes
 // the server) is captured and surfaced from Stop's return value.
+//
+// Start must be called at most once; subsequent calls return an error without
+// launching another serving goroutine.
 func (s *Server) Start(_ context.Context) error {
+	s.mu.Lock()
+	if s.started {
+		s.mu.Unlock()
+		return errors.New("grpc: Start called more than once")
+	}
+	if s.stopRequested {
+		s.mu.Unlock()
+		return errors.New("grpc: Start called after Stop")
+	}
+	s.started = true
+	s.mu.Unlock()
+
+	// The started bool above, checked and set under mu before this point,
+	// already guarantees this goroutine is launched at most once: a second
+	// concurrent or later Start call returns early at the check above and
+	// never reaches here. A sync.Once around this launch would be redundant
+	// given that guarantee, so none is used.
 	go func() {
 		err := s.grpcServer.Serve(s.listener)
 		if err != nil && !errors.Is(err, googlegrpc.ErrServerStopped) {
@@ -154,7 +178,27 @@ func (s *Server) Start(_ context.Context) error {
 
 // Stop implements modulex.Stopper. See the Server doc comment for the exact
 // graceful-shutdown-with-bounded-fallback behavior.
+//
+// Stop is safe to call before Start: it returns immediately without
+// blocking, after closing the listener passed to NewServer.
 func (s *Server) Stop(ctx context.Context) error {
+	s.mu.Lock()
+	s.stopRequested = true
+	if !s.started {
+		s.mu.Unlock()
+		// Start was never called: there is no Serve goroutine to wait for or
+		// force-stop, but the listener the caller handed to NewServer is
+		// still open. Close it here so Stop always leaves the listener
+		// closed, regardless of whether Start ever ran — otherwise a caller
+		// that skips Start (e.g. behind a feature flag) would leak the bound
+		// socket for the rest of the process's life. Closing an
+		// already-closed listener is harmless, so this is safe even if Stop
+		// is called more than once before Start.
+		_ = s.listener.Close()
+		return nil
+	}
+	s.mu.Unlock()
+
 	s.stopOnce.Do(func() {
 		s.stopErr = s.stop(ctx)
 	})

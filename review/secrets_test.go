@@ -362,6 +362,30 @@ func TestRedactLine(t *testing.T) {
 	}
 }
 
+func TestGitDiffRejectsMalformedRefs(t *testing.T) {
+	root := newTestRepo(t)
+
+	cases := []struct {
+		name    string
+		baseRef string
+		headRef string
+	}{
+		{"empty baseRef", "", "HEAD"},
+		{"empty headRef", "HEAD", ""},
+		{"dash-prefixed baseRef", "-evil", "HEAD"},
+		{"dash-prefixed headRef", "HEAD", "-evil"},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := gitDiff(context.Background(), root, tt.baseRef, tt.headRef)
+			if err == nil {
+				t.Fatal("gitDiff accepted a malformed ref")
+			}
+		})
+	}
+}
+
 func TestHasNosecretMarker(t *testing.T) {
 	tests := []struct {
 		line string

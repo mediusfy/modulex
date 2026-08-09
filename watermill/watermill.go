@@ -10,6 +10,7 @@ import (
 	"github.com/ThreeDotsLabs/watermill/pubsub/gochannel"
 
 	"github.com/mediusfy/modulex"
+	"github.com/mediusfy/modulex/internal/handlerpanic"
 	"github.com/mediusfy/modulex/workerpool"
 )
 
@@ -65,6 +66,17 @@ func (w *EventBus) Publish(ctx context.Context, topic string, payload []byte) er
 }
 
 // Subscribe listens to a topic and handles messages in the background.
+//
+// ctx governs the subscription's lifetime as well as this call: cancelling
+// ctx stops the subscription and releases its goroutine, exactly like
+// calling EventBus.Close would for it. This means a bounded or per-call
+// context (e.g. one scoped only to a module's Init phase, cancelled via a
+// deferred cancel() shortly after Subscribe returns) will silently end the
+// subscription early. Pass a context whose lifetime you intend the
+// subscription to share — typically the same long-lived context used for
+// the surrounding Manager's InitModules/StartModules call, or
+// context.Background() paired with relying on EventBus.Close() alone to
+// stop it.
 func (w *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.EventHandler) error {
 	return w.subscribe(ctx, topic, handler, nil)
 }
@@ -72,7 +84,9 @@ func (w *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 // SubscribeWithOptions subscribes with an opt-in bounded processor. Handler
 // errors retain Watermill's existing acknowledge-and-log policy. Messages are
 // acknowledged only after the handler returns. Processing order is not
-// guaranteed when Workers is greater than one.
+// guaranteed when Workers is greater than one. See Subscribe's doc comment
+// for how ctx governs this subscription's lifetime, including after this
+// call returns.
 func (w *EventBus) SubscribeWithOptions(ctx context.Context, topic string, handler modulex.EventHandler, options workerpool.Options) error {
 	if handler == nil {
 		return fmt.Errorf("watermill subscription failed: handler must not be nil")
@@ -104,9 +118,10 @@ func (w *EventBus) subscribe(ctx context.Context, topic string, handler modulex.
 		return fmt.Errorf("watermill subscription failed: %w", err)
 	}
 
-	// Detach from the caller's transient context so the subscription remains
-	// active until EventBus.Close() is called.
-	subCtx, cancel := context.WithCancel(context.Background())
+	// Derive the subscription context from the caller so cancellation
+	// propagates correctly through the subscription lifecycle. The stored
+	// cancel func is still invoked by Close() to speed up shutdown.
+	subCtx, cancel := context.WithCancel(ctx)
 
 	w.mu.Lock()
 	subID := w.nextSubID
@@ -138,7 +153,8 @@ func (w *EventBus) subscribe(ctx context.Context, topic string, handler modulex.
 
 				if processor == nil {
 					msgCtx := msg.Context()
-					if err := handler(msgCtx, msg.Payload); err != nil {
+					err := handlerpanic.Recover(func() error { return handler(msgCtx, msg.Payload) })
+					if err != nil {
 						w.logger.Error("handler error, message acknowledged to prevent redelivery", err, nil)
 					}
 					msg.Ack()

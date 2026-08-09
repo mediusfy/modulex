@@ -358,3 +358,82 @@ func TestVerify_ReportsDriftAfterReModificationPostRollback(t *testing.T) {
 		t.Fatalf("Verify error should name the drifted file: %v", err)
 	}
 }
+
+// TestRollback_RejectsMaliciousJournalPathTraversal proves that a
+// caller-constructed Journal cannot trick Rollback into deleting files
+// outside targetDir. The Journal type is exported, so this trust boundary
+// must be enforced at use time, not just at Apply time.
+func TestRollback_RejectsMaliciousJournalPathTraversal(t *testing.T) {
+	parent := t.TempDir()
+	targetDir := filepath.Join(parent, "target")
+	if err := os.Mkdir(targetDir, 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	victim := filepath.Join(parent, "victim.txt")
+	if err := os.WriteFile(victim, []byte("should survive"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	resolvedTargetDir, err := filepath.EvalSymlinks(targetDir)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+
+	malicious := Journal{
+		TargetDir: resolvedTargetDir,
+		Entries: []JournalEntry{
+			{Path: "../victim.txt", ExistedBefore: false},
+		},
+	}
+
+	err = Rollback(targetDir, malicious)
+	if err == nil {
+		t.Fatal("expected Rollback to reject a malicious journal entry that escapes targetDir")
+	}
+	if !errors.Is(err, ErrPathTraversal) {
+		t.Fatalf("expected ErrPathTraversal, got: %v", err)
+	}
+
+	b, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatalf("victim file should still exist: %v", err)
+	}
+	if string(b) != "should survive" {
+		t.Fatalf("victim file content was modified: %q", b)
+	}
+}
+
+// TestVerify_RejectsMaliciousJournalPathTraversal proves that a
+// caller-constructed Journal cannot trick Verify into reading files outside
+// targetDir.
+func TestVerify_RejectsMaliciousJournalPathTraversal(t *testing.T) {
+	parent := t.TempDir()
+	targetDir := filepath.Join(parent, "target")
+	if err := os.Mkdir(targetDir, 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	secret := filepath.Join(parent, "secret.txt")
+	if err := os.WriteFile(secret, []byte("outside secret"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	resolvedTargetDir, err := filepath.EvalSymlinks(targetDir)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+
+	malicious := Journal{
+		TargetDir: resolvedTargetDir,
+		Entries: []JournalEntry{
+			{Path: "../secret.txt", ExistedBefore: false, OriginalContent: nil},
+		},
+	}
+
+	err = Verify(targetDir, malicious)
+	if err == nil {
+		t.Fatal("expected Verify to reject a malicious journal entry that escapes targetDir")
+	}
+	if !errors.Is(err, ErrPathTraversal) {
+		t.Fatalf("expected ErrPathTraversal, got: %v", err)
+	}
+}
