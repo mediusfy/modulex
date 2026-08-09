@@ -1,0 +1,29 @@
+name: PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+# A push to a PR fires `synchronize` -- cancel a still-running review for the
+# same PR rather than letting two runs race to post reviews concurrently.
+concurrency:
+  group: pr-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # All the actual steps live in mediusfy/pr_pipeline so every repo calls
+  # the same job instead of duplicating it -- see that repo's
+  # .github/workflows/pr-review-reusable.yml and
+  # docs/adr/0001-pr-pipeline-production-readiness.md.
+  #
+  # Requires, in this repo's Settings:
+  #   - Secrets: PR_PIPELINE_APP_ID, PR_PIPELINE_APP_PRIVATE_KEY,
+  #     PR_PIPELINE_LITELLM_KEY (org-level secrets cover this automatically
+  #     if set there instead).
+  #   - The pr_pipeline GitHub App installed on this repo.
+  #   - Environments "pr-review" and "pr-review-privileged" (the latter
+  #     with required reviewers) -- created empty on first run if missing,
+  #     but "pr-review-privileged" needs its protection rule added by hand.
+  review:
+    uses: mediusfy/pr_pipeline/.github/workflows/pr-review-reusable.yml@main
+    secrets: inherit
