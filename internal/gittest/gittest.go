@@ -22,7 +22,11 @@ import (
 // instead of dir.
 func Run(t *testing.T, dir string, args ...string) {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("git not available on PATH: %v", err)
+	}
+	cmd := exec.Command(gitPath, args...)
 	cmd.Dir = dir
 	env := make([]string, 0, len(os.Environ())+6)
 	for _, kv := range os.Environ() {
@@ -57,13 +61,15 @@ func WriteFile(t *testing.T, dir, name, content string) {
 // base..HEAD is benign (no secret-shaped lines, no protected paths touched).
 func NewRepoWithDiff(t *testing.T) string {
 	t.Helper()
+	const quiet = "--quiet"
+	const appFile = "app.go"
 	root := t.TempDir()
-	Run(t, root, "init", "--quiet")
-	WriteFile(t, root, "app.go", "package app\n")
-	Run(t, root, "add", "app.go")
-	Run(t, root, "commit", "--quiet", "-m", "base")
+	Run(t, root, "init", quiet)
+	WriteFile(t, root, appFile, "package app\n")
+	Run(t, root, "add", appFile)
+	Run(t, root, "commit", quiet, "-m", "base")
 	Run(t, root, "branch", "base")
-	WriteFile(t, root, "app.go", "package app\n\nfunc Hello() string { return \"hi\" }\n")
-	Run(t, root, "commit", "--quiet", "-am", "add hello")
+	WriteFile(t, root, appFile, "package app\n\nfunc Hello() string { return \"hi\" }\n")
+	Run(t, root, "commit", quiet, "-am", "add hello")
 	return root
 }
