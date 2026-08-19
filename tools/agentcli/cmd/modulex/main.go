@@ -9,6 +9,16 @@
 //
 //	modulex agent generate [-root <path>]
 //	modulex agent approve -action <name> [-resource <name>] -approved-by <name> [-ttl <duration>] [-root <path>]
+//	modulex agent review -base <ref> [-head <ref>] [-root <path>] [-allow-network]
+//	modulex agent handoff -base <ref> [-head <ref>] [-agent <name>] [-root <path>] [-allow-network]
+//
+// review runs the repository's review checks (boundary, compatibility,
+// changelog, secret scan, protected paths) over the base...head diff and
+// prints the results as JSON. handoff runs the same review and prints a
+// redacted, validated provenance.Envelope — the auditable handoff artifact a
+// CI step or editor attaches to a PR. Both are read-only and never mutate the
+// repository, and both wrap the same agentcli functions tools/mcpserver's
+// review_diff and create_handoff expose over MCP.
 //
 // generate reads <root>/modulex.agent.yaml, renders AGENTS.md and CLAUDE.md
 // via agentdocs.Generate plus a static tooling addendum (see agentcli.go),
@@ -26,6 +36,8 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -49,6 +61,10 @@ func main() {
 		runGenerate(os.Args[3:])
 	case "approve":
 		runApprove(os.Args[3:])
+	case "review":
+		runReview(os.Args[3:])
+	case "handoff":
+		runHandoff(os.Args[3:])
 	default:
 		fmt.Fprintf(os.Stderr, "modulex agent: unknown subcommand %q\n\n", os.Args[2])
 		usage()
@@ -61,6 +77,69 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "\nSubcommands:")
 	fmt.Fprintln(os.Stderr, "  generate    render AGENTS.md/CLAUDE.md from modulex.agent.yaml")
 	fmt.Fprintln(os.Stderr, "  approve     grant an approval a separately-running MCP server can see")
+	fmt.Fprintln(os.Stderr, "  review      run the review checks over a diff and print the results as JSON")
+	fmt.Fprintln(os.Stderr, "  handoff     run the review and print a validated provenance handoff envelope as JSON")
+}
+
+func runReview(args []string) {
+	fs := flag.NewFlagSet("modulex agent review", flag.ExitOnError)
+	root := fs.String("root", ".", "repository root to review")
+	base := fs.String("base", "", "required: base git ref to diff from, e.g. origin/main")
+	head := fs.String("head", "HEAD", "head git ref to diff to")
+	allowNetwork := fs.Bool("allow-network", false, "allow networked checks to run")
+	if err := fs.Parse(args); err != nil {
+		os.Exit(2)
+	}
+	if *base == "" {
+		fmt.Fprintln(os.Stderr, "modulex agent review: -base is required")
+		fs.PrintDefaults()
+		os.Exit(2)
+	}
+
+	results, err := agentcli.Review(context.Background(), *root, *base, *head, *allowNetwork)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "modulex agent review: %v\n", err)
+		os.Exit(1)
+	}
+	if err := printJSON(results); err != nil {
+		fmt.Fprintf(os.Stderr, "modulex agent review: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func runHandoff(args []string) {
+	fs := flag.NewFlagSet("modulex agent handoff", flag.ExitOnError)
+	root := fs.String("root", ".", "repository root to describe")
+	agent := fs.String("agent", "modulex", "name of the agent producing this handoff")
+	base := fs.String("base", "", "required: base git ref to diff from, e.g. origin/main")
+	head := fs.String("head", "HEAD", "head git ref to diff to")
+	allowNetwork := fs.Bool("allow-network", false, "allow networked checks to run")
+	if err := fs.Parse(args); err != nil {
+		os.Exit(2)
+	}
+	if *base == "" {
+		fmt.Fprintln(os.Stderr, "modulex agent handoff: -base is required")
+		fs.PrintDefaults()
+		os.Exit(2)
+	}
+
+	env, err := agentcli.Handoff(context.Background(), *root, *agent, *base, *head, *allowNetwork)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "modulex agent handoff: %v\n", err)
+		os.Exit(1)
+	}
+	if err := printJSON(env); err != nil {
+		fmt.Fprintf(os.Stderr, "modulex agent handoff: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// printJSON writes v as indented JSON to stdout, the machine-readable output
+// both review and handoff emit for a CI step or editor to consume.
+func printJSON(v any) error {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(v)
 }
 
 func runGenerate(args []string) {

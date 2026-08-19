@@ -2,11 +2,13 @@ package mcpserver
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/mediusfy/modulex/agentreview"
+	"github.com/mediusfy/modulex/discovery"
 	"github.com/mediusfy/modulex/provenance"
-	"github.com/mediusfy/modulex/review"
 )
 
 // ReviewDiffIn is review_diff's input.
@@ -44,11 +46,11 @@ type ReviewDiffOut struct {
 // CheckProtectedPaths' own concern: it fails naming them rather than
 // silently skipping them, so they need no special handling here.
 func reviewDiff(ctx context.Context, root, baseRef, headRef string, allowNetwork bool) (ReviewDiffOut, error) {
-	tools, err := resolveTools(root)
-	if err != nil {
-		return ReviewDiffOut{}, err
-	}
 	resolvedRoot := resolveRoot(root)
+	repo, err := discovery.Discover(resolvedRoot)
+	if err != nil {
+		return ReviewDiffOut{}, fmt.Errorf("mcpserver: discover %q: %w", resolvedRoot, err)
+	}
 
 	contractOut, err := readContract(root)
 	if err != nil {
@@ -59,7 +61,7 @@ func reviewDiff(ctx context.Context, root, baseRef, headRef string, allowNetwork
 		protectedPaths = contractOut.Contract.ProtectedPaths
 	}
 
-	results := review.Review(ctx, resolvedRoot, baseRef, headRef, tools, allowNetwork, protectedPaths)
+	results := agentreview.Review(ctx, repo, baseRef, headRef, allowNetwork, protectedPaths)
 	return ReviewDiffOut{Results: results}, nil
 }
 
