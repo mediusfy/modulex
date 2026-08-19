@@ -114,6 +114,24 @@ func loadProtectedPaths(root string) ([]string, error) {
 	return c.ProtectedPaths, nil
 }
 
+// reviewRepo is the single prologue behind Review and Handoff: discover root,
+// resolve its protected paths, and run the shared agentreview.Review over the
+// baseRef...headRef diff. Keeping it in one place means the two subcommands
+// cannot drift apart in how they discover the repo or load the contract —
+// the same by-construction guarantee MOD-76 demands between the CLI and MCP
+// adapters, applied within the CLI itself.
+func reviewRepo(ctx context.Context, root, baseRef, headRef string, allowNetwork bool) (discovery.Repository, []provenance.VerificationResult, error) {
+	repo, err := discoverRepo(root)
+	if err != nil {
+		return discovery.Repository{}, nil, fmt.Errorf("discovering %q: %w", root, err)
+	}
+	protectedPaths, err := loadProtectedPaths(root)
+	if err != nil {
+		return discovery.Repository{}, nil, err
+	}
+	return repo, agentreview.Review(ctx, repo, baseRef, headRef, allowNetwork, protectedPaths), nil
+}
+
 // Review runs the repository's review checks (boundary, compatibility,
 // changelog, secret scan, and protected-paths) over the baseRef...headRef diff
 // and returns one provenance.VerificationResult per check, in a stable order.
@@ -122,33 +140,22 @@ func loadProtectedPaths(root string) ([]string, error) {
 // tools/mcpserver's review_diff calls, so the CLI and MCP results are identical
 // by construction (Jira MOD-76). It never mutates the repository.
 func Review(ctx context.Context, root, baseRef, headRef string, allowNetwork bool) ([]provenance.VerificationResult, error) {
-	repo, err := discoverRepo(root)
-	if err != nil {
-		return nil, fmt.Errorf("discovering %q: %w", root, err)
-	}
-	protectedPaths, err := loadProtectedPaths(root)
-	if err != nil {
-		return nil, err
-	}
-	return agentreview.Review(ctx, repo, baseRef, headRef, allowNetwork, protectedPaths), nil
+	_, results, err := reviewRepo(ctx, root, baseRef, headRef, allowNetwork)
+	return results, err
 }
 
-// Handoff runs Review and assembles a redacted, validated provenance.Envelope
-// describing the change. Envelope assembly is delegated to agentreview.Envelope
-// — the same code tools/mcpserver's create_handoff calls — recording the agent
-// tool as "modulex-cli". The returned Envelope has already been Redacted and
-// passed Validate; a Validate failure (e.g. root is not a git repository, so
-// Commit is empty) is returned as an error, not a partial envelope.
+// Handoff runs the same review as Review and assembles a redacted, validated
+// provenance.Envelope describing the change. Envelope assembly is delegated to
+// agentreview.Envelope — the same code tools/mcpserver's create_handoff calls
+// — recording the agent tool as "modulex-cli". The returned Envelope has
+// already been Redacted and passed Validate; a Validate failure (e.g. root is
+// not a git repository, so Commit is empty) is returned as an error, not a
+// partial envelope.
 func Handoff(ctx context.Context, root, agentName, baseRef, headRef string, allowNetwork bool) (provenance.Envelope, error) {
-	repo, err := discoverRepo(root)
-	if err != nil {
-		return provenance.Envelope{}, fmt.Errorf("discovering %q: %w", root, err)
-	}
-	protectedPaths, err := loadProtectedPaths(root)
+	repo, results, err := reviewRepo(ctx, root, baseRef, headRef, allowNetwork)
 	if err != nil {
 		return provenance.Envelope{}, err
 	}
-	results := agentreview.Review(ctx, repo, baseRef, headRef, allowNetwork, protectedPaths)
 	return agentreview.Envelope(ctx, repo, agentName, "modulex-cli", results)
 }
 

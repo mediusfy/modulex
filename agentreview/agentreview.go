@@ -42,11 +42,17 @@ func Review(ctx context.Context, repo discovery.Repository, baseRef, headRef str
 // repo's state (path, branch, commit, dirty), the calling agent (agentName and
 // tool, e.g. "modulex-cli" or "mcp"), and the supplied verification results.
 // It resolves the commit and branch via an argv-based `git rev-parse` (never a
-// shell, so repo.Root cannot inject shell syntax).
+// shell, so repo.Root cannot inject shell syntax). On a detached HEAD — the
+// normal state for a CI checkout (e.g. refs/pull/N/merge) — Branch is left
+// empty and omitted from the JSON rather than recorded as the literal,
+// meaningless "HEAD" that `git rev-parse --abbrev-ref HEAD` reports there;
+// Branch is an optional Envelope field, Commit carries the identity.
 //
 // The returned Envelope has already been Redacted and passed Validate; a
 // Validate failure (e.g. repo is not a git repository, so Commit is empty) is
-// returned as an error rather than a partial envelope.
+// returned as an error rather than a partial envelope, with all Validate
+// findings flattened onto one "; "-separated line so CLI stderr and MCP error
+// payloads stay single-line.
 //
 // verification is supplied by the caller: the CLI's handoff passes the results
 // of a Review call it just ran, while the MCP server's create_handoff passes
@@ -60,6 +66,9 @@ func Envelope(ctx context.Context, repo discovery.Repository, agentName, tool st
 	branch, err := gitRevParse(ctx, repo.Root, "--abbrev-ref", "HEAD")
 	if err != nil {
 		return provenance.Envelope{}, fmt.Errorf("resolving branch: %w", err)
+	}
+	if branch == "HEAD" { // detached HEAD: omit rather than record the literal
+		branch = ""
 	}
 
 	env := provenance.Envelope{
@@ -79,9 +88,27 @@ func Envelope(ctx context.Context, repo discovery.Repository, agentName, tool st
 	}
 	env.Redact()
 	if err := env.Validate(); err != nil {
-		return provenance.Envelope{}, fmt.Errorf("assembled handoff failed validation: %w", err)
+		return provenance.Envelope{}, fmt.Errorf("assembled handoff failed validation: %s",
+			strings.Join(flattenErrors(err), "; "))
 	}
 	return env, nil
+}
+
+// flattenErrors flattens an error tree built by errors.Join (as
+// provenance.Envelope.Validate returns) into one string per leaf error, so
+// Envelope's validation failure reads as a single "; "-joined line instead of
+// errors.Join's multi-line message. Falling back to a single-element slice
+// for any other error shape keeps this safe on an arbitrary error.
+func flattenErrors(err error) []string {
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		errs := joined.Unwrap()
+		out := make([]string, len(errs))
+		for i, e := range errs {
+			out[i] = e.Error()
+		}
+		return out
+	}
+	return []string{err.Error()}
 }
 
 // gitRevParse runs `git -C root rev-parse args...` via an argv slice (never a

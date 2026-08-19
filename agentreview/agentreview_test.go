@@ -2,6 +2,7 @@ package agentreview
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/mediusfy/modulex/discovery"
@@ -70,6 +71,50 @@ func TestEnvelope_ValidatesAndPopulates(t *testing.T) {
 	}
 	if len(env.Verification) != len(results) {
 		t.Errorf("verification count = %d, want %d", len(env.Verification), len(results))
+	}
+}
+
+// TestEnvelope_DetachedHeadOmitsBranch: a detached HEAD (the normal state for
+// a CI checkout of refs/pull/N/merge) must leave Branch empty, not record the
+// literal "HEAD" that `git rev-parse --abbrev-ref HEAD` reports there.
+func TestEnvelope_DetachedHeadOmitsBranch(t *testing.T) {
+	repo := newRepoWithDiff(t)
+	gittest.Run(t, repo.Root, "checkout", "--detach", "--quiet")
+
+	env, err := Envelope(context.Background(), repo, "claude", "mcp", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env.Repository.Branch != "" {
+		t.Errorf("branch = %q, want empty on a detached HEAD", env.Repository.Branch)
+	}
+	if env.Repository.Commit == "" {
+		t.Error("commit must still be resolved on a detached HEAD")
+	}
+}
+
+// TestEnvelope_ValidateFailureIsSingleLine: a multi-finding Validate failure
+// must surface as one "; "-joined line, not errors.Join's multi-line message
+// — the invariant tools/mcpserver's create_handoff used to enforce with its
+// own flattening and now inherits from here.
+func TestEnvelope_ValidateFailureIsSingleLine(t *testing.T) {
+	repo := newRepoWithDiff(t)
+	// StatusSkipped requires a non-empty Reason, so these two results make
+	// Validate report two findings.
+	bad := []provenance.VerificationResult{
+		{Name: "a", Category: provenance.VerificationSecretScan, Status: provenance.StatusSkipped},
+		{Name: "b", Category: provenance.VerificationSecretScan, Status: provenance.StatusSkipped},
+	}
+
+	_, err := Envelope(context.Background(), repo, "claude", "mcp", bad)
+	if err == nil {
+		t.Fatal("expected a validation error for skipped results without a reason")
+	}
+	if strings.Contains(err.Error(), "\n") {
+		t.Errorf("validation error contains a newline, want one \"; \"-joined line: %q", err)
+	}
+	if !strings.Contains(err.Error(), "; ") {
+		t.Errorf("validation error = %q, want both findings joined with \"; \"", err)
 	}
 }
 
