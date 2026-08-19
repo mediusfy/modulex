@@ -1,5 +1,8 @@
 name: PR Review
 
+# `pull_request`, never `pull_request_target`: the latter runs in the
+# base-repo context *with* secrets while checking out untrusted fork code —
+# an RCE footgun (ADR-0035). Model commentary on fork PRs stays disabled.
 on:
   pull_request:
     types: [opened, synchronize, reopened]
@@ -10,11 +13,20 @@ concurrency:
   group: pr-review-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
+# Least-privilege, matching ci.yml/release.yml/scorecard.yml conventions and
+# ADR-0035's caller requirements. The reusable workflow mints its own scoped
+# App token for anything beyond this.
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   # All the actual steps live in mediusfy/pr_pipeline so every repo calls
   # the same job instead of duplicating it -- see that repo's
   # .github/workflows/pr-review-reusable.yml and
-  # docs/adr/0001-pr-pipeline-production-readiness.md.
+  # docs/adr/0001-pr-pipeline-production-readiness.md; the caller-side
+  # conventions this file follows are docs/adr/
+  # adr-0035-pr-review-service-and-editor-integration.md's.
   #
   # Requires, in this repo's Settings:
   #   - Secrets: PR_PIPELINE_APP_ID, PR_PIPELINE_APP_PRIVATE_KEY,
@@ -25,5 +37,19 @@ jobs:
   #     with required reviewers) -- created empty on first run if missing,
   #     but "pr-review-privileged" needs its protection rule added by hand.
   review:
-    uses: mediusfy/pr_pipeline/.github/workflows/pr-review-reusable.yml@main
-    secrets: inherit
+    # Fork PRs receive no secrets on a public repository, so the review
+    # could only ever fail there -- skip it instead of showing external
+    # contributors an unfixable red check (ADR-0035).
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    # Pinned to a commit SHA, never a mutable @main (ADR-0035; matches this
+    # repo's action-pinning convention). Update the SHA deliberately when
+    # pr_pipeline lands changes we want. Currently pr_pipeline PR #4's
+    # squash-merge commit on main -- the first with the deterministic
+    # modulex engine job alongside the AI review.
+    uses: mediusfy/pr_pipeline/.github/workflows/pr-review-reusable.yml@a26462f58e47105e2686434e626a8119866a46d8
+    # Named secrets only, never `secrets: inherit` -- the callee sees exactly
+    # what it needs and nothing else (ADR-0035).
+    secrets:
+      PR_PIPELINE_APP_ID: ${{ secrets.PR_PIPELINE_APP_ID }}
+      PR_PIPELINE_APP_PRIVATE_KEY: ${{ secrets.PR_PIPELINE_APP_PRIVATE_KEY }}
+      PR_PIPELINE_LITELLM_KEY: ${{ secrets.PR_PIPELINE_LITELLM_KEY }}
