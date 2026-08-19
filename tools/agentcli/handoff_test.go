@@ -2,55 +2,12 @@ package agentcli
 
 import (
 	"context"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"testing"
 
 	"github.com/mediusfy/modulex/discovery"
+	"github.com/mediusfy/modulex/internal/gittest"
 	"github.com/mediusfy/modulex/provenance"
 )
-
-// runGit runs a git command in dir with a fully isolated configuration (no
-// user/global/system config, deterministic identity) so the fixture does not
-// depend on the host's gitconfig, hooks, or commit signing.
-func runGit(t *testing.T, dir string, args ...string) {
-	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
-		"GIT_CONFIG_GLOBAL=/dev/null",
-		"GIT_CONFIG_SYSTEM=/dev/null",
-		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
-		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com",
-	)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git %v: %v\n%s", args, err, out)
-	}
-}
-
-func writeFile(t *testing.T, dir, name, content string) {
-	t.Helper()
-	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// newRepoWithDiff creates a temp git repo with a "base" branch and a HEAD
-// commit that adds a function to app.go, returning the repo root. The diff
-// base..HEAD is benign (no secret-shaped lines, no protected paths touched).
-func newRepoWithDiff(t *testing.T) string {
-	t.Helper()
-	root := t.TempDir()
-	runGit(t, root, "init", "--quiet")
-	writeFile(t, root, "app.go", "package app\n")
-	runGit(t, root, "add", "app.go")
-	runGit(t, root, "commit", "--quiet", "-m", "base")
-	runGit(t, root, "branch", "base")
-	writeFile(t, root, "app.go", "package app\n\nfunc Hello() string { return \"hi\" }\n")
-	runGit(t, root, "commit", "--quiet", "-am", "add hello")
-	return root
-}
 
 // stubDiscovery points discoverRepo at a fixture that reports no tools — so
 // the make-based checks gate to StatusUnavailable without spawning any
@@ -80,7 +37,7 @@ func TestLoadProtectedPaths(t *testing.T) {
 		root := t.TempDir()
 		// Deliberately omit required fields other than protected_paths: an
 		// incomplete/invalid contract must still surface its protected paths.
-		writeFile(t, root, ContractFileName, "protected_paths:\n  - SECURITY.md\n  - go.mod\n")
+		gittest.WriteFile(t, root, ContractFileName, "protected_paths:\n  - SECURITY.md\n  - go.mod\n")
 		pp, err := loadProtectedPaths(root)
 		if err != nil {
 			t.Fatal(err)
@@ -92,7 +49,7 @@ func TestLoadProtectedPaths(t *testing.T) {
 
 	t.Run("unparseable contract is an error", func(t *testing.T) {
 		root := t.TempDir()
-		writeFile(t, root, ContractFileName, "protected_paths: [oops\n")
+		gittest.WriteFile(t, root, ContractFileName, "protected_paths: [oops\n")
 		if _, err := loadProtectedPaths(root); err == nil {
 			t.Fatal("expected an error for malformed YAML")
 		}
@@ -100,7 +57,7 @@ func TestLoadProtectedPaths(t *testing.T) {
 }
 
 func TestReview_ReturnsResultsForDiff(t *testing.T) {
-	root := newRepoWithDiff(t)
+	root := gittest.NewRepoWithDiff(t)
 	stubDiscovery(t, root)
 
 	results, err := Review(context.Background(), root, "base", "HEAD", false)
@@ -123,7 +80,7 @@ func TestReview_ReturnsResultsForDiff(t *testing.T) {
 }
 
 func TestHandoff_ProducesValidatedEnvelope(t *testing.T) {
-	root := newRepoWithDiff(t)
+	root := gittest.NewRepoWithDiff(t)
 	stubDiscovery(t, root)
 
 	env, err := Handoff(context.Background(), root, "claude", "base", "HEAD", false)

@@ -2,55 +2,19 @@ package agentreview
 
 import (
 	"context"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"testing"
 
 	"github.com/mediusfy/modulex/discovery"
+	"github.com/mediusfy/modulex/internal/gittest"
 	"github.com/mediusfy/modulex/provenance"
 )
 
-// runGit runs a git command in dir with a fully isolated configuration (no
-// user/global/system config, deterministic identity) so the fixture does not
-// depend on the host's gitconfig, hooks, or commit signing.
-func runGit(t *testing.T, dir string, args ...string) {
-	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
-		"GIT_CONFIG_GLOBAL=/dev/null",
-		"GIT_CONFIG_SYSTEM=/dev/null",
-		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
-		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com",
-	)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git %v: %v\n%s", args, err, out)
-	}
-}
-
-func writeFile(t *testing.T, dir, name, content string) {
-	t.Helper()
-	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// newRepoWithDiff creates a temp git repo with a "base" branch and a HEAD
-// commit that adds a function to app.go, returning a discovery.Repository whose
-// Root points at it and whose Tools is nil (so review's make-based checks gate
-// to StatusUnavailable without spawning a subprocess, keeping the test fast).
+// newRepoWithDiff wraps gittest.NewRepoWithDiff in a discovery.Repository
+// whose Tools is nil (so review's make-based checks gate to StatusUnavailable
+// without spawning a subprocess, keeping the test fast).
 func newRepoWithDiff(t *testing.T) discovery.Repository {
 	t.Helper()
-	root := t.TempDir()
-	runGit(t, root, "init", "--quiet")
-	writeFile(t, root, "app.go", "package app\n")
-	runGit(t, root, "add", "app.go")
-	runGit(t, root, "commit", "--quiet", "-m", "base")
-	runGit(t, root, "branch", "base")
-	writeFile(t, root, "app.go", "package app\n\nfunc Hello() string { return \"hi\" }\n")
-	runGit(t, root, "commit", "--quiet", "-am", "add hello")
-	return discovery.Repository{Root: root, IsGitRepo: true}
+	return discovery.Repository{Root: gittest.NewRepoWithDiff(t), IsGitRepo: true}
 }
 
 func TestReview_RunsChecksOverDiff(t *testing.T) {
