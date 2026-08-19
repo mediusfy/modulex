@@ -177,3 +177,22 @@ func TestReviewDiff_InvalidProtectedPathGlob(t *testing.T) {
 		t.Errorf("protected-paths Message = %q, want it to report the go.mod hit (valid entries stay enforced)", r.Message)
 	}
 }
+
+// TestReviewDiff_UnparseableContractFailsClosed: a present-but-unparseable
+// modulex.agent.yaml must be a handler error, not a review that silently
+// enforces zero protected paths — the CLI's `modulex agent review` fails
+// closed on the same input (MOD-76: identical by construction).
+func TestReviewDiff_UnparseableContractFailsClosed(t *testing.T) {
+	dir := newGitFixture(t)
+	if err := os.WriteFile(filepath.Join(dir, contractFileName), []byte("protected_paths: [oops\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(%s): %v", contractFileName, err)
+	}
+
+	_, err := reviewDiff(context.Background(), dir, "HEAD", "HEAD", false)
+	if err == nil {
+		t.Fatal("reviewDiff() error = nil, want an error for an unparseable contract")
+	}
+	if !strings.Contains(err.Error(), "unparseable") {
+		t.Errorf("reviewDiff() error = %q, want it to say the contract is unparseable", err)
+	}
+}

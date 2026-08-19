@@ -20,6 +20,11 @@
 // repository, and both wrap the same agentcli functions tools/mcpserver's
 // review_diff and create_handoff expose over MCP.
 //
+// Exit codes for review and handoff: 0 when the review ran and no check
+// failed, 1 when any check reports StatusFail (the JSON is still written to
+// stdout first) or the review could not run at all, 2 for usage errors. A CI
+// step shelling out to either can therefore key on the exit code alone.
+//
 // generate reads <root>/modulex.agent.yaml, renders AGENTS.md and CLAUDE.md
 // via agentdocs.Generate plus a static tooling addendum (see agentcli.go),
 // and writes both at <root>, overwriting any existing copies.
@@ -41,8 +46,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
+	"github.com/mediusfy/modulex/provenance"
 	"github.com/mediusfy/modulex/tools/agentcli"
 )
 
@@ -105,6 +112,7 @@ func runReview(args []string) {
 		fmt.Fprintf(os.Stderr, "modulex agent review: %v\n", err)
 		os.Exit(1)
 	}
+	exitOnFailedChecks("modulex agent review", results)
 }
 
 func runHandoff(args []string) {
@@ -130,6 +138,26 @@ func runHandoff(args []string) {
 	}
 	if err := printJSON(env); err != nil {
 		fmt.Fprintf(os.Stderr, "modulex agent handoff: %v\n", err)
+		os.Exit(1)
+	}
+	exitOnFailedChecks("modulex agent handoff", env.Verification)
+}
+
+// exitOnFailedChecks exits 1, naming the failed checks on stderr, if any
+// verification result has StatusFail. The JSON has already been written to
+// stdout at this point, so a CI step shelling out to review/handoff gets both
+// the machine-readable results and a red exit code — without this, a diff
+// containing a detected secret or a protected-path edit would exit 0 and the
+// calling workflow would go green on a failing review.
+func exitOnFailedChecks(prefix string, results []provenance.VerificationResult) {
+	var failed []string
+	for _, r := range results {
+		if r.Status == provenance.StatusFail {
+			failed = append(failed, r.Name)
+		}
+	}
+	if len(failed) > 0 {
+		fmt.Fprintf(os.Stderr, "%s: %d check(s) failed: %s\n", prefix, len(failed), strings.Join(failed, ", "))
 		os.Exit(1)
 	}
 }

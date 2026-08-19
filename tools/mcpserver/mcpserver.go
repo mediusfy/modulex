@@ -118,9 +118,10 @@ func resolveRoot(root string) string {
 }
 
 // resolveTools runs discovery.Discover(root) and returns its Tools field,
-// the []discovery.ToolStatus that verify.Run and review.Review use to gate
-// a CheckSpec.RequiredTool. Shared by run_verification and review_diff so
-// both tools resolve tool availability identically.
+// the []discovery.ToolStatus that verify.Run uses to gate a
+// CheckSpec.RequiredTool. Used by run_verification; review_diff discovers
+// the repository itself (it needs the whole discovery.Repository, not just
+// Tools).
 func resolveTools(root string) ([]discovery.ToolStatus, error) {
 	resolvedRoot := resolveRoot(root)
 	repo, err := discovery.Discover(resolvedRoot)

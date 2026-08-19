@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -30,19 +31,20 @@ type ReviewDiffOut struct {
 	Results []provenance.VerificationResult `json:"results"`
 }
 
-// reviewDiff resolves root's tools and runs review.Review with root as the
-// working directory. A bad baseRef/headRef surfaces as StatusUnavailable
-// inside Results, not a handler error (review.Review's git calls use argv,
-// never "sh -c"); this only errors if resolveTools or readContract itself
-// fails.
+// reviewDiff discovers root's repository and runs the shared
+// agentreview.Review over it. A bad baseRef/headRef surfaces as
+// StatusUnavailable inside Results, not a handler error (the underlying git
+// calls use argv, never "sh -c"); this only errors if discovery.Discover or
+// readContract itself fails, or the contract file is unparseable.
 //
-// protectedPaths comes from readContract(root): Contract nil (missing or
-// unparsable file) means none enforced, matching CheckProtectedPaths'
-// "absence is not failure." Contract non-nil is enforced even if it failed
-// Validate for an unrelated reason — invalid isn't the same as absent. A
-// genuine readContract error is propagated rather than treated as "no
-// protected paths," since failing open there would silently disable the
-// one check meant to catch unauthorized edits. Malformed glob entries are
+// protectedPaths comes from readContract(root): an absent contract means none
+// enforced, matching CheckProtectedPaths' "absence is not failure." A
+// present-but-unparseable contract is a real error, not "no protected paths"
+// — failing open there would silently disable the one check meant to catch
+// unauthorized edits, and the CLI's `modulex agent review` fails closed on
+// the same input (MOD-76: identical by construction). A contract that parses
+// but fails Validate for some unrelated reason still has its ProtectedPaths
+// enforced — invalid isn't the same as absent. Malformed glob entries are
 // CheckProtectedPaths' own concern: it fails naming them rather than
 // silently skipping them, so they need no special handling here.
 func reviewDiff(ctx context.Context, root, baseRef, headRef string, allowNetwork bool) (ReviewDiffOut, error) {
@@ -55,6 +57,10 @@ func reviewDiff(ctx context.Context, root, baseRef, headRef string, allowNetwork
 	contractOut, err := readContract(root)
 	if err != nil {
 		return ReviewDiffOut{}, err
+	}
+	if contractOut.Present && contractOut.Contract == nil {
+		return ReviewDiffOut{}, fmt.Errorf("mcpserver: %s is present but unparseable: %s",
+			contractFileName, strings.Join(contractOut.ValidationErrors, "; "))
 	}
 	var protectedPaths []string
 	if contractOut.Contract != nil {

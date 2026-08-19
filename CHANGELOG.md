@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `agentreview`: shared review-and-handoff orchestration behind both the
+  `modulex agent` CLI and the MCP server, so `modulex agent review`/`handoff`
+  and `review_diff`/`create_handoff` produce identical results by construction
+  (ADR-0035, MOD-76) instead of via two parallel implementations.
+- `tools/agentcli` gained two `modulex agent` subcommands: `review` runs the
+  repository's review checks (boundary, compatibility, changelog, secret scan,
+  protected paths) over a `base...head` diff and prints the results as JSON;
+  `handoff` runs the same review and prints a redacted, validated
+  `provenance.Envelope`. Both exit 1 when any check reports `StatusFail` (the
+  JSON is still written first), so a CI step shelling out to them can key on
+  the exit code alone.
+- `docs/adr/adr-0035-pr-review-service-and-editor-integration.md`: why the
+  private-reusable-workflow approach failed and the public reusable workflow +
+  CLI design that replaces it.
+
+### Fixed
+
+- `tools/mcpserver`: `review_diff` now fails closed on a
+  present-but-unparseable `modulex.agent.yaml` — previously it silently
+  reviewed with zero protected paths, disabling the one check meant to catch
+  unauthorized edits, and diverging from the CLI, which errors on the same
+  input.
+
 ## [0.9.0] - 2026-08-09
 
 ### Fixed
