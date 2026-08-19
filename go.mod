@@ -13,7 +13,7 @@ require (
 	github.com/ThreeDotsLabs/watermill v1.5.2
 	github.com/go-chi/chi/v5 v5.3.1
 	github.com/nats-io/nats-server/v2 v2.14.4
-	github.com/nats-io/nats.go v1.52.0
+	github.com/nats-io/nats.go v1.53.1
 	github.com/rabbitmq/amqp091-go v1.13.0
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/otel v1.45.0
@@ -24,7 +24,7 @@ require (
 	go.uber.org/goleak v1.3.0
 	golang.org/x/sync v0.22.0
 	google.golang.org/grpc v1.83.0
-	google.golang.org/protobuf v1.36.11
+	google.golang.org/protobuf v1.36.12
 	gopkg.in/yaml.v3 v3.0.1
 )
 
