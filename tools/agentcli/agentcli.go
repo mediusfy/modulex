@@ -7,6 +7,8 @@
 package agentcli
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,8 +17,11 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/mediusfy/modulex/agentdocs"
+	"github.com/mediusfy/modulex/agentreview"
 	"github.com/mediusfy/modulex/approval"
 	"github.com/mediusfy/modulex/contract"
+	"github.com/mediusfy/modulex/discovery"
+	"github.com/mediusfy/modulex/provenance"
 )
 
 // ContractFileName is the well-known repository contract file name, per
@@ -80,6 +85,78 @@ func Approve(root, action, resource, approvedBy string, ttl time.Duration) (appr
 		return approval.Grant{}, fmt.Errorf("saving approvals: %w", err)
 	}
 	return grant, nil
+}
+
+// discoverRepo is the repository-discovery seam Review and Handoff use to
+// resolve the working tree's root and available tools. It is a package var so
+// tests can inject a fixture without a real filesystem/PATH scan; production
+// always uses discovery.Discover.
+var discoverRepo = discovery.Discover
+
+// loadProtectedPaths reads <root>/modulex.agent.yaml and returns its declared
+// ProtectedPaths, or nil if the file is absent. Unlike LoadContract it does
+// NOT validate the contract: a contract that fails validation for some
+// unrelated reason still declares protected paths that must be enforced,
+// matching tools/mcpserver's review_diff ("invalid isn't the same as
+// absent"). A present-but-unparseable file is a real error.
+func loadProtectedPaths(root string) ([]string, error) {
+	data, err := os.ReadFile(filepath.Join(root, ContractFileName))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", ContractFileName, err)
+	}
+	var c contract.Contract
+	if err := yaml.Unmarshal(data, &c); err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", ContractFileName, err)
+	}
+	return c.ProtectedPaths, nil
+}
+
+// reviewRepo is the single prologue behind Review and Handoff: discover root,
+// resolve its protected paths, and run the shared agentreview.Review over the
+// baseRef...headRef diff. Keeping it in one place means the two subcommands
+// cannot drift apart in how they discover the repo or load the contract —
+// the same by-construction guarantee MOD-76 demands between the CLI and MCP
+// adapters, applied within the CLI itself.
+func reviewRepo(ctx context.Context, root, baseRef, headRef string, allowNetwork bool) (discovery.Repository, []provenance.VerificationResult, error) {
+	repo, err := discoverRepo(root)
+	if err != nil {
+		return discovery.Repository{}, nil, fmt.Errorf("discovering %q: %w", root, err)
+	}
+	protectedPaths, err := loadProtectedPaths(root)
+	if err != nil {
+		return discovery.Repository{}, nil, err
+	}
+	return repo, agentreview.Review(ctx, repo, baseRef, headRef, allowNetwork, protectedPaths), nil
+}
+
+// Review runs the repository's review checks (boundary, compatibility,
+// changelog, secret scan, and protected-paths) over the baseRef...headRef diff
+// and returns one provenance.VerificationResult per check, in a stable order.
+// It discovers the repo and resolves protected paths here (the adapter's job),
+// then delegates the actual check run to agentreview.Review — the same code
+// tools/mcpserver's review_diff calls, so the CLI and MCP results are identical
+// by construction (Jira MOD-76). It never mutates the repository.
+func Review(ctx context.Context, root, baseRef, headRef string, allowNetwork bool) ([]provenance.VerificationResult, error) {
+	_, results, err := reviewRepo(ctx, root, baseRef, headRef, allowNetwork)
+	return results, err
+}
+
+// Handoff runs the same review as Review and assembles a redacted, validated
+// provenance.Envelope describing the change. Envelope assembly is delegated to
+// agentreview.Envelope — the same code tools/mcpserver's create_handoff calls
+// — recording the agent tool as "modulex-cli". The returned Envelope has
+// already been Redacted and passed Validate; a Validate failure (e.g. root is
+// not a git repository, so Commit is empty) is returned as an error, not a
+// partial envelope.
+func Handoff(ctx context.Context, root, agentName, baseRef, headRef string, allowNetwork bool) (provenance.Envelope, error) {
+	repo, results, err := reviewRepo(ctx, root, baseRef, headRef, allowNetwork)
+	if err != nil {
+		return provenance.Envelope{}, err
+	}
+	return agentreview.Envelope(ctx, repo, agentName, "modulex-cli", results)
 }
 
 // outputFile pairs the repository-root file name `modulex agent generate`

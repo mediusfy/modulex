@@ -118,9 +118,10 @@ func resolveRoot(root string) string {
 }
 
 // resolveTools runs discovery.Discover(root) and returns its Tools field,
-// the []discovery.ToolStatus that verify.Run and review.Review use to gate
-// a CheckSpec.RequiredTool. Shared by run_verification and review_diff so
-// both tools resolve tool availability identically.
+// the []discovery.ToolStatus that verify.Run uses to gate a
+// CheckSpec.RequiredTool. Used by run_verification; review_diff discovers
+// the repository itself (it needs the whole discovery.Repository, not just
+// Tools).
 func resolveTools(root string) ([]discovery.ToolStatus, error) {
 	resolvedRoot := resolveRoot(root)
 	repo, err := discovery.Discover(resolvedRoot)
@@ -136,8 +137,7 @@ func resolveTools(root string) ([]discovery.ToolStatus, error) {
 // rather than one opaque multi-line message. errors.Join's result
 // implements Unwrap() []error (Go 1.20+); falling back to a single-element
 // slice for any other error shape keeps this safe to call on an arbitrary
-// error, not just one from errors.Join. Shared by read_contract and
-// create_handoff.
+// error, not just one from errors.Join. Used by read_contract.
 func unwrapErrors(err error) []string {
 	if joined, ok := err.(interface{ Unwrap() []error }); ok {
 		errs := joined.Unwrap()
