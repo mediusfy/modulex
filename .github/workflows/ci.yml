@@ -125,6 +125,12 @@ jobs:
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
       with:
         go-version: '1.26.x'
+        # Without check-latest, setup-go trusts the runner's tool cache,
+        # which lags Go point releases -- govulncheck then flags stdlib
+        # vulnerabilities already fixed in the latest patch (the scan went
+        # red on 2026-08-19/20 purely from runners still caching 1.26.5
+        # after 1.26.6 shipped). Always resolve the true latest patch.
+        check-latest: true
 
     - name: Run govulncheck
       run: make vuln
