@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   repositories (ADR-0035's reusable workflow serves arbitrary callers)
   without every make-based check going red. A target that exists but fails
   still fails.
+- `review`: the generic secret pattern no longer flags short (< 16 chars)
+  separator-joined word chains (`ticket_key="pr-42-fix"`) — those are
+  human-readable identifiers, not credential material. Long values and
+  unbroken character runs are flagged exactly as before, and the `nosecret`
+  marker remains the escape hatch.
 
 ### Added
 

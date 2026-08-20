@@ -44,7 +44,26 @@ var hunkHeaderPattern = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @
 // single ':' or '=' character), so this trade favors precision over recall
 // deliberately; see ScanSecrets' doc comment for the "nosecret" escape
 // hatch covering cases this still over- or under-catches.
-var strictGenericSecretPattern = regexp.MustCompile(`(?i)(key|token|password|secret)\s*(:=|[:=])\s*(['"])[^\s'"]{6,}['"]`)
+var strictGenericSecretPattern = regexp.MustCompile(`(?i)(key|token|password|secret)\s*(:=|[:=])\s*['"]([^\s'"]{6,})['"]`)
+
+// identifierLikeValue matches a short chain of alphanumeric words joined by
+// '-' or '_' — the shape of a human-readable identifier ("pr-42-fix",
+// "my_feature_branch"), not credential material. Real secrets are either
+// long (so the < 16 length guard in secretShapedValue keeps them flagged) or
+// a single unbroken run of characters (no separators, so this never
+// matches). Found in practice: `ticket_key="pr-42-fix"` in a consumer
+// repository's tests flagged by the generic pattern above.
+var identifierLikeValue = regexp.MustCompile(`^[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)+$`)
+
+// secretShapedValue reports whether a value captured by
+// strictGenericSecretPattern actually looks like credential material: short
+// separator-joined word chains are identifiers, everything else keeps the
+// pattern's precision-tuned verdict. The "nosecret" marker remains the
+// escape hatch for deliberate secret-shaped fixtures this heuristic still
+// flags.
+func secretShapedValue(value string) bool {
+	return len(value) >= 16 || !identifierLikeValue.MatchString(value)
+}
 
 // nosecretMarker, when present anywhere in an added line (case-insensitive),
 // suppresses that line from ScanSecrets' findings regardless of pattern
@@ -68,10 +87,14 @@ func hasNosecretMarker(line string) bool {
 // matched.
 func redactLine(line string) (string, bool) {
 	redacted, found := provenance.RedactHighConfidenceSecrets(line)
-	if strictGenericSecretPattern.MatchString(redacted) {
-		redacted = strictGenericSecretPattern.ReplaceAllString(redacted, provenance.RedactionMarker)
+	redacted = strictGenericSecretPattern.ReplaceAllStringFunc(redacted, func(m string) string {
+		sub := strictGenericSecretPattern.FindStringSubmatch(m)
+		if !secretShapedValue(sub[3]) {
+			return m
+		}
 		found = true
-	}
+		return provenance.RedactionMarker
+	})
 	return redacted, found
 }
 
