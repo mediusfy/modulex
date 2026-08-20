@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Tests: `TestEndToEnd_FullStackLifecycle` and `httpx`'s `TestServe` were
+  flaky under Go 1.27 — the 1.27 client's more aggressive keep-alive reuse
+  can leave a spare, never-used connection in its pool, which the server
+  sees in `StateNew` and `Server.Shutdown` only reaps after a hardcoded
+  ~5s grace, longer than the tests' shutdown windows. The tests now empty
+  the client's connection pool before initiating shutdown. Production note
+  for `httpx.Serve` consumers: clients holding never-used spare
+  connections can extend graceful shutdown by up to ~5s; setting
+  `http.Server.ReadHeaderTimeout` bounds how long such connections live.
+
 ### Changed
 
 - `verify.Run` (and therefore `review`, `modulex agent review`/`handoff`, and
