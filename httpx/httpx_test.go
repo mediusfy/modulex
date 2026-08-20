@@ -196,6 +196,12 @@ func TestServe(t *testing.T) {
 		return resp.StatusCode == http.StatusOK
 	}, 2*time.Second, 10*time.Millisecond, "server did not become reachable")
 
+	// Since Go 1.27 the client can leave a spare, never-used keep-alive
+	// connection in its pool; server-side it sits in StateNew, which
+	// Server.Shutdown only reaps after a hardcoded ~5s grace -- longer than
+	// the 2s shutdown window here. Empty the pool so shutdown is prompt.
+	client.CloseIdleConnections()
+
 	cancel()
 
 	waitErr := make(chan error, 1)

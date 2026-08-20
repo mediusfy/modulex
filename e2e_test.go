@@ -122,8 +122,9 @@ func TestEndToEnd_FullStackLifecycle(t *testing.T) {
 	require.NoError(t, err)
 
 	baseURL := "http://" + addr
+	client := &http.Client{}
 	require.Eventually(t, func() bool {
-		resp, err := http.Get(baseURL + "/healthz")
+		resp, err := client.Get(baseURL + "/healthz")
 		if err != nil {
 			return false
 		}
@@ -132,7 +133,7 @@ func TestEndToEnd_FullStackLifecycle(t *testing.T) {
 	}, 2*time.Second, 10*time.Millisecond, "server did not start listening in time")
 
 	t.Run("business route resolves the chi-registered handler", func(t *testing.T) {
-		resp, err := http.Get(baseURL + "/greet/modulex")
+		resp, err := client.Get(baseURL + "/greet/modulex")
 		require.NoError(t, err)
 		defer func() { _ = resp.Body.Close() }()
 
@@ -144,7 +145,7 @@ func TestEndToEnd_FullStackLifecycle(t *testing.T) {
 
 	t.Run("health and readiness checks are exposed over HTTP", func(t *testing.T) {
 		for _, path := range []string{"/healthz", "/readyz"} {
-			resp, err := http.Get(baseURL + path)
+			resp, err := client.Get(baseURL + path)
 			require.NoError(t, err)
 			_ = resp.Body.Close()
 			assert.Equal(t, http.StatusOK, resp.StatusCode, "GET %s", path)
@@ -178,12 +179,19 @@ func TestEndToEnd_FullStackLifecycle(t *testing.T) {
 		require.NoError(t, handle.Wait())
 	})
 
+	// Close the client's pooled connections before shutting down. Since Go
+	// 1.27 the client reuses keep-alive connections more aggressively, which
+	// can leave a spare, never-used connection in its pool; server-side that
+	// connection sits in StateNew, and Server.Shutdown only reaps StateNew
+	// connections after a hardcoded ~5s grace -- longer than Serve's
+	// shutdown window here, so shutdown would flakily time out.
+	client.CloseIdleConnections()
 	require.NoError(t, manager.StopModules(ctx))
 	assert.Equal(t, modulex.StateStopped, manager.State())
 
 	// The HTTP server was shut down by StopModules cancelling the supervised
 	// task; a fresh request must fail rather than hang.
-	_, err = http.Get(baseURL + "/healthz")
+	_, err = client.Get(baseURL + "/healthz")
 	assert.Error(t, err, "server should no longer be listening after StopModules")
 
 	spanNames := make(map[string]struct{})
