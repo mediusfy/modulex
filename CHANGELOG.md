@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `verify.Run` (and therefore `review`, `modulex agent review`/`handoff`, and
+  the MCP `review_diff`/`run_verification` tools): a `make <target>` check
+  whose target cannot exist — the repository has no Makefile, or make
+  reports no rule for the target — is now reported as `unavailable` with a
+  reason instead of `fail`. A repository that never declared a gate hasn't
+  failed it; this lets the review engine run against non-modulex
+  repositories (ADR-0035's reusable workflow serves arbitrary callers)
+  without every make-based check going red. A target that exists but fails
+  still fails.
+- `review`: the generic secret pattern no longer flags short (< 16 chars)
+  separator-joined word chains (`ticket_key="pr-42-fix"`) — those are
+  human-readable identifiers, not credential material. Long values and
+  unbroken character runs are flagged exactly as before, and the `nosecret`
+  marker remains the escape hatch.
+
 ### Added
 
 - `agentreview`: shared review-and-handoff orchestration behind both the

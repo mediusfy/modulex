@@ -3,6 +3,7 @@ package verify
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -227,5 +228,88 @@ func TestRun_EmptyCheckSpecDirUsesCallingProcessCwd(t *testing.T) {
 	}
 	if resolvedGot != resolvedWant {
 		t.Errorf("pwd reported %q, want %q (empty Dir must leave the calling process's cwd unchanged, matching pre-Dir-field behavior)", resolvedGot, resolvedWant)
+	}
+}
+
+func TestRun_MakeTargetWithoutMakefileIsUnavailable(t *testing.T) {
+	check := CheckSpec{
+		Name:     "check-changelog",
+		Command:  "make check-changelog",
+		Category: provenance.VerificationChangelog,
+		Dir:      t.TempDir(), // no Makefile here
+	}
+
+	results := Run(context.Background(), []CheckSpec{check}, nil, false)
+	if results[0].Status != provenance.StatusUnavailable {
+		t.Fatalf("Status = %q, want %q; Message: %s",
+			results[0].Status, provenance.StatusUnavailable, results[0].Message)
+	}
+	if !strings.Contains(results[0].Reason, "no Makefile") {
+		t.Errorf("Reason = %q, want it to say the repository has no Makefile", results[0].Reason)
+	}
+}
+
+func TestRun_UndefinedMakeTargetIsUnavailable(t *testing.T) {
+	if _, err := exec.LookPath("make"); err != nil {
+		t.Skip("make not available on PATH")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Makefile"), []byte("hello:\n\t@echo hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	check := CheckSpec{
+		Name:     "check-changelog",
+		Command:  "make check-changelog",
+		Category: provenance.VerificationChangelog,
+		Dir:      dir,
+	}
+
+	results := Run(context.Background(), []CheckSpec{check}, nil, false)
+	if results[0].Status != provenance.StatusUnavailable {
+		t.Fatalf("Status = %q, want %q; Message: %s",
+			results[0].Status, provenance.StatusUnavailable, results[0].Message)
+	}
+	if !strings.Contains(results[0].Reason, "not defined") {
+		t.Errorf("Reason = %q, want it to say the target is not defined", results[0].Reason)
+	}
+}
+
+func TestRun_DefinedMakeTargetStillRunsAndCanFail(t *testing.T) {
+	if _, err := exec.LookPath("make"); err != nil {
+		t.Skip("make not available on PATH")
+	}
+	dir := t.TempDir()
+	makefile := "pass:\n\t@true\nfail:\n\t@echo boom; false\n"
+	if err := os.WriteFile(filepath.Join(dir, "Makefile"), []byte(makefile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	checks := []CheckSpec{
+		{Name: "pass", Command: "make pass", Category: provenance.VerificationFull, Dir: dir},
+		{Name: "fail", Command: "make fail", Category: provenance.VerificationFull, Dir: dir},
+	}
+	results := Run(context.Background(), checks, nil, false)
+	if results[0].Status != provenance.StatusPass {
+		t.Errorf("pass target Status = %q, want %q; Message: %s",
+			results[0].Status, provenance.StatusPass, results[0].Message)
+	}
+	if results[1].Status != provenance.StatusFail {
+		t.Errorf("fail target Status = %q, want %q (a defined-but-failing target must stay a real failure)",
+			results[1].Status, provenance.StatusFail)
+	}
+}
+
+func TestRun_NonMakeCommandsSkipTheMakePreflight(t *testing.T) {
+	// A non-"make <target>" command in a Makefile-less directory must run
+	// normally -- the preflight only reasons about the bare make shape.
+	check := CheckSpec{
+		Name:     "echo",
+		Command:  "echo ok",
+		Category: provenance.VerificationFull,
+		Dir:      t.TempDir(),
+	}
+	results := Run(context.Background(), []CheckSpec{check}, nil, false)
+	if results[0].Status != provenance.StatusPass {
+		t.Fatalf("Status = %q, want %q", results[0].Status, provenance.StatusPass)
 	}
 }

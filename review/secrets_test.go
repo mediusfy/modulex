@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/mediusfy/modulex/provenance"
 )
 
 func writeFile(t *testing.T, dir, name, content string) {
@@ -401,5 +403,46 @@ func TestHasNosecretMarker(t *testing.T) {
 		if got := hasNosecretMarker(tt.line); got != tt.want {
 			t.Errorf("hasNosecretMarker(%q) = %v, want %v", tt.line, got, tt.want)
 		}
+	}
+}
+
+// TestScanSecrets_IdentifierLikeValuesAreNotFlagged: a short chain of
+// alphanumeric words joined by -/_ assigned to a key/token-named variable is
+// a human-readable identifier ("pr-42-fix"), not credential material -- found
+// in practice as `ticket_key="pr-42-fix"` in a consumer repository's tests.
+// A long value keeps being flagged even when separator-joined.
+func TestScanSecrets_IdentifierLikeValuesAreNotFlagged(t *testing.T) {
+	root := newTestRepo(t)
+	writeFile(t, root, "base.txt", "base\n")
+	runGit(t, root, "add", "base.txt")
+	runGit(t, root, "commit", "--quiet", "-m", "base")
+	runGit(t, root, "branch", "base")
+	writeFile(t, root, "conf.py",
+		"ticket_key=\"pr-42-fix\"\n"+
+			"branch_token = \"my_branch_v2\"\n")
+	runGit(t, root, "add", "conf.py")
+	runGit(t, root, "commit", "--quiet", "-m", "identifier-shaped values")
+
+	result := ScanSecrets(context.Background(), root, "base", "HEAD")
+	if result.Status != provenance.StatusPass {
+		t.Fatalf("Status = %q, want pass (identifier-like values are not secrets); Message: %s",
+			result.Status, result.Message)
+	}
+}
+
+func TestScanSecrets_LongSeparatorJoinedValueStillFlagged(t *testing.T) {
+	root := newTestRepo(t)
+	writeFile(t, root, "base.txt", "base\n")
+	runGit(t, root, "add", "base.txt")
+	runGit(t, root, "commit", "--quiet", "-m", "base")
+	runGit(t, root, "branch", "base")
+	writeFile(t, root, "conf.py", "api_key = \"prod-4f9a-1c2b-88ee-secret\"\n")
+	runGit(t, root, "add", "conf.py")
+	runGit(t, root, "commit", "--quiet", "-m", "long separator-joined secret")
+
+	result := ScanSecrets(context.Background(), root, "base", "HEAD")
+	if result.Status != provenance.StatusFail {
+		t.Fatalf("Status = %q, want fail (>=16 chars stays flagged regardless of separators); Message: %s",
+			result.Status, result.Message)
 	}
 }

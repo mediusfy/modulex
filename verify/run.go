@@ -3,7 +3,11 @@ package verify
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/mediusfy/modulex/discovery"
@@ -43,6 +47,11 @@ const maxOutputBytes = 4096
 // argument rather than folded into CheckSpec or inferred from the
 // environment, since real network-reachability detection is out of scope
 // and an explicit caller-supplied flag is what the ticket asked for.
+//
+// A "make <target>" check whose target cannot exist — no Makefile in the
+// check's working directory, or make reports no rule for it — is reported
+// as StatusUnavailable with a Reason, not run and not failed: a repository
+// that never declared a gate hasn't failed it (see missingMakeTarget).
 //
 // Every other check is actually executed via "sh -c <Command>", with ctx
 // honored for cancellation/timeout and CheckSpec.Dir (if set) as the
@@ -92,6 +101,15 @@ func runOne(ctx context.Context, c CheckSpec, present map[string]bool, allowNetw
 		}
 	}
 
+	if reason := missingMakeTarget(ctx, c); reason != "" {
+		return provenance.VerificationResult{
+			Name:     c.Name,
+			Category: c.Category,
+			Status:   provenance.StatusUnavailable,
+			Reason:   reason,
+		}
+	}
+
 	start := time.Now()
 	output, err := runCommand(ctx, c.Command, c.Dir)
 	duration := time.Since(start)
@@ -108,6 +126,78 @@ func runOne(ctx context.Context, c CheckSpec, present map[string]bool, allowNetw
 		Duration: duration,
 		Message:  truncateOutput(output),
 	}
+}
+
+// makeCommandRe matches the exact "make <target>" command shape the built-in
+// CheckSpecs (FullGates, review.Checks) use. Commands with extra arguments or
+// shell syntax deliberately don't match: the preflight below only reasons
+// about the simple case it can reason about correctly.
+var makeCommandRe = regexp.MustCompile(`^make ([A-Za-z0-9._-]+)$`)
+
+// makefileNames are the file names GNU/BSD make looks for by default, in
+// make's own search order.
+var makefileNames = []string{"GNUmakefile", "makefile", "Makefile"}
+
+// noRulePatterns are the messages GNU make ("No rule to make target") and
+// BSD make ("don't know how to make") print when a requested target does not
+// exist. Matched against `make -n <target>` output in missingMakeTarget.
+var noRulePatterns = []string{"No rule to make target", "don't know how to make"}
+
+// missingMakeTarget is runOne's preflight for "make <target>" commands: it
+// returns a non-empty reason when the target cannot exist — no Makefile in
+// the check's working directory, or make itself reports it has no rule for
+// the target (probed via `make -n`, which expands the makefile without
+// running recipes). A repository that never declared a gate is reported as
+// StatusUnavailable ("this check does not exist here"), not StatusFail —
+// the same absence-is-not-failure convention the protected-paths check
+// follows — so `modulex agent review` can run against repositories that
+// aren't modulex without every make-based check going red (ADR-0035's
+// reusable workflow serves arbitrary callers). A Makefile that HAS the
+// target but fails for any reason still runs and still fails: this
+// preflight only ever converts "the target is not defined" into
+// unavailable, never a real failure into anything softer.
+func missingMakeTarget(ctx context.Context, c CheckSpec) string {
+	m := makeCommandRe.FindStringSubmatch(c.Command)
+	if m == nil {
+		return ""
+	}
+	target := m[1]
+
+	dir := c.Dir
+	if dir == "" {
+		dir = "."
+	}
+	hasMakefile := false
+	for _, name := range makefileNames {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			hasMakefile = true
+			break
+		}
+	}
+	if !hasMakefile {
+		return fmt.Sprintf("make target %q is not defined: the repository has no Makefile", target)
+	}
+
+	makePath, err := exec.LookPath("make")
+	if err != nil {
+		// RequiredTool gating normally catches this first; without make the
+		// real run would fail to start anyway, so let it surface there.
+		return ""
+	}
+	probe := exec.CommandContext(ctx, makePath, "-n", target)
+	probe.Dir = c.Dir
+	out, err := probe.CombinedOutput()
+	if err == nil {
+		return ""
+	}
+	for _, pattern := range noRulePatterns {
+		if strings.Contains(string(out), pattern) {
+			return fmt.Sprintf("make target %q is not defined in the repository's Makefile", target)
+		}
+	}
+	// -n failed for some other reason (broken Makefile, parse-time $(shell)
+	// failure): run the check for real and let it report the actual failure.
+	return ""
 }
 
 // runCommand actually executes command via the shell (so Command strings
