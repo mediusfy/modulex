@@ -1,8 +1,9 @@
-// Command modulex is the `modulex agent` CLI: a shell-invokable entry point
-// to the same domain logic tools/mcpserver exposes over MCP, for an agent
-// or CI step that doesn't speak MCP, per ADR-0032
+// Command modulex is the unified modulex CLI: one shell-invokable front door
+// to the repo-workflow tooling that previously shipped as separate binaries.
+// The `agent` commands expose the same domain logic tools/mcpserver exposes
+// over MCP, for an agent or CI step that doesn't speak MCP, per ADR-0032
 // (docs/adr/adr-0032-agent-first-development-experience.md). See
-// tools/agentcli (the agentcli package) for the logic each subcommand
+// tools/agentcli (the agentcli package) for the logic each agent subcommand
 // wraps, and docs/planning/agent-cli-guide.md for the full guide.
 //
 // Usage:
@@ -11,6 +12,16 @@
 //	modulex agent approve -action <name> [-resource <name>] -approved-by <name> [-ttl <duration>] [-root <path>]
 //	modulex agent review -base <ref> [-head <ref>] [-root <path>] [-allow-network]
 //	modulex agent handoff -base <ref> [-head <ref>] [-agent <name>] [-root <path>] [-allow-network]
+//	modulex new module -name <feature> -out <parent-dir> [-module <import-path>] [-force]
+//	modulex check boundary [analyzer flags] [packages...]
+//
+// new module scaffolds a feature module with the recommended
+// domain/ports/service/adapters/module.go layout (scaffold.Generate — the
+// same code the standalone tools/scaffold binary wraps). check boundary
+// runs the modboundary analyzer (the same one `make check-module-boundary`
+// drives). The single-purpose tools/scaffold and tools/modboundary binaries
+// remain available; tools/provenanceci deliberately stays standalone — it
+// is pure CI plumbing with no interactive audience.
 //
 // review runs the repository's review checks (boundary, compatibility,
 // changelog, secret scan, protected paths) over the base...head diff and
@@ -49,43 +60,117 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/tools/go/analysis/singlechecker"
+
 	"github.com/mediusfy/modulex/provenance"
 	"github.com/mediusfy/modulex/tools/agentcli"
+	"github.com/mediusfy/modulex/tools/modboundary"
+	"github.com/mediusfy/modulex/tools/scaffold"
 )
 
 func main() {
-	if len(os.Args) < 2 || os.Args[1] != "agent" {
-		usage()
-		os.Exit(2)
-	}
-	if len(os.Args) < 3 {
+	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)
 	}
 
-	switch os.Args[2] {
-	case "generate":
-		runGenerate(os.Args[3:])
-	case "approve":
-		runApprove(os.Args[3:])
-	case "review":
-		runReview(os.Args[3:])
-	case "handoff":
-		runHandoff(os.Args[3:])
+	switch os.Args[1] {
+	case "agent":
+		runAgent(os.Args[2:])
+	case "new":
+		runNew(os.Args[2:])
+	case "check":
+		runCheck(os.Args[2:])
 	default:
-		fmt.Fprintf(os.Stderr, "modulex agent: unknown subcommand %q\n\n", os.Args[2])
+		fmt.Fprintf(os.Stderr, "modulex: unknown command %q\n\n", os.Args[1])
+		usage()
+		os.Exit(2)
+	}
+}
+
+func runAgent(args []string) {
+	if len(args) < 1 {
+		usage()
+		os.Exit(2)
+	}
+	switch args[0] {
+	case "generate":
+		runGenerate(args[1:])
+	case "approve":
+		runApprove(args[1:])
+	case "review":
+		runReview(args[1:])
+	case "handoff":
+		runHandoff(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "modulex agent: unknown subcommand %q\n\n", args[0])
 		usage()
 		os.Exit(2)
 	}
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "Usage: modulex agent <subcommand> [flags]")
-	fmt.Fprintln(os.Stderr, "\nSubcommands:")
-	fmt.Fprintln(os.Stderr, "  generate    render AGENTS.md/CLAUDE.md from modulex.agent.yaml")
-	fmt.Fprintln(os.Stderr, "  approve     grant an approval a separately-running MCP server can see")
-	fmt.Fprintln(os.Stderr, "  review      run the review checks over a diff and print the results as JSON")
-	fmt.Fprintln(os.Stderr, "  handoff     run the review and print a validated provenance handoff envelope as JSON")
+	fmt.Fprintln(os.Stderr, "Usage: modulex <command> [flags]")
+	fmt.Fprintln(os.Stderr, "\nCommands:")
+	fmt.Fprintln(os.Stderr, "  agent generate    render AGENTS.md/CLAUDE.md from modulex.agent.yaml")
+	fmt.Fprintln(os.Stderr, "  agent approve     grant an approval a separately-running MCP server can see")
+	fmt.Fprintln(os.Stderr, "  agent review      run the review checks over a diff and print the results as JSON")
+	fmt.Fprintln(os.Stderr, "  agent handoff     run the review and print a validated provenance handoff envelope as JSON")
+	fmt.Fprintln(os.Stderr, "  new module        scaffold a feature module (domain/ports/service/adapters/module.go)")
+	fmt.Fprintln(os.Stderr, "  check boundary    run the modboundary analyzer against Go packages")
+}
+
+// runNew handles `modulex new module`, wrapping scaffold.Generate — the same
+// code the standalone tools/scaffold binary wraps, which remains available
+// for callers that want the single-purpose tool.
+func runNew(args []string) {
+	if len(args) < 1 || args[0] != "module" {
+		fmt.Fprintln(os.Stderr, "Usage: modulex new module -name <feature> -out <parent-dir> [-module <import-path>] [-force]")
+		os.Exit(2)
+	}
+	fs := flag.NewFlagSet("modulex new module", flag.ExitOnError)
+	name := fs.String("name", "", "feature name, e.g. \"billing\" (required)")
+	out := fs.String("out", "", "parent directory to generate into, e.g. \"examples\" (required)")
+	module := fs.String("module", "", "Go import path corresponding to -out; auto-detected from the nearest go.mod if omitted")
+	force := fs.Bool("force", false, "overwrite the target directory if it already exists and is non-empty")
+	if err := fs.Parse(args[1:]); err != nil {
+		os.Exit(2)
+	}
+	if *name == "" || *out == "" {
+		fmt.Fprintln(os.Stderr, "modulex new module: -name and -out are required")
+		fs.PrintDefaults()
+		os.Exit(2)
+	}
+
+	result, err := scaffold.Generate(scaffold.Config{
+		Name:         *name,
+		OutDir:       *out,
+		ModuleImport: *module,
+		Force:        *force,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "modulex new module: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("generated %s:\n", result.TargetDir)
+	for _, f := range result.Files {
+		fmt.Printf("  %s\n", f)
+	}
+}
+
+// runCheck handles `modulex check boundary`, driving the modboundary
+// analyzer through singlechecker — the same analyzer the standalone
+// tools/modboundary binary (and `make check-module-boundary`) runs.
+// singlechecker owns flag parsing and process exit, so it is handed a
+// rewritten os.Args and never returns.
+func runCheck(args []string) {
+	if len(args) < 1 || args[0] != "boundary" {
+		fmt.Fprintln(os.Stderr, "Usage: modulex check boundary [analyzer flags] [packages...]")
+		fmt.Fprintln(os.Stderr, "\nAnalyzer flags include -root, -allow, and -dbschema; run with -help for the full set.")
+		os.Exit(2)
+	}
+	os.Args = append([]string{"modulex check boundary"}, args[1:]...)
+	singlechecker.Main(modboundary.Analyzer)
 }
 
 func runReview(args []string) {

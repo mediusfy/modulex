@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The `modulex` binary is now the unified CLI: `modulex new module` wraps
+  tools/scaffold's generator and `modulex check boundary` drives the
+  tools/modboundary analyzer, alongside the existing `modulex agent`
+  commands. The single-purpose binaries remain; tools/provenanceci stays
+  standalone deliberately (pure CI plumbing).
+
 ### Changed
 
 - `.github/workflows/pr-review.yml` no longer calls pr_pipeline's reusable
