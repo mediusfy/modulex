@@ -253,3 +253,34 @@ func TestIsPathSafeForCommand(t *testing.T) {
 		}
 	}
 }
+
+func TestPlanFor_NestedModulePathsUseModuleLocalCommands(t *testing.T) {
+	cases := []struct {
+		path    string
+		wantDir string
+	}{
+		{"tools/agentcli/agentcli.go", "tools/agentcli"},
+		{"tools/mcpserver/review.go", "tools/mcpserver"},
+		{"examples/external-consumer/main.go", "examples/external-consumer"},
+	}
+	for _, tc := range cases {
+		plan := PlanFor([]string{tc.path})
+		wantCmd := "go -C " + tc.wantDir + " test ./..."
+		var found bool
+		for _, c := range plan.FocusedChecks {
+			if c.Command == wantCmd {
+				found = true
+			}
+			if c.Command == "go test ./tools/..." || c.Command == "go test ./examples/external-consumer/..." {
+				t.Errorf("%s: focused check %q uses a root-module package pattern that matches no packages (nested module)", tc.path, c.Command)
+			}
+		}
+		if !found {
+			var got []string
+			for _, c := range plan.FocusedChecks {
+				got = append(got, c.Command)
+			}
+			t.Errorf("%s: no focused check with command %q; got %v", tc.path, wantCmd, got)
+		}
+	}
+}

@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Three new CLI commands, each a thin face over existing library code:
+  `modulex agent verify` plans the checks a `base...head` diff recommends
+  (via `verify.PlanFor`) and runs them with `run_verification`'s exact
+  safety posture — mutating/destructive/approval-required commands are
+  never executed, reported `approval_required` instead; `modulex agent
+  generate -check` reports drift between the checked-in
+  AGENTS.md/CLAUDE.md and what the contract would generate, exiting 1 on
+  drift; `modulex doctor` prints one diagnosis of a repository (discovery,
+  tool availability, contract state).
+
+### Fixed
+
+- `verify.PlanFor` recommended `go test ./tools/...`-style focused checks
+  for files in nested Go modules (tools/*, examples/external-consumer),
+  which match no packages in the root module and always failed. Nested
+  module paths now get `go -C <module-dir> test ./...` checks, and
+  `discovery.ClassifyCommand` recognizes the shell-safe `-C` form as the
+  same read-only class as plain `go test`.
+
+### Added
+
 - The `modulex` binary is now the unified CLI: `modulex new module` wraps
   tools/scaffold's generator and `modulex check boundary` drives the
   tools/modboundary analyzer, alongside the existing `modulex agent`

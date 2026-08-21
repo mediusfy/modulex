@@ -351,6 +351,49 @@ func focusedChecksForFile(path string) []CheckSpec {
 // of every example (cheap insurance that nothing else broke), plus, when
 // the path identifies one specific example directory, that example's own
 // tests.
+// nestedModuleDir returns the repository-relative directory of the nested
+// Go module path belongs to, or "" when path is part of the root module.
+// The repository's nested-module convention is fixed: every direct child of
+// tools/ is its own Go module, as is examples/external-consumer (each has
+// its own go.mod plus a replace directive toward the root). A root-module
+// `./tools/...` package pattern therefore matches nothing — go exits
+// nonzero with "matched no packages" — so checks for these paths must run
+// from the nested module's own root via `go -C`. PlanFor stays a pure path
+// mapping, so this encodes the convention rather than reading go.mod files
+// off disk.
+func nestedModuleDir(path string) string {
+	if strings.HasPrefix(path, "tools/") {
+		if sub := topLevelSegment(strings.TrimPrefix(path, "tools/")); sub != "" {
+			return "tools/" + sub
+		}
+	}
+	if strings.HasPrefix(path, "examples/external-consumer/") {
+		return "examples/external-consumer"
+	}
+	return ""
+}
+
+// nestedModuleChecks returns the focused test+vet pair for a file in the
+// nested module at dir, running from that module's root.
+func nestedModuleChecks(path, dir string) []CheckSpec {
+	return []CheckSpec{
+		{
+			Name:         "test-" + dir,
+			Command:      fmt.Sprintf("go -C %s test ./...", dir),
+			Category:     provenance.VerificationFocused,
+			Reason:       fmt.Sprintf("%s changed; %s is its own Go module, so its tests run from that module's root", path, dir),
+			RequiredTool: "go",
+		},
+		{
+			Name:         "vet-" + dir,
+			Command:      fmt.Sprintf("go -C %s vet ./...", dir),
+			Category:     provenance.VerificationFocused,
+			Reason:       fmt.Sprintf("%s changed; %s is its own Go module, so vet runs from that module's root", path, dir),
+			RequiredTool: "go",
+		},
+	}
+}
+
 func focusedChecksForExample(path string) []CheckSpec {
 	checks := []CheckSpec{
 		{
@@ -362,6 +405,9 @@ func focusedChecksForExample(path string) []CheckSpec {
 		},
 	}
 
+	if nested := nestedModuleDir(path); nested != "" {
+		return append(checks, nestedModuleChecks(path, nested)...)
+	}
 	rest := strings.TrimPrefix(path, "examples/")
 	if dir := topLevelSegment(rest); dir != "" {
 		examplePath := "examples/" + dir
@@ -382,6 +428,9 @@ func focusedChecksForExample(path string) []CheckSpec {
 // "modulex.go", no "/" in path) gets go test/go vet scoped to the root
 // package.
 func focusedChecksForGoFile(path string) []CheckSpec {
+	if dir := nestedModuleDir(path); dir != "" {
+		return nestedModuleChecks(path, dir)
+	}
 	pkg := topLevelSegment(path)
 	if pkg == "" {
 		return []CheckSpec{

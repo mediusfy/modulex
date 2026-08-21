@@ -85,3 +85,25 @@ func TestClassifyCommand_UnmatchedFallbackNeverSafe(t *testing.T) {
 		}
 	}
 }
+
+// TestClassifyCommand_GoDashCVariantIsSafe: verify's nested-module focused
+// checks run `go -C tools/<mod> test ./...`; the -C form must classify
+// exactly like the plain form, and only with a shell-safe directory.
+func TestClassifyCommand_GoDashCVariantIsSafe(t *testing.T) {
+	for _, cmd := range []string{
+		"go -C tools/agentcli test ./...",
+		"go -C examples/external-consumer vet ./...",
+		"go -C tools/mcpserver build ./...",
+	} {
+		class, _ := ClassifyCommand(cmd)
+		if class != provenance.ClassSafe {
+			t.Errorf("ClassifyCommand(%q) = %q, want safe", cmd, class)
+		}
+	}
+	// A -C argument with shell-significant characters must not ride the
+	// safe rule; it falls through to the fail-closed default.
+	class, _ := ClassifyCommand("go -C 'tools;rm -rf /' test ./...")
+	if class == provenance.ClassSafe {
+		t.Error("shell-significant -C argument classified safe; must fail closed")
+	}
+}

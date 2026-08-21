@@ -22,6 +22,8 @@ import (
 	"github.com/mediusfy/modulex/contract"
 	"github.com/mediusfy/modulex/discovery"
 	"github.com/mediusfy/modulex/provenance"
+	"github.com/mediusfy/modulex/review"
+	"github.com/mediusfy/modulex/verify"
 )
 
 // ContractFileName is the well-known repository contract file name, per
@@ -264,3 +266,154 @@ Git hooks are installed under ` + "`.git/hooks`" + ` to run ` + "`codegraph sync
 - **Antigravity / ` + "`agy`" + `**: does not expose a pre-turn hook mechanism. Rely on the git hooks above and this rule.
 
 All agents (Kimi, Claude, Antigravity) must use CodeGraph for locating symbols, call sites, and references.`
+
+// CheckGeneratedFiles reports which of OutputFiles at root have drifted from
+// what GeneratedFiles(c) would render right now — `modulex agent generate
+// -check`'s domain logic. A missing file counts as drifted. An empty result
+// means the checked-in files are exactly what generate would write, so CI
+// can gate on contract/instructions drift without mutating the tree.
+func CheckGeneratedFiles(root string, c contract.Contract) ([]string, error) {
+	want, err := GeneratedFiles(c)
+	if err != nil {
+		return nil, err
+	}
+	var drifted []string
+	for _, f := range OutputFiles {
+		got, err := os.ReadFile(filepath.Join(root, f.name))
+		if err != nil || string(got) != want[f.name] {
+			drifted = append(drifted, f.name)
+		}
+	}
+	return drifted, nil
+}
+
+// Verify plans and runs verification checks for the baseRef...headRef diff:
+// changed files feed verify.PlanFor, whose focused checks run (plus the
+// repository's full gates when full is true, deduplicated by name — an
+// unmapped path's focused fallback IS the full gate set). Commands are
+// classified through discovery.ClassifyCommand with exactly
+// tools/mcpserver run_verification's posture: a mutating, destructive, or
+// approval-required command is never executed and reports
+// StatusApprovalRequired instead; when a grant for it already exists in
+// root's approvals file, the Reason says so (this CLI still never consumes
+// a grant — execution stays a human decision). Safe/networked checks run
+// via verify.Run with the discovered tool set, networked ones gated by
+// allowNetwork.
+func Verify(ctx context.Context, root, baseRef, headRef string, allowNetwork, full bool) ([]provenance.VerificationResult, error) {
+	repo, err := discoverRepo(root)
+	if err != nil {
+		return nil, fmt.Errorf("discovering %q: %w", root, err)
+	}
+	changed, err := review.ChangedFiles(ctx, repo.Root, baseRef, headRef)
+	if err != nil {
+		return nil, fmt.Errorf("listing changed files %s...%s: %w", baseRef, headRef, err)
+	}
+
+	plan := verify.PlanFor(changed)
+	specs := plan.FocusedChecks
+	if full {
+		seen := make(map[string]bool, len(specs))
+		for _, s := range specs {
+			seen[s.Name] = true
+		}
+		for _, s := range plan.FullGates {
+			if !seen[s.Name] {
+				specs = append(specs, s)
+			}
+		}
+	}
+
+	broker, err := approval.NewFileStore(approval.DefaultStorePath(repo.Root)).Load()
+	if err != nil {
+		// Approval status is an enrichment, not a hard dependency —
+		// mirroring run_verification's fallback for a corrupt store.
+		broker = approval.NewBroker()
+	}
+
+	results := make([]provenance.VerificationResult, len(specs))
+	var runnable []verify.CheckSpec
+	var runnableIdx []int
+	for i, s := range specs {
+		class, reason := discovery.ClassifyCommand(s.Command)
+		if class == provenance.ClassMutating || class == provenance.ClassDestructive || class == provenance.ClassApprovalRequired {
+			r := provenance.VerificationResult{
+				Name:     s.Name,
+				Category: s.Category,
+				Status:   provenance.StatusApprovalRequired,
+				Reason:   reason,
+			}
+			if broker.DryRunCheck(approval.Scope{Action: s.Name}) == provenance.StatusPass {
+				r.Reason += "; an approval grant exists for this check"
+			}
+			results[i] = r
+			continue
+		}
+		if s.Dir == "" {
+			s.Dir = repo.Root
+		}
+		runnable = append(runnable, s)
+		runnableIdx = append(runnableIdx, i)
+	}
+	for i, r := range verify.Run(ctx, runnable, repo.Tools, allowNetwork) {
+		results[runnableIdx[i]] = r
+	}
+	return results, nil
+}
+
+// DoctorReport is Doctor's diagnosis of one repository: what discovery
+// found, whether the contract is present/parseable/valid, and the headline
+// counts an agent (or human) needs to know before working here.
+type DoctorReport struct {
+	Root      string                 `json:"root"`
+	IsGitRepo bool                   `json:"is_git_repo"`
+	Dirty     bool                   `json:"dirty"`
+	Tools     []discovery.ToolStatus `json:"tools"`
+	// ContractPresent is false when root has no modulex.agent.yaml — a
+	// normal state, not an error.
+	ContractPresent bool `json:"contract_present"`
+	// ContractError holds the parse or validation failure for a present
+	// contract, empty when absent or fully valid.
+	ContractError  string `json:"contract_error,omitempty"`
+	Projects       int    `json:"projects"`
+	Commands       int    `json:"commands"`
+	ProtectedPaths int    `json:"protected_paths"`
+}
+
+// Doctor diagnoses root: discovery plus contract state, in one report.
+// Unlike LoadContract it never fails on a bad contract — a doctor's whole
+// job is reporting what is wrong — so only discovery failure or an I/O
+// error other than absence returns a non-nil error.
+func Doctor(root string) (DoctorReport, error) {
+	repo, err := discoverRepo(root)
+	if err != nil {
+		return DoctorReport{}, fmt.Errorf("discovering %q: %w", root, err)
+	}
+	rep := DoctorReport{
+		Root:      repo.Root,
+		IsGitRepo: repo.IsGitRepo,
+		Dirty:     repo.Dirty,
+		Tools:     repo.Tools,
+	}
+
+	data, err := os.ReadFile(filepath.Join(root, ContractFileName))
+	if errors.Is(err, os.ErrNotExist) {
+		return rep, nil
+	}
+	if err != nil {
+		return DoctorReport{}, fmt.Errorf("reading %s: %w", ContractFileName, err)
+	}
+	rep.ContractPresent = true
+
+	var c contract.Contract
+	if err := yaml.Unmarshal(data, &c); err != nil {
+		rep.ContractError = fmt.Sprintf("parse: %v", err)
+		return rep, nil
+	}
+	rep.Projects = len(c.Projects)
+	rep.Commands = len(c.Commands)
+	rep.ProtectedPaths = len(c.ProtectedPaths)
+	if err := c.Validate(); err != nil {
+		rep.ContractError = fmt.Sprintf("validation: %v", err)
+	}
+	return rep, nil
+}

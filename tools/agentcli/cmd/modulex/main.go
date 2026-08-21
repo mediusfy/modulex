@@ -8,10 +8,12 @@
 //
 // Usage:
 //
-//	modulex agent generate [-root <path>]
+//	modulex agent generate [-root <path>] [-check]
 //	modulex agent approve -action <name> [-resource <name>] -approved-by <name> [-ttl <duration>] [-root <path>]
 //	modulex agent review -base <ref> [-head <ref>] [-root <path>] [-allow-network]
 //	modulex agent handoff -base <ref> [-head <ref>] [-agent <name>] [-root <path>] [-allow-network]
+//	modulex agent verify -base <ref> [-head <ref>] [-root <path>] [-allow-network] [-full]
+//	modulex doctor [-root <path>] [-json]
 //	modulex new module -name <feature> -out <parent-dir> [-module <import-path>] [-force]
 //	modulex check boundary [analyzer flags] [packages...]
 //
@@ -81,6 +83,8 @@ func main() {
 		runNew(os.Args[2:])
 	case "check":
 		runCheck(os.Args[2:])
+	case "doctor":
+		runDoctor(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "modulex: unknown command %q\n\n", os.Args[1])
 		usage()
@@ -102,6 +106,8 @@ func runAgent(args []string) {
 		runReview(args[1:])
 	case "handoff":
 		runHandoff(args[1:])
+	case "verify":
+		runVerify(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "modulex agent: unknown subcommand %q\n\n", args[0])
 		usage()
@@ -116,8 +122,10 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  agent approve     grant an approval a separately-running MCP server can see")
 	fmt.Fprintln(os.Stderr, "  agent review      run the review checks over a diff and print the results as JSON")
 	fmt.Fprintln(os.Stderr, "  agent handoff     run the review and print a validated provenance handoff envelope as JSON")
+	fmt.Fprintln(os.Stderr, "  agent verify      plan and run the verification checks a diff recommends")
 	fmt.Fprintln(os.Stderr, "  new module        scaffold a feature module (domain/ports/service/adapters/module.go)")
 	fmt.Fprintln(os.Stderr, "  check boundary    run the modboundary analyzer against Go packages")
+	fmt.Fprintln(os.Stderr, "  doctor            diagnose a repository: discovery, tools, contract state")
 }
 
 // runNew handles `modulex new module`, wrapping scaffold.Generate — the same
@@ -258,6 +266,7 @@ func printJSON(v any) error {
 func runGenerate(args []string) {
 	fs := flag.NewFlagSet("modulex agent generate", flag.ExitOnError)
 	root := fs.String("root", ".", "repository root containing modulex.agent.yaml")
+	check := fs.Bool("check", false, "report drift between the checked-in AGENTS.md/CLAUDE.md and what generate would write, without writing; exits 1 on drift")
 	if err := fs.Parse(args); err != nil {
 		os.Exit(2)
 	}
@@ -268,6 +277,20 @@ func runGenerate(args []string) {
 		os.Exit(1)
 	}
 
+	if *check {
+		drifted, err := agentcli.CheckGeneratedFiles(*root, c)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "modulex agent generate: %v\n", err)
+			os.Exit(1)
+		}
+		if len(drifted) > 0 {
+			fmt.Fprintf(os.Stderr, "modulex agent generate: %d file(s) drifted from the contract: %s\nrun `modulex agent generate` to regenerate\n", len(drifted), strings.Join(drifted, ", "))
+			os.Exit(1)
+		}
+		fmt.Println("ok: generated files match the contract")
+		return
+	}
+
 	written, err := agentcli.WriteGeneratedFiles(*root, c)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "modulex agent generate: %v\n", err)
@@ -276,6 +299,80 @@ func runGenerate(args []string) {
 
 	for _, name := range written {
 		fmt.Println("wrote", name)
+	}
+}
+
+func runVerify(args []string) {
+	fs := flag.NewFlagSet("modulex agent verify", flag.ExitOnError)
+	root := fs.String("root", ".", "repository root to verify")
+	base := fs.String("base", "", "required: base git ref to diff from, e.g. origin/main")
+	head := fs.String("head", "HEAD", "head git ref to diff to")
+	allowNetwork := fs.Bool("allow-network", false, "allow networked checks to run")
+	full := fs.Bool("full", false, "also run the repository's full gates, not just the focused checks the diff recommends")
+	if err := fs.Parse(args); err != nil {
+		os.Exit(2)
+	}
+	if *base == "" {
+		fmt.Fprintln(os.Stderr, "modulex agent verify: -base is required")
+		fs.PrintDefaults()
+		os.Exit(2)
+	}
+
+	results, err := agentcli.Verify(context.Background(), *root, *base, *head, *allowNetwork, *full)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "modulex agent verify: %v\n", err)
+		os.Exit(1)
+	}
+	if err := printJSON(results); err != nil {
+		fmt.Fprintf(os.Stderr, "modulex agent verify: %v\n", err)
+		os.Exit(1)
+	}
+	exitOnFailedChecks("modulex agent verify", results)
+}
+
+func runDoctor(args []string) {
+	fs := flag.NewFlagSet("modulex doctor", flag.ExitOnError)
+	root := fs.String("root", ".", "repository root to diagnose")
+	asJSON := fs.Bool("json", false, "print the report as JSON instead of text")
+	if err := fs.Parse(args); err != nil {
+		os.Exit(2)
+	}
+
+	rep, err := agentcli.Doctor(*root)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "modulex doctor: %v\n", err)
+		os.Exit(1)
+	}
+
+	if *asJSON {
+		if err := printJSON(rep); err != nil {
+			fmt.Fprintf(os.Stderr, "modulex doctor: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		fmt.Printf("root:            %s\n", rep.Root)
+		fmt.Printf("git repository:  %v (dirty: %v)\n", rep.IsGitRepo, rep.Dirty)
+		fmt.Println("tools:")
+		for _, t := range rep.Tools {
+			mark := "missing"
+			if t.Present {
+				mark = t.Path
+			}
+			fmt.Printf("  %-14s %s\n", t.Name, mark)
+		}
+		switch {
+		case !rep.ContractPresent:
+			fmt.Println("contract:        absent (no modulex.agent.yaml — normal for repositories without one)")
+		case rep.ContractError != "":
+			fmt.Printf("contract:        BROKEN — %s\n", rep.ContractError)
+		default:
+			fmt.Printf("contract:        valid (%d project(s), %d command(s), %d protected path(s))\n",
+				rep.Projects, rep.Commands, rep.ProtectedPaths)
+		}
+	}
+
+	if rep.ContractError != "" {
+		os.Exit(1)
 	}
 }
 
