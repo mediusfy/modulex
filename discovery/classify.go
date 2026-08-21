@@ -61,7 +61,11 @@ var ClassificationRules = []ClassificationRule{
 
 	// --- go: safe / read-only ---
 	{
-		Pattern: regexp.MustCompile(`^go (build|vet|test)\b`),
+		// The optional `-C <dir>` accepts the same restricted character set
+		// verify's isPathSafeForCommand allows in a path it interpolates
+		// into a command, so a directory argument can't smuggle in further
+		// shell syntax or flags past this classification.
+		Pattern: regexp.MustCompile(`^go (-C [A-Za-z0-9_./-]+ )?(build|vet|test)\b`),
 		Class:   provenance.ClassSafe,
 		Reason:  "compiles or statically checks code with no side effects; always allowed per agent-safety-policy.md",
 	},

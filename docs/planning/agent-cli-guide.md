@@ -38,10 +38,12 @@ standalone deliberately (pure CI plumbing, no interactive audience).
 ## The agent subcommands
 
 ```
-modulex agent generate [-root <path>]
+modulex agent generate [-root <path>] [-check]
 modulex agent approve -action <name> [-resource <name>] -approved-by <name> [-ttl <duration>] [-root <path>]
 modulex agent review -base <ref> [-head <ref>] [-root <path>] [-allow-network]
 modulex agent handoff -base <ref> [-head <ref>] [-agent <name>] [-root <path>] [-allow-network]
+modulex agent verify -base <ref> [-head <ref>] [-root <path>] [-allow-network] [-full]
+modulex doctor [-root <path>] [-json]
 ```
 
 | Subcommand | Domain function | What it does |
@@ -50,6 +52,9 @@ modulex agent handoff -base <ref> [-head <ref>] [-agent <name>] [-root <path>] [
 | `approve` | `agentcli.Approve` | Grants an approval a separately-running MCP server can see |
 | `review` | `agentcli.Review` | Runs the review checks over a `base...head` diff, prints JSON results, exits 1 on any failed check |
 | `handoff` | `agentcli.Handoff` | Runs the same review and prints a redacted, validated provenance Envelope |
+| `verify` | `agentcli.Verify` | Plans the checks a diff recommends (`verify.PlanFor`) and runs them with `run_verification`'s safety posture; `-full` adds the full gates |
+| `generate -check` | `agentcli.CheckGeneratedFiles` | Reports drift between checked-in AGENTS.md/CLAUDE.md and the contract, exit 1 on drift |
+| `doctor` (top-level) | `agentcli.Doctor` | One diagnosis: discovery, tool availability, contract state; exit 1 on a broken contract |
 
 ## `generate`
 
