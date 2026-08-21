@@ -13,9 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   workflow: GitHub refuses a public caller resolving a private repository's
   reusable workflow, and pr_pipeline is staying private (ADR-0035's
   2026-08-21 addendum). The deterministic review engine now runs natively
-  in this repository's CI — built from the checkout, no secrets, advisory
-  until the protected-paths check learns the additive-CHANGELOG exception —
-  with AI commentary delivered via the badger App dispatch instead.
+  in this repository's CI — built from the checkout, no secrets — with AI
+  commentary delivered via the badger App dispatch instead. The engine job
+  gates the PR on every check except protected-paths, whose hits surface
+  as reviewer warnings instead (a protected-path change requires human
+  approval, and approving the PR is that approval; the check already
+  exempts additive `[Unreleased]` CHANGELOG edits and non-retract go.mod
+  edits, so warnings appear only on genuinely sensitive paths).
 
 ### Fixed
 

@@ -394,11 +394,17 @@ Revised delivery for each consumer:
 - **modulex (public)**: runs the deterministic engine natively in its own
   CI (`.github/workflows/pr-review.yml` builds `tools/agentcli` from the
   checkout and runs `modulex agent handoff`, uploading the Envelope as an
-  artifact). No cross-repo resolution, no secrets in the job. The engine job
-  is advisory (`continue-on-error`) until the review package's
-  protected-paths check implements the documented "adding to
-  `## [Unreleased]` is allowed" exception for CHANGELOG.md; it then becomes
-  a hard gate. AI commentary arrives via the badger App's
+  artifact). No cross-repo resolution, no secrets in the job. Gating is
+  split by what a failure means: every check except protected-paths fails
+  the job (secret scan, declared make gates — real defects in the diff),
+  while a protected-paths hit surfaces as a prominent reviewer warning
+  instead of a red check. Protected paths measure "needs explicit human
+  approval", and in PR CI the reviewer's approval of the PR is that
+  approval; the check already exempts the routine cases (additive
+  `## [Unreleased]` CHANGELOG edits via `changelogEditIsWithinUnreleased`,
+  non-retract go.mod edits), so warnings appear only on genuinely
+  sensitive paths like workflow files. AI commentary arrives via the
+  badger App's
   `repository_dispatch` flow (`pr_pipeline`'s `pr-review-dispatch.yml`),
   which reviews any repository the App is installed on regardless of
   visibility.
