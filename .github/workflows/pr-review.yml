@@ -28,13 +28,6 @@ jobs:
   engine:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # Advisory, not gating, for now: CheckProtectedPaths flags any edit to a
-    # protected path, including the additive [Unreleased] CHANGELOG entries
-    # most legitimate PRs carry (the contract text explicitly allows those,
-    # but the check does not implement that exception yet). Flip this to a
-    # hard gate once the additive-changelog exception lands in the review
-    # package.
-    continue-on-error: true
     steps:
       - name: Checkout PR
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -55,17 +48,40 @@ jobs:
       - name: Build the modulex CLI
         run: go build -C tools/agentcli -o "$RUNNER_TEMP/modulex" ./cmd/modulex
 
-      # Exits 1 when any check reports fail (secret scan, protected paths,
-      # or a declared make gate), so this step's outcome is the engine's
-      # verdict. The Envelope on stdout is the auditable review artifact.
+      # The CLI exits 1 when any check reports fail (secret scan, protected
+      # paths, or a declared make gate); the Envelope on stdout is the
+      # auditable review artifact. Advisory for now: the exit code is
+      # surfaced as a warning annotation + step summary instead of failing
+      # the job, because CheckProtectedPaths flags the additive [Unreleased]
+      # CHANGELOG entries most legitimate PRs carry (the contract text
+      # explicitly allows those; the check does not implement that exception
+      # yet -- tracked). Once it does, replace the final `exit 0` with
+      # `exit "$status"` to make this a hard gate.
       - name: Run the deterministic review engine
         env:
           BASE_REF: ${{ github.base_ref }}
         run: |
+          set +e
           "$RUNNER_TEMP/modulex" agent handoff \
             -agent pr-review-ci \
             -base "origin/${BASE_REF}" \
-            -head HEAD > envelope.json
+            -head HEAD > envelope.json 2> engine-stderr.txt
+          status=$?
+          set -e
+          cat engine-stderr.txt >&2
+          if [ "$status" -ne 0 ]; then
+            echo "::warning title=PR review engine (advisory)::$(tail -n 1 engine-stderr.txt)"
+            {
+              echo "### PR review engine — advisory findings"
+              echo ""
+              echo '```'
+              tail -n 5 engine-stderr.txt
+              echo '```'
+              echo ""
+              echo "Full provenance Envelope: see the \`pr-review-envelope\` artifact."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit 0
 
       - name: Upload provenance envelope
         if: always()
