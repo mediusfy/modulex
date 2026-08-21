@@ -18,17 +18,38 @@ each subcommand's logic as plain, testable Go functions, so nothing here
 needs to exec a built binary to test — the same split
 `tools/mcpserver`'s handlers use.
 
-## Two subcommands
+## One binary, three command families
+
+`cmd/modulex` is the unified modulex CLI. Besides the `agent` commands this
+guide covers, it fronts two previously standalone tools:
+
+```
+modulex new module -name <feature> -out <parent-dir> [-module <import-path>] [-force]
+modulex check boundary [analyzer flags] [packages...]
+```
+
+`new module` wraps `scaffold.Generate` (see
+[the scaffolding guide](scaffolding-and-test-harness-guide.md)); `check
+boundary` drives the `tools/modboundary` analyzer — the same one
+`make check-module-boundary` runs. The single-purpose `tools/scaffold` and
+`tools/modboundary` binaries remain available; `tools/provenanceci` stays
+standalone deliberately (pure CI plumbing, no interactive audience).
+
+## The agent subcommands
 
 ```
 modulex agent generate [-root <path>]
 modulex agent approve -action <name> [-resource <name>] -approved-by <name> [-ttl <duration>] [-root <path>]
+modulex agent review -base <ref> [-head <ref>] [-root <path>] [-allow-network]
+modulex agent handoff -base <ref> [-head <ref>] [-agent <name>] [-root <path>] [-allow-network]
 ```
 
 | Subcommand | Domain function | What it does |
 |---|---|---|
 | `generate` | `agentcli.LoadContract` + `agentcli.WriteGeneratedFiles` | Renders `AGENTS.md`/`CLAUDE.md` from `<root>/modulex.agent.yaml` |
 | `approve` | `agentcli.Approve` | Grants an approval a separately-running MCP server can see |
+| `review` | `agentcli.Review` | Runs the review checks over a `base...head` diff, prints JSON results, exits 1 on any failed check |
+| `handoff` | `agentcli.Handoff` | Runs the same review and prints a redacted, validated provenance Envelope |
 
 ## `generate`
 
