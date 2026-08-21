@@ -1,55 +1,93 @@
 name: PR Review
 
-# `pull_request`, never `pull_request_target`: the latter runs in the
-# base-repo context *with* secrets while checking out untrusted fork code —
-# an RCE footgun (ADR-0035). Model commentary on fork PRs stays disabled.
+# The deterministic review engine, run natively from this repository's own
+# source (ADR-0035, 2026-08-21 addendum): pr_pipeline stays private, and
+# GitHub refuses a public caller resolving a private repo's reusable
+# workflow ("workflow was not found", verified empirically), so modulex does
+# not call pr_pipeline at all. The AI commentary layer arrives separately
+# via the badger App's repository_dispatch flow (pr_pipeline's
+# pr-review-dispatch.yml), which needs no cross-repo workflow resolution.
+#
+# This job needs no secrets and holds a read-only token, so it runs on fork
+# PRs too — it executes the repository's own make targets from the PR head,
+# exactly like the rest of CI does.
 on:
   pull_request:
     types: [opened, synchronize, reopened]
 
 # A push to a PR fires `synchronize` -- cancel a still-running review for the
-# same PR rather than letting two runs race to post reviews concurrently.
+# same PR rather than letting two runs race.
 concurrency:
   group: pr-review-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
-# Least-privilege, matching ci.yml/release.yml/scorecard.yml conventions and
-# ADR-0035's caller requirements. The reusable workflow mints its own scoped
-# App token for anything beyond this.
 permissions:
   contents: read
-  pull-requests: write
 
 jobs:
-  # All the actual steps live in mediusfy/pr_pipeline so every repo calls
-  # the same job instead of duplicating it -- see that repo's
-  # .github/workflows/pr-review-reusable.yml and
-  # docs/adr/0001-pr-pipeline-production-readiness.md; the caller-side
-  # conventions this file follows are docs/adr/
-  # adr-0035-pr-review-service-and-editor-integration.md's.
-  #
-  # Requires, in this repo's Settings:
-  #   - Secrets: PR_PIPELINE_APP_ID, PR_PIPELINE_APP_PRIVATE_KEY,
-  #     PR_PIPELINE_LITELLM_KEY (org-level secrets cover this automatically
-  #     if set there instead).
-  #   - The pr_pipeline GitHub App installed on this repo.
-  #   - Environments "pr-review" and "pr-review-privileged" (the latter
-  #     with required reviewers) -- created empty on first run if missing,
-  #     but "pr-review-privileged" needs its protection rule added by hand.
-  review:
-    # Fork PRs receive no secrets on a public repository, so the review
-    # could only ever fail there -- skip it instead of showing external
-    # contributors an unfixable red check (ADR-0035).
-    if: github.event.pull_request.head.repo.full_name == github.repository
-    # Pinned to a commit SHA, never a mutable @main (ADR-0035; matches this
-    # repo's action-pinning convention). Update the SHA deliberately when
-    # pr_pipeline lands changes we want. Currently pr_pipeline PR #4's
-    # squash-merge commit on main -- the first with the deterministic
-    # modulex engine job alongside the AI review.
-    uses: mediusfy/pr_pipeline/.github/workflows/pr-review-reusable.yml@a26462f58e47105e2686434e626a8119866a46d8
-    # Named secrets only, never `secrets: inherit` -- the callee sees exactly
-    # what it needs and nothing else (ADR-0035).
-    secrets:
-      PR_PIPELINE_APP_ID: ${{ secrets.PR_PIPELINE_APP_ID }}
-      PR_PIPELINE_APP_PRIVATE_KEY: ${{ secrets.PR_PIPELINE_APP_PRIVATE_KEY }}
-      PR_PIPELINE_LITELLM_KEY: ${{ secrets.PR_PIPELINE_LITELLM_KEY }}
+  engine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Full history so the base ref exists for the base...head diff.
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: stable
+          check-latest: true
+          cache-dependency-path: tools/agentcli/go.sum
+
+      # The CLI is this repository's own code; `go install @version` can't
+      # build the nested module (its go.mod replace-directs at the parent),
+      # so build from the checkout.
+      - name: Build the modulex CLI
+        run: go build -C tools/agentcli -o "$RUNNER_TEMP/modulex" ./cmd/modulex
+
+      # The CLI exits 1 when any check reports fail (secret scan, protected
+      # paths, or a declared make gate); the Envelope on stdout is the
+      # auditable review artifact. Advisory for now: the exit code is
+      # surfaced as a warning annotation + step summary instead of failing
+      # the job, because CheckProtectedPaths flags the additive [Unreleased]
+      # CHANGELOG entries most legitimate PRs carry (the contract text
+      # explicitly allows those; the check does not implement that exception
+      # yet -- tracked). Once it does, replace the final `exit 0` with
+      # `exit "$status"` to make this a hard gate.
+      - name: Run the deterministic review engine
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set +e
+          "$RUNNER_TEMP/modulex" agent handoff \
+            -agent pr-review-ci \
+            -base "origin/${BASE_REF}" \
+            -head HEAD > envelope.json 2> engine-stderr.txt
+          status=$?
+          set -e
+          cat engine-stderr.txt >&2
+          if [ "$status" -ne 0 ]; then
+            echo "::warning title=PR review engine (advisory)::$(tail -n 1 engine-stderr.txt)"
+            {
+              echo "### PR review engine — advisory findings"
+              echo ""
+              echo '```'
+              tail -n 5 engine-stderr.txt
+              echo '```'
+              echo ""
+              echo "Full provenance Envelope: see the \`pr-review-envelope\` artifact."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit 0
+
+      - name: Upload provenance envelope
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pr-review-envelope-${{ github.event.pull_request.number }}
+          path: envelope.json
+          retention-days: 14
+          if-no-files-found: ignore

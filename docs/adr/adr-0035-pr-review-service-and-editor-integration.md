@@ -375,3 +375,37 @@ still forbids it. The public/private mismatch is the root cause, not the path.
 - `docs/planning/agent-safety-policy.md` — protected paths and the CI-change
   approval boundary
 - `mediusfy/pr_pipeline` — the service repository to be made public
+
+## Addendum (2026-08-21): pr_pipeline stays private; modulex runs the engine natively
+
+Decision 2's premise — make `pr_pipeline` public so a public caller can use
+its reusable workflow — was revisited and rejected on exposure grounds: the
+repository's full history references internal hostnames and infrastructure
+layout, and publishing it bought modulex nothing that a native job doesn't.
+
+Empirical finding (smoke-tested on modulex PR #124): GitHub refuses a
+*public* caller resolving a *private* repository's reusable workflow — the
+run fails at workflow resolution with "workflow was not found" — even with
+the callee's Actions access policy set to organization-wide. The access
+policy governs only private/internal callers.
+
+Revised delivery for each consumer:
+
+- **modulex (public)**: runs the deterministic engine natively in its own
+  CI (`.github/workflows/pr-review.yml` builds `tools/agentcli` from the
+  checkout and runs `modulex agent handoff`, uploading the Envelope as an
+  artifact). No cross-repo resolution, no secrets in the job. The engine job
+  is advisory (`continue-on-error`) until the review package's
+  protected-paths check implements the documented "adding to
+  `## [Unreleased]` is allowed" exception for CHANGELOG.md; it then becomes
+  a hard gate. AI commentary arrives via the badger App's
+  `repository_dispatch` flow (`pr_pipeline`'s `pr-review-dispatch.yml`),
+  which reviews any repository the App is installed on regardless of
+  visibility.
+- **Private org repositories (e.g. coding_pipeline)**: call the reusable
+  workflow as designed. `pr_pipeline`'s Actions access policy was set to
+  "organization" (2026-08-21) to permit exactly this.
+- **External/customer repositories**: unchanged — the badger dispatch flow.
+
+The engine job that PR #4 added to `pr-review-reusable.yml` remains correct
+for private callers; modulex simply is not one of them.

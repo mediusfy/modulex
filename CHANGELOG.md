@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `.github/workflows/pr-review.yml` no longer calls pr_pipeline's reusable
+  workflow: GitHub refuses a public caller resolving a private repository's
+  reusable workflow, and pr_pipeline is staying private (ADR-0035's
+  2026-08-21 addendum). The deterministic review engine now runs natively
+  in this repository's CI — built from the checkout, no secrets, advisory
+  until the protected-paths check learns the additive-CHANGELOG exception —
+  with AI commentary delivered via the badger App dispatch instead.
+
 ### Fixed
 
 - Tests: `TestEndToEnd_FullStackLifecycle` and `httpx`'s `TestServe` were
