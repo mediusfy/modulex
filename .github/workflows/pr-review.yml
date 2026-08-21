@@ -48,15 +48,20 @@ jobs:
       - name: Build the modulex CLI
         run: go build -C tools/agentcli -o "$RUNNER_TEMP/modulex" ./cmd/modulex
 
-      # The CLI exits 1 when any check reports fail (secret scan, protected
-      # paths, or a declared make gate); the Envelope on stdout is the
-      # auditable review artifact. Advisory for now: the exit code is
-      # surfaced as a warning annotation + step summary instead of failing
-      # the job, because CheckProtectedPaths flags the additive [Unreleased]
-      # CHANGELOG entries most legitimate PRs carry (the contract text
-      # explicitly allows those; the check does not implement that exception
-      # yet -- tracked). Once it does, replace the final `exit 0` with
-      # `exit "$status"` to make this a hard gate.
+      # The CLI exits 1 when any check reports fail; the Envelope on stdout
+      # is the auditable review artifact. Gating is split by what a failure
+      # means:
+      #
+      #   - check-protected-paths measures "needs explicit human approval"
+      #     (agent-safety-policy.md). In PR CI the reviewer's approval of
+      #     the PR IS that approval, and the check already exempts the
+      #     legitimate routine cases (additive [Unreleased] CHANGELOG
+      #     entries, non-retract go.mod edits), so a hit here surfaces as a
+      #     prominent warning for the reviewer, not a red check -- otherwise
+      #     every workflow or CODEOWNERS PR would be permanently red.
+      #   - Every other failed check (secret scan, declared make gates) is
+      #     a real defect in the diff and fails the job.
+      #   - No valid envelope at all (operational failure) fails the job.
       - name: Run the deterministic review engine
         env:
           BASE_REF: ${{ github.base_ref }}
@@ -69,19 +74,36 @@ jobs:
           status=$?
           set -e
           cat engine-stderr.txt >&2
-          if [ "$status" -ne 0 ]; then
-            echo "::warning title=PR review engine (advisory)::$(tail -n 1 engine-stderr.txt)"
+
+          if ! jq -e '.verification' envelope.json > /dev/null 2>&1; then
+            echo "::error title=PR review engine::no valid envelope produced (exit $status)"
+            exit 1
+          fi
+
+          pp_count=$(jq -r '[.verification[] | select(.status=="fail" and .name=="check-protected-paths")] | length' envelope.json)
+          if [ "$pp_count" -gt 0 ]; then
+            echo "::warning title=Protected paths touched -- reviewer attention required::this PR changes protected paths; approving the PR is the human approval the safety policy requires"
             {
-              echo "### PR review engine — advisory findings"
+              echo "### Protected paths touched — reviewer attention required"
               echo ""
               echo '```'
-              tail -n 5 engine-stderr.txt
+              jq -r '.verification[] | select(.status=="fail" and .name=="check-protected-paths") | .message' envelope.json
               echo '```'
-              echo ""
-              echo "Full provenance Envelope: see the \`pr-review-envelope\` artifact."
             } >> "$GITHUB_STEP_SUMMARY"
           fi
-          exit 0
+
+          hard=$(jq -r '[.verification[] | select(.status=="fail" and .name!="check-protected-paths") | .name] | join(", ")' envelope.json)
+          if [ -n "$hard" ]; then
+            echo "::error title=PR review engine::check(s) failed: $hard"
+            {
+              echo "### PR review engine — failed checks: $hard"
+              echo ""
+              echo '```'
+              jq -r '.verification[] | select(.status=="fail" and .name!="check-protected-paths") | "\(.name): \(.message // .reason // "no detail")"' envelope.json
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
       - name: Upload provenance envelope
         if: always()
