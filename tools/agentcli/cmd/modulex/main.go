@@ -327,6 +327,21 @@ func runVerify(args []string) {
 		fmt.Fprintf(os.Stderr, "modulex agent verify: %v\n", err)
 		os.Exit(1)
 	}
+	// A verify run in which nothing actually executed must not go green:
+	// an empty focused plan (e.g. a workflow-only diff without -full), all
+	// tools unavailable, or every check blocked as approval_required means
+	// nothing was verified, and a CI gate treating that as success would
+	// pass unverified changes.
+	executed := 0
+	for _, r := range results {
+		if r.Status == provenance.StatusPass || r.Status == provenance.StatusFail {
+			executed++
+		}
+	}
+	if executed == 0 {
+		fmt.Fprintln(os.Stderr, "modulex agent verify: no check was actually executed (empty plan, or every check unavailable/skipped/approval-required); refusing to report success — consider -full, and check tool availability")
+		os.Exit(1)
+	}
 	exitOnFailedChecks("modulex agent verify", results)
 }
 

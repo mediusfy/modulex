@@ -61,13 +61,24 @@ var ClassificationRules = []ClassificationRule{
 
 	// --- go: safe / read-only ---
 	{
-		// The optional `-C <dir>` accepts the same restricted character set
-		// verify's isPathSafeForCommand allows in a path it interpolates
-		// into a command, so a directory argument can't smuggle in further
-		// shell syntax or flags past this classification.
-		Pattern: regexp.MustCompile(`^go (-C [A-Za-z0-9_./-]+ )?(build|vet|test)\b`),
+		// Fully anchored: the whole command line must be `go`, an optional
+		// `-C <dir>`, the verb, and plain argument tokens. The `-C` directory
+		// is stricter than verify's isPathSafeForCommand (which also rejects
+		// ".."): each segment must start with an alphanumeric/underscore, so
+		// `..` traversal segments and absolute (`/`-leading) paths can never
+		// ride this rule and a classified-safe command stays inside the
+		// repository. Argument tokens may not start with `-` or `/`, so go
+		// flags with side effects (e.g. `-exec`, `-toolexec`) and trailing
+		// shell syntax (`;`, `&&`, `|`) all fall through to the fail-closed
+		// default instead of classifying safe.
+		Pattern: regexp.MustCompile(`^go (-C [A-Za-z0-9_][A-Za-z0-9_-]*(/[A-Za-z0-9_][A-Za-z0-9_-]*)* )?(build|vet|test)( [A-Za-z0-9_.][A-Za-z0-9_./-]*)*$`),
 		Class:   provenance.ClassSafe,
 		Reason:  "compiles or statically checks code with no side effects; always allowed per agent-safety-policy.md",
+	},
+	{
+		Pattern: regexp.MustCompile(`^go mod verify$`),
+		Class:   provenance.ClassSafe,
+		Reason:  "verifies downloaded modules against go.sum checksums; read-only, no network or mutation",
 	},
 
 	// --- go: networked ---
@@ -75,6 +86,17 @@ var ClassificationRules = []ClassificationRule{
 		Pattern: regexp.MustCompile(`^go mod download\b`),
 		Class:   provenance.ClassNetworked,
 		Reason:  "fetches module content from the configured module proxy",
+	},
+
+	// --- repository check scripts: safe (read-only verification) ---
+	{
+		// verify.PlanFor recommends running a changed scripts/check-*.sh
+		// directly (isCheckScript); those scripts are the read-only checks
+		// the `make check-*` safe rule below already wraps. No `/` in the
+		// name segment, so a `..` can never traverse out of scripts/.
+		Pattern: regexp.MustCompile(`^\./scripts/check-[A-Za-z0-9_.-]+\.sh$`),
+		Class:   provenance.ClassSafe,
+		Reason:  "runs a repository check script (scripts/check-*.sh), the same read-only verification the make check-* targets wrap",
 	},
 
 	// --- make targets: local mutating ---

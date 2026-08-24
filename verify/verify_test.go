@@ -262,6 +262,11 @@ func TestPlanFor_NestedModulePathsUseModuleLocalCommands(t *testing.T) {
 		{"tools/agentcli/agentcli.go", "tools/agentcli"},
 		{"tools/mcpserver/review.go", "tools/mcpserver"},
 		{"examples/external-consumer/main.go", "examples/external-consumer"},
+		// Non-.go files in a nested module identify that module too: its
+		// go.mod/go.sum or scripts must not fall back to root-only full
+		// gates that never exercise the module.
+		{"tools/mcpserver/go.mod", "tools/mcpserver"},
+		{"examples/external-consumer/go.sum", "examples/external-consumer"},
 	}
 	for _, tc := range cases {
 		plan := PlanFor([]string{tc.path})
@@ -281,6 +286,23 @@ func TestPlanFor_NestedModulePathsUseModuleLocalCommands(t *testing.T) {
 				got = append(got, c.Command)
 			}
 			t.Errorf("%s: no focused check with command %q; got %v", tc.path, wantCmd, got)
+		}
+	}
+}
+
+// TestPlanFor_ToolsFileOutsideNestedModuleFallsBackToFullGates: a .go file
+// directly under tools/ belongs to no root-module package (every tools/*
+// child is its own module), so no root-module `./tools/...` pattern — which
+// would match no packages and always fail — may be recommended; the full
+// gates are the correct fallback.
+func TestPlanFor_ToolsFileOutsideNestedModuleFallsBackToFullGates(t *testing.T) {
+	plan := PlanFor([]string{"tools/gen.go"})
+	if len(plan.FocusedChecks) == 0 {
+		t.Fatal("want the full gate set as focused fallback, got no checks")
+	}
+	for _, c := range plan.FocusedChecks {
+		if strings.Contains(c.Command, "./tools/...") {
+			t.Errorf("focused check %q uses a root-module ./tools/... pattern that matches no packages", c.Command)
 		}
 	}
 }

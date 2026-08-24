@@ -18,23 +18,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   AGENTS.md/CLAUDE.md and what the contract would generate, exiting 1 on
   drift; `modulex doctor` prints one diagnosis of a repository (discovery,
   tool availability, contract state).
-
-### Fixed
-
-- `verify.PlanFor` recommended `go test ./tools/...`-style focused checks
-  for files in nested Go modules (tools/*, examples/external-consumer),
-  which match no packages in the root module and always failed. Nested
-  module paths now get `go -C <module-dir> test ./...` checks, and
-  `discovery.ClassifyCommand` recognizes the shell-safe `-C` form as the
-  same read-only class as plain `go test`.
-
-### Added
-
 - The `modulex` binary is now the unified CLI: `modulex new module` wraps
   tools/scaffold's generator and `modulex check boundary` drives the
   tools/modboundary analyzer, alongside the existing `modulex agent`
   commands. The single-purpose binaries remain; tools/provenanceci stays
   standalone deliberately (pure CI plumbing).
+- `agentreview`: shared review-and-handoff orchestration behind both the
+  `modulex agent` CLI and the MCP server, so `modulex agent review`/`handoff`
+  and `review_diff`/`create_handoff` produce identical results by construction
+  (ADR-0035, MOD-76) instead of via two parallel implementations.
+- `tools/agentcli` gained two `modulex agent` subcommands: `review` runs the
+  repository's review checks (boundary, compatibility, changelog, secret scan,
+  protected paths) over a `base...head` diff and prints the results as JSON;
+  `handoff` runs the same review and prints a redacted, validated
+  `provenance.Envelope`. Both exit 1 when any check reports `StatusFail` (the
+  JSON is still written first), so a CI step shelling out to them can key on
+  the exit code alone.
+- `docs/adr/adr-0035-pr-review-service-and-editor-integration.md`: why the
+  private-reusable-workflow approach failed and the public reusable workflow +
+  CLI design that replaces it.
 
 ### Changed
 
@@ -49,20 +51,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   approval, and approving the PR is that approval; the check already
   exempts additive `[Unreleased]` CHANGELOG edits and non-retract go.mod
   edits, so warnings appear only on genuinely sensitive paths).
-
-### Fixed
-
-- Tests: `TestEndToEnd_FullStackLifecycle` and `httpx`'s `TestServe` were
-  flaky under Go 1.27 — the 1.27 client's more aggressive keep-alive reuse
-  can leave a spare, never-used connection in its pool, which the server
-  sees in `StateNew` and `Server.Shutdown` only reaps after a hardcoded
-  ~5s grace, longer than the tests' shutdown windows. The tests now empty
-  the client's connection pool before initiating shutdown. Production note
-  for `httpx.Serve` consumers: clients holding never-used spare
-  connections can extend graceful shutdown by up to ~5s; setting
-  `http.Server.ReadHeaderTimeout` bounds how long such connections live.
-
-### Changed
 
 - `verify.Run` (and therefore `review`, `modulex agent review`/`handoff`, and
   the MCP `review_diff`/`run_verification` tools): a `make <target>` check
@@ -79,25 +67,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unbroken character runs are flagged exactly as before, and the `nosecret`
   marker remains the escape hatch.
 
-### Added
-
-- `agentreview`: shared review-and-handoff orchestration behind both the
-  `modulex agent` CLI and the MCP server, so `modulex agent review`/`handoff`
-  and `review_diff`/`create_handoff` produce identical results by construction
-  (ADR-0035, MOD-76) instead of via two parallel implementations.
-- `tools/agentcli` gained two `modulex agent` subcommands: `review` runs the
-  repository's review checks (boundary, compatibility, changelog, secret scan,
-  protected paths) over a `base...head` diff and prints the results as JSON;
-  `handoff` runs the same review and prints a redacted, validated
-  `provenance.Envelope`. Both exit 1 when any check reports `StatusFail` (the
-  JSON is still written first), so a CI step shelling out to them can key on
-  the exit code alone.
-- `docs/adr/adr-0035-pr-review-service-and-editor-integration.md`: why the
-  private-reusable-workflow approach failed and the public reusable workflow +
-  CLI design that replaces it.
-
 ### Fixed
 
+- `verify.PlanFor` recommended `go test ./tools/...`-style focused checks
+  for files in nested Go modules (tools/*, examples/external-consumer),
+  which match no packages in the root module and always failed. Nested
+  module paths now get `go -C <module-dir> test ./...` checks, and
+  `discovery.ClassifyCommand` recognizes the shell-safe `-C` form as the
+  same read-only class as plain `go test`. Follow-up hardening from
+  review: the safe-go classification rule is now fully anchored and
+  stricter — the `-C` directory can no longer contain `..` segments or be
+  absolute, and trailing shell syntax or side-effecting go flags
+  (`-exec`, `-toolexec`) after the verb no longer ride the safe class;
+  `go mod verify` and `./scripts/check-*.sh` (commands `verify.PlanFor`
+  itself recommends) now classify safe instead of falling to the
+  approval-required default that made them unrunnable; a nested module's
+  non-Go files (`go.mod`/`go.sum`, scripts) route to that module's own
+  `go -C` checks instead of root-only full gates that never exercised it;
+  and a `.go` file directly under `tools/` falls back to the full gates
+  instead of a root-module `./tools/...` pattern that matches no packages.
+- `modulex agent verify` exits 1 when no check actually executed (empty
+  plan, or every check unavailable/skipped/approval-required) instead of
+  reporting success with nothing verified, and `modulex agent generate
+  -check` reports read errors other than a missing file (e.g. permission
+  denied) as errors instead of misreporting them as contract drift.
+- Tests: `TestEndToEnd_FullStackLifecycle` and `httpx`'s `TestServe` were
+  flaky under Go 1.27 — the 1.27 client's more aggressive keep-alive reuse
+  can leave a spare, never-used connection in its pool, which the server
+  sees in `StateNew` and `Server.Shutdown` only reaps after a hardcoded
+  ~5s grace, longer than the tests' shutdown windows. The tests now empty
+  the client's connection pool before initiating shutdown. Production note
+  for `httpx.Serve` consumers: clients holding never-used spare
+  connections can extend graceful shutdown by up to ~5s; setting
+  `http.Server.ReadHeaderTimeout` bounds how long such connections live.
 - `tools/mcpserver`: `review_diff` now fails closed on a
   present-but-unparseable `modulex.agent.yaml` — previously it silently
   reviewed with zero protected paths, disabling the one check meant to catch
