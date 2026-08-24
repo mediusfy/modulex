@@ -130,6 +130,20 @@ func TestCheckGeneratedFiles(t *testing.T) {
 	if len(drifted) != 1 || drifted[0] != "AGENTS.md" {
 		t.Fatalf("drifted = %v, want exactly AGENTS.md after a hand edit", drifted)
 	}
+
+	// A read failure other than absence must surface as an error, not be
+	// misreported as drift: "regenerate" cannot fix an unreadable path.
+	// A directory in place of the file makes os.ReadFile fail with a
+	// non-ENOENT error on every platform.
+	if err := os.Remove(filepath.Join(root, "AGENTS.md")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "AGENTS.md"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CheckGeneratedFiles(root, c); err == nil {
+		t.Fatal("want an error for an unreadable generated file, got drift instead")
+	}
 }
 
 func TestVerify_PlansAndGatesWithoutRunningBlockedChecks(t *testing.T) {

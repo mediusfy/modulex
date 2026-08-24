@@ -72,13 +72,15 @@
 // solution:
 //
 //   - A changed file inside a nested Go module other than the root module
-//     (examples/external-consumer/*.go, tools/modboundary/*.go) is mapped
-//     the same way as a root-module package directory (go test ./<dir>/...),
-//     which is not necessarily a valid build target from the root module's
-//     perspective. A future revision could consult discovery.Repository.
-//     Modules to find the nearest enclosing module and rewrite the command
-//     accordingly; PlanFor's signature deliberately leaves room for that
-//     (see "Why PlanFor, not Plan" above) without requiring it today.
+//     (examples/external-consumer/*, tools/*/*) is mapped to that module's
+//     own checks, run from the module's root via `go -C <dir>` (see
+//     nestedModuleDir). The nested-module set is a hardcoded convention —
+//     every direct child of tools/ plus examples/external-consumer — not
+//     discovered from go.mod files on disk, so a new nested module outside
+//     that convention would silently fall back to root-module mapping. A
+//     future revision could consult discovery.Repository.Modules instead;
+//     PlanFor's signature deliberately leaves room for that (see "Why
+//     PlanFor, not Plan" above) without requiring it today.
 //   - The examples/ rule identifies "the specific example's own tests" by
 //     taking the first path segment after examples/; it does not verify
 //     that segment is actually one of discovery.Repository.CompositionRoots.
@@ -343,14 +345,17 @@ func focusedChecksForFile(path string) []CheckSpec {
 		return focusedChecksForGoFile(path)
 
 	default:
+		// A non-.go file inside a nested Go module (its go.mod/go.sum, a
+		// script, testdata) still identifies that module as the changed
+		// unit: recommend the module's own checks rather than the full
+		// gates, which are root-module-only and would never exercise it.
+		if dir := nestedModuleDir(path); dir != "" {
+			return nestedModuleChecks(path, dir)
+		}
 		return fallbackToFullGates(path)
 	}
 }
 
-// focusedChecksForExample handles a changed path under examples/: a build
-// of every example (cheap insurance that nothing else broke), plus, when
-// the path identifies one specific example directory, that example's own
-// tests.
 // nestedModuleDir returns the repository-relative directory of the nested
 // Go module path belongs to, or "" when path is part of the root module.
 // The repository's nested-module convention is fixed: every direct child of
@@ -394,6 +399,11 @@ func nestedModuleChecks(path, dir string) []CheckSpec {
 	}
 }
 
+// focusedChecksForExample handles a changed path under examples/: a build
+// of every example (cheap insurance that nothing else broke), plus, when
+// the path identifies one specific example directory, that example's own
+// tests. examples/external-consumer is its own Go module, so it gets
+// nestedModuleChecks instead of a root-module per-example test pattern.
 func focusedChecksForExample(path string) []CheckSpec {
 	checks := []CheckSpec{
 		{
@@ -430,6 +440,14 @@ func focusedChecksForExample(path string) []CheckSpec {
 func focusedChecksForGoFile(path string) []CheckSpec {
 	if dir := nestedModuleDir(path); dir != "" {
 		return nestedModuleChecks(path, dir)
+	}
+	if strings.HasPrefix(path, "tools/") {
+		// A .go file directly under tools/ (no subdirectory) belongs to no
+		// root-module package — every tools/* child is its own module — so
+		// a root-module `./tools/...` pattern would match no packages and
+		// always fail. There is no focused command to offer; recommend the
+		// full gates.
+		return fallbackToFullGates(path)
 	}
 	pkg := topLevelSegment(path)
 	if pkg == "" {
