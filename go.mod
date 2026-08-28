@@ -11,7 +11,7 @@ retract v0.4.0
 
 require (
 	github.com/ThreeDotsLabs/watermill v1.5.2
-	github.com/go-chi/chi/v5 v5.3.1
+	github.com/go-chi/chi/v5 v5.3.2
 	github.com/nats-io/nats-server/v2 v2.14.4
 	github.com/nats-io/nats.go v1.53.1
 	github.com/rabbitmq/amqp091-go v1.13.0
