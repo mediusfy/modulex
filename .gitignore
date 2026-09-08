@@ -24,3 +24,6 @@ test_output.txt
 # Local approval.FileStore state (modulex agent approve), sensitive — see
 # approval's "Token sensitivity" section
 .modulex/
+
+# Per-user Claude Code overrides; the shared hook config is .claude/settings.json
+.claude/settings.local.json

@@ -1,0 +1,30 @@
+{
+  "PreInvocation": [
+    {
+      "name": "modulex-pre-pointcut",
+      "command": "bash scripts/agenthooks/pre.sh",
+      "timeout": 180
+    }
+  ],
+  "PreToolUse": [
+    {
+      "name": "modulex-guard-pointcut",
+      "command": "bash scripts/agenthooks/guard.sh",
+      "timeout": 30
+    }
+  ],
+  "PostInvocation": [
+    {
+      "name": "modulex-while-pointcut",
+      "command": "bash scripts/agenthooks/while.sh",
+      "timeout": 60
+    }
+  ],
+  "Stop": [
+    {
+      "name": "modulex-post-pointcut",
+      "command": "bash scripts/agenthooks/post.sh",
+      "timeout": 0
+    }
+  ]
+}

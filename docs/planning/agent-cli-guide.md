@@ -129,6 +129,9 @@ to end" section for the full mechanism.
 
 - [Agent MCP Server Guide](agent-mcp-server-guide.md) — the MCP-facing
   half of this same domain logic
+- [Agent Pointcuts Guide](agent-pointcuts-guide.md) — the pre/guard/while/post
+  session hooks that shell into this CLI from Claude Code, opencode, and
+  Antigravity
 - [Agent Approval Broker Guide](agent-approval-broker-guide.md) —
   `approval.Broker`/`FileStore`, which `approve` writes to
 - [Agent Repository Contract Guide](agent-repository-contract-guide.md) —

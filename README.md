@@ -760,6 +760,35 @@ for a detailed comparison with plain constructor injection, Wire, Fx, and Dig.
 
 ---
 
+## AI-First Agent Integration
+
+Modulex treats coding agents as first-class citizens: the repository carries a
+machine-readable contract (`modulex.agent.yaml`), and three aspect-oriented
+**pointcuts** — *pre*, *while*, and *post* — hook the library's own tooling
+into an agent's session so the build process stays transparent end to end:
+
+- **pre** (session start): `modulex doctor` and a contract-drift check
+  introduce the repository to the agent before it acts.
+- **guard** (before each edit/command): protected paths and
+  destructive/approval-gated commands from the contract are blocked until a
+  human grants approval via `modulex agent approve`.
+- **while** (after each edit): the contract's focused checks run on exactly
+  the touched surface.
+- **post** (before the agent concludes): `modulex agent verify` runs the
+  verification plan for the diff, and the agent is reminded to produce the
+  `provenance.Envelope` handoff.
+
+The pointcuts are tool-agnostic scripts in [`scripts/agenthooks/`](./scripts/agenthooks/),
+wired identically into Claude Code ([`.claude/settings.json`](./.claude/settings.json) +
+[`.mcp.json`](./.mcp.json)), opencode ([`.opencode/plugin/`](./.opencode/plugin/) +
+[`opencode.json`](./opencode.json)), and Antigravity
+([`.antigravity/hooks/hooks.json`](./.antigravity/hooks/hooks.json)). Every check
+they run shells into the `modulex` CLI — the same domain logic the MCP server
+exposes — so there is one enforcement path for any agent. See the
+[Agent Pointcuts Guide](./docs/planning/agent-pointcuts-guide.md).
+
+---
+
 ## Documentation
 
 - [Agent Approval Broker Guide](./docs/planning/agent-approval-broker-guide.md)
@@ -769,6 +798,7 @@ for a detailed comparison with plain constructor injection, Wire, Fx, and Dig.
 - [Agent Discovery and Command Classification](./docs/planning/agent-discovery-guide.md)
 - [Agent Instruction Generation Guide](./docs/planning/agent-instruction-generation-guide.md)
 - [Agent MCP Server Guide](./docs/planning/agent-mcp-server-guide.md)
+- [Agent Pointcuts Guide](./docs/planning/agent-pointcuts-guide.md)
 - [Agent Provenance CI Guide](./docs/planning/agent-provenance-ci-guide.md)
 - [Agent Repository Contract Guide](./docs/planning/agent-repository-contract-guide.md)
 - [Agent Verification Guide](./docs/planning/agent-verification-guide.md)
