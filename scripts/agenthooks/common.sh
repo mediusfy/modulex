@@ -50,6 +50,24 @@ contract_commands() {
   return 0
 }
 
+# For globally-registered hooks (Kimi's ~/.kimi-code/config.toml), the
+# payload carries the session cwd; return 0 (outside) when that cwd is not
+# inside this repository, so the hook can stand down. Repo-local adapters
+# never send a foreign cwd, so this is a no-op for them.
+cwd_outside_repo() {
+  local cwd
+  cwd="$(MODULEX_HOOK_PAYLOAD="$1" python3 -c '
+import json, os
+raw = os.environ.get("MODULEX_HOOK_PAYLOAD", "")
+try:
+    p = json.loads(raw) if raw.strip() else {}
+except json.JSONDecodeError:
+    p = {}
+print(p.get("cwd") or "")
+' 2>/dev/null)" || return 1
+  [[ -n "$cwd" && "$cwd" != "$MODULEX_REPO_ROOT" && "$cwd" != "$MODULEX_REPO_ROOT"/* ]]
+}
+
 # Hook payload: adapters that cannot pipe stdin (the opencode plugin) pass
 # the JSON via MODULEX_HOOK_PAYLOAD instead; stdin wins when present.
 read_payload() {

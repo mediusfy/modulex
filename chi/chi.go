@@ -1,3 +1,6 @@
+// Package chi integrates the go-chi router with Modulex: modules register
+// one shared chi.Router in the Registry and resolve it to mount their
+// routes.
 package chi
 
 import (

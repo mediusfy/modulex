@@ -1,3 +1,7 @@
+// Package approval records human-granted approvals for guarded agent
+// actions. A Broker issues scoped, expiring Grants; a FileStore persists
+// them to .modulex/approvals.json so separate processes (the modulex CLI,
+// the MCP server, session hooks) agree on what a human has approved.
 package approval
 
 import (

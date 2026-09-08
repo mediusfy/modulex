@@ -1,3 +1,6 @@
+// Package httpx serves a Modulex application's HTTP endpoints: handlers
+// for health and readiness checks, and Serve, which runs an http.Server as
+// a supervised, lifecycle-owned task.
 package httpx
 
 import (

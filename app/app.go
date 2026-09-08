@@ -1,3 +1,6 @@
+// Package app boots a Modulex service: Run owns the
+// construct-manager, register-modules, signal-context, Init/Start/wait/Stop
+// skeleton that every entrypoint otherwise repeats.
 package app
 
 import (

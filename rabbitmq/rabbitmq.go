@@ -1,3 +1,5 @@
+// Package rabbitmq provides a Modulex EventBus adapter backed by RabbitMQ
+// (amqp091).
 package rabbitmq
 
 import (

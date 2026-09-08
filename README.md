@@ -329,33 +329,11 @@ func TestTracesNoGaps(t *testing.T) {
 
 ---
 
-## Architectural Decision Record (ADR-0029)
+## Design Rationale
 
-This section embeds the official architectural decision that defines the creation, standard, and deployment constraints of the `modulex` framework.
+When Feature A imports Feature B's `service` or `adapters` packages directly, three things break: A can't compile without pulling in B's dependencies, circular imports creep in, and extracting a feature into its own service means a rewrite.
 
-### Context & Problem Statement
-
-As applications grow within a monorepo, features that start as simple internal modules often need to scale, compile, and deploy independently. However, developers commonly fall into the trap of tight coupling by importing concrete structures and adapters from other packages (e.g., calling a database helper directly or importing a controller). 
-
-If Feature A directly imports Feature B's `service` or `adapters` packages, compilation boundaries are broken:
-- Feature A cannot be compiled without pulling in Feature B's dependencies (causing bloated binaries).
-- Circular package imports occur frequently.
-- Extracting a feature into a standalone service requires a major rewrite.
-
-We need a standardized framework and layout rules to enforce linear execution paths, clean interface segregation, and dynamic runtime wiring.
-
-### Options Considered
-
-* **Option 1: Compile-time Dependency Injection (e.g., Wire, Dig)**
-  * *Pros:* Type-safe at compile time.
-  * *Cons:* Requires highly complex setup configurations in `main.go`. Changing target topologies requires maintaining distinct, cumbersome compile-time configuration sets.
-* **Option 2: Service Locator and Module Registry Pattern (`modulex`)**
-  * *Pros:* Extremely low coupling. The core business logic is completely insulated. Topologies are selected at the composition root (the entry point `main.go`) by choosing to register either local modules or network proxy clients under the same interface names.
-  * *Cons:* Registry resolution type-checks are performed at startup rather than compile-time.
-
-### Confirming the Design
-
-We confirm the selection of **Option 2** (the Service Locator and Module Registry Pattern). Modulex encourages clean hexagonal segregation and supports runtime topology mapping:
+Modulex answers this with a **module registry** instead of compile-time dependency injection (Wire, Dig). Compile-time DI is type-safe but ties each deployment topology to its own generated wiring; with a registry, the topology is chosen at the composition root (`main.go`) by registering either local modules or network proxy clients under the same interface names. The trade-off: registry lookups type-check at startup, not at compile time.
 
 ```mermaid
 graph TD
@@ -376,14 +354,13 @@ graph TD
     style DS fill:#2e1e24,stroke:#444,stroke-width:2px,color:#fff
 ```
 
-### Consequences
+What you get:
 
-* **Positive:**
-  * **Zero Code Modification:** Splitting a monolith to microservices involves changing *only* the registration block in the application's entrypoint (`main.go`).
-  * **Strict Clean Deletion:** If a feature is deprecated, deleting its package directory does not break the compilation of other modules, since no other module imported its code.
-  * **No Resource Leakage:** Reverse-order shutdowns ensure downstream DB connectors/event lines are terminated only after upstream services have stopped consuming them.
-* **Negative:**
-  * **Type Assertions:** Developers must cast resolved interfaces (`val.(ports.Service)`). Missing service registrations surface when a module calls `ResolveService`/`Resolve` during `Init`.
+* **Monolith to microservices without code changes** — only the registration block in `main.go` changes.
+* **Clean deletion** — removing a feature's package directory breaks nothing else, because nothing else imported it.
+* **No resource leakage** — reverse-order shutdown stops downstream connections only after their consumers have stopped.
+
+What it costs: resolved interfaces need a cast (`val.(ports.Service)`), and a missing registration surfaces at `Init` rather than at compile time.
 
 ---
 
@@ -762,30 +739,48 @@ for a detailed comparison with plain constructor injection, Wire, Fx, and Dig.
 
 ## AI-First Agent Integration
 
-Modulex treats coding agents as first-class citizens: the repository carries a
-machine-readable contract (`modulex.agent.yaml`), and three aspect-oriented
-**pointcuts** — *pre*, *while*, and *post* — hook the library's own tooling
-into an agent's session so the build process stays transparent end to end:
+Coding agents are first-class citizens here. The repository carries a
+machine-readable contract (`modulex.agent.yaml`), and four **pointcuts** hook
+the library's own tooling into an agent's session:
 
-- **pre** (session start): `modulex doctor` and a contract-drift check
-  introduce the repository to the agent before it acts.
-- **guard** (before each edit/command): protected paths and
-  destructive/approval-gated commands from the contract are blocked until a
-  human grants approval via `modulex agent approve`.
-- **while** (after each edit): the contract's focused checks run on exactly
-  the touched surface.
-- **post** (before the agent concludes): `modulex agent verify` runs the
-  verification plan for the diff, and the agent is reminded to produce the
-  `provenance.Envelope` handoff.
+| Pointcut | When | What it does |
+|---|---|---|
+| **pre** | session start | `modulex doctor` and a contract-drift check introduce the repository to the agent |
+| **guard** | before each edit/command | blocks protected paths and destructive commands until a human runs `modulex agent approve` |
+| **while** | after each edit | runs the contract's focused checks on the touched files |
+| **post** | before the agent concludes | runs `modulex agent verify` and asks for the `provenance.Envelope` handoff |
 
-The pointcuts are tool-agnostic scripts in [`scripts/agenthooks/`](./scripts/agenthooks/),
-wired identically into Claude Code ([`.claude/settings.json`](./.claude/settings.json) +
-[`.mcp.json`](./.mcp.json)), opencode ([`.opencode/plugin/`](./.opencode/plugin/) +
-[`opencode.json`](./opencode.json)), and Antigravity
-([`.antigravity/hooks/hooks.json`](./.antigravity/hooks/hooks.json)). Every check
-they run shells into the `modulex` CLI — the same domain logic the MCP server
-exposes — so there is one enforcement path for any agent. See the
-[Agent Pointcuts Guide](./docs/planning/agent-pointcuts-guide.md).
+The pointcuts are tool-agnostic scripts in [`scripts/agenthooks/`](./scripts/agenthooks/).
+Every check shells into the `modulex` CLI — the same logic the MCP server
+exposes — so every agent hits one enforcement path.
+
+### Setup per agent
+
+- **Claude Code** — works out of the box: [`.claude/settings.json`](./.claude/settings.json)
+  wires the hooks, [`.mcp.json`](./.mcp.json) registers the MCP server.
+- **opencode** — works out of the box: [`.opencode/plugin/`](./.opencode/plugin/)
+  wires the hooks, [`opencode.json`](./opencode.json) registers the MCP server.
+- **Antigravity** — works out of the box via
+  [`.antigravity/hooks/hooks.json`](./.antigravity/hooks/hooks.json).
+- **Kimi Code CLI** — hooks are global, not per-repository. Add to
+  `~/.kimi-code/config.toml` (the script no-ops outside this repo):
+
+  ```toml
+  [[hooks]]
+  event = "SessionStart"
+  command = "/path/to/modulex/scripts/agenthooks/pre.sh"
+  timeout = 180
+
+  [[hooks]]
+  event = "UserPromptSubmit"
+  command = "/path/to/modulex/scripts/agenthooks/while.sh"
+  timeout = 60
+  ```
+
+  Kimi has no tool-call or session-end hook, so the guard and post gates
+  don't apply; run `modulex agent verify` before handing work off.
+
+Details: [Agent Pointcuts Guide](./docs/planning/agent-pointcuts-guide.md).
 
 ---
 

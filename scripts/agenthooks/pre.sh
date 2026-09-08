@@ -9,6 +9,12 @@
 set -uo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
+# Globally-registered hosts (Kimi) fire this everywhere; only speak up when
+# the session is actually in this repository.
+if command -v python3 >/dev/null 2>&1 && cwd_outside_repo "$(read_payload)"; then
+  exit 0
+fi
+
 echo "== modulex pre-pointcut: repository self-report =="
 
 if ensure_modulex; then
