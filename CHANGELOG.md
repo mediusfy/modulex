@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Package doc comments for `app`, `approval`, `chi`, `otel`, `httpx`,
+  `rabbitmq`, and `watermill`, which previously rendered with no synopsis
+  on pkg.go.dev.
+- Kimi Code CLI setup for the agent pointcuts (global
+  `~/.kimi-code/config.toml` hooks); `pre.sh`/`while.sh` now read the
+  session cwd from the hook payload and stay silent outside this
+  repository, so globally-registered hooks are safe.
+
+### Changed
+
+- README: the embedded architecture-decision section is condensed into a
+  short Design Rationale, and the agent-integration section is tightened
+  into a pointcut table with per-agent setup (Claude Code, opencode,
+  Antigravity, Kimi). The Agent Pointcuts Guide got the same trim.
+
 ## [0.10.1] - 2026-09-08
 
 ### Changed

@@ -1,76 +1,75 @@
 # Agent Pointcuts Guide
 
-Modulex aims to be an AI-first-class citizen: an agent working in this
-repository should not have to *infer* the rules of engagement — the library
-tells it, enforces them, and verifies the result. This guide documents the
-pointcut layer that does that: three aspect-oriented interception points
-(**pre**, **while**, **post**) plus a per-tool-call **guard**, wired
-identically into Claude Code, opencode, and Antigravity.
+An agent working in this repository should not have to guess the rules — the
+library states them, enforces them, and verifies the result. The pointcut
+layer does that: four interception points, wired identically into Claude
+Code, opencode, Antigravity, and Kimi.
 
-The design principle is the same one tools/mcpserver follows: **the library
-is the single source of repository logic.** The hooks never re-implement a
-check — they shell into the repo's own `modulex` CLI (`doctor`,
-`agent generate -check`, `agent verify`, the approval store), which wraps the
-same domain packages (`contract`, `verify`, `approval`, `agentdocs`,
-`provenance`) the MCP server exposes. One contract (`modulex.agent.yaml`),
-one enforcement path, any agent.
+One principle drives the design: **the library is the single source of
+repository logic.** The hooks never re-implement a check. They shell into
+the repo's own `modulex` CLI (`doctor`, `agent generate -check`,
+`agent verify`, the approval store) — the same domain packages the MCP
+server exposes. One contract (`modulex.agent.yaml`), one enforcement path,
+any agent.
 
 ## The pointcuts
 
-All four live in `scripts/agenthooks/` and are tool-agnostic: they read the
-host's hook payload from stdin (or `MODULEX_HOOK_PAYLOAD` for hosts that
-cannot pipe stdin), and communicate back through exit codes — `0` allow,
-`2` block with the reason on stderr.
+All four live in `scripts/agenthooks/`. Each reads the host's hook payload
+from stdin (or `MODULEX_HOOK_PAYLOAD` for hosts that can't pipe stdin) and
+answers with an exit code: `0` allows, `2` blocks with the reason on stderr.
 
 | Pointcut | Script | Fires | Does |
 |---|---|---|---|
-| pre | `pre.sh` | session start | Builds the `modulex` CLI into `.modulex/bin/`, prints `modulex doctor`, reports AGENTS.md/CLAUDE.md drift (`agent generate -check`), and announces the active pointcuts. Everything on stdout lands in the agent's context — the library introducing itself. Never blocks. |
-| guard | `guard.sh` | before each edit / shell command | Enforces the contract: denies edits to `protected_paths`, redirects hand-edits of the generated AGENTS.md/CLAUDE.md to `modulex agent generate`, and blocks commands classed `destructive`/`approval_required` unless a matching unexpired grant exists in `.modulex/approvals.json` (written by a human via `modulex agent approve`, outside the agent loop). Also blocks force-pushes and `--no-verify` per agent-safety-policy.md. |
-| while | `while.sh` | after each edit (or each turn) | Runs the contract's focused checks (`verification.focused` — today `gofmt -s -l`) on exactly the touched surface, so drift is fed back the moment it appears. Given no per-file payload (per-turn hosts), it checks every dirty `.go` file instead. |
-| post | `post.sh` | when the agent believes it is done | Makes "done" mean what the contract says: no generated-doc drift, focused gofmt clean over dirty files, and `modulex agent verify -base <merge-base>` passing over the committed diff. Failure blocks conclusion (exit 2) and hands the agent the failing checks; success reminds it to produce the `provenance.Envelope v1.0.0` handoff via `modulex agent handoff`. `MODULEX_HOOK_FULL=1` escalates verify to the full gates. Honors Claude Code's `stop_hook_active` to avoid block loops. |
+| pre | `pre.sh` | session start | Builds the `modulex` CLI into `.modulex/bin/`, prints `modulex doctor` and the generated-doc drift status into the agent's context. Never blocks. |
+| guard | `guard.sh` | before each edit / shell command | Denies edits to `protected_paths`, hand-edits of the generated AGENTS.md/CLAUDE.md, and commands classed `destructive`/`approval_required` — unless a live grant exists in `.modulex/approvals.json`. Also blocks force-pushes and `--no-verify`. |
+| while | `while.sh` | after each edit (or each turn) | Runs the contract's focused checks (today: `gofmt -s -l`) on exactly the touched files. With no file payload, checks every dirty `.go` file. |
+| post | `post.sh` | when the agent believes it is done | Blocks conclusion until generated docs match the contract, touched `.go` files are gofmt-clean, and `modulex agent verify` passes on the committed diff. `MODULEX_HOOK_FULL=1` escalates to the full gates. |
 
-## Adapters
+## Setup per agent
 
-Each host wires the same four scripts through its native hook system; the
-adapters contain no logic of their own.
+**Claude Code, opencode, and Antigravity work out of the box** — their
+adapters are checked in and contain no logic of their own:
 
-**Claude Code** — `.claude/settings.json`:
-`SessionStart → pre.sh`, `PreToolUse (Edit|Write|MultiEdit|NotebookEdit|Bash)
-→ guard.sh` (exit 2 denies the tool call), `PostToolUse (edits) → while.sh`,
-`Stop → post.sh` (exit 2 blocks the agent from concluding). `.mcp.json`
-additionally registers tools/mcpserver, so the agent can call
-`read_contract`, `recommend_verification`, `run_verification`, `review_diff`,
-`create_handoff`, and `discover_repository` directly.
+| Host | Wiring | Pointcuts |
+|---|---|---|
+| Claude Code | `.claude/settings.json` (hooks) + `.mcp.json` (MCP server) | pre, guard, while, post |
+| opencode | `.opencode/plugin/modulex-pointcuts.js` + `opencode.json` (MCP server) | pre, guard, while, post |
+| Antigravity | `.antigravity/hooks/hooks.json` | pre, guard, while (per-turn), post |
 
-**opencode** — `.opencode/plugin/modulex-pointcuts.js`:
-plugin init → `pre.sh`, `tool.execute.before` → `guard.sh` (a thrown error
-blocks the call), debounced `file.edited` → `while.sh`, `session.idle` →
-`post.sh`. Payloads travel via `MODULEX_HOOK_PAYLOAD`. `opencode.json`
-registers the same MCP server.
+**Kimi Code CLI** configures hooks globally, not per repository. Add this to
+`~/.kimi-code/config.toml`; the scripts read the session `cwd` from the hook
+payload and stay silent outside this repo:
 
-**Antigravity** — `.antigravity/hooks/hooks.json`:
-`PreInvocation → pre.sh`, `PreToolUse → guard.sh`,
-`PostInvocation → while.sh` (per-turn mode, no file payload),
-`Stop → post.sh`.
+```toml
+[[hooks]]
+event = "SessionStart"
+command = "/path/to/modulex/scripts/agenthooks/pre.sh"
+timeout = 180
 
-## Approval flow
+[[hooks]]
+event = "UserPromptSubmit"
+command = "/path/to/modulex/scripts/agenthooks/while.sh"
+timeout = 60
+```
 
-`guard.sh` never grants anything. When it blocks a `destructive` or
-`approval_required` command it names the exact remedy:
+Kimi exposes no tool-call or session-end hook, so the guard and post gates
+don't run there — run `modulex agent verify -base <ref>` before handing
+work off.
+
+## Approvals
+
+`guard.sh` never grants anything. When it blocks a command it names the
+remedy:
 
     modulex agent approve -action <command-name> -approved-by <human> [-ttl 10m]
 
-run by a human outside the agent loop. The grant lands in
-`.modulex/approvals.json` (gitignored, sensitive) and is honored by both this
-guard and tools/mcpserver's `run_verification` — the same file bridges every
-process that needs to agree an approval exists.
+run by a human, outside the agent's loop. The grant lands in
+`.modulex/approvals.json` (gitignored, sensitive) and is honored by this
+guard and by the MCP server's `run_verification` alike.
 
 ## Failure posture
 
-The hooks degrade transparently, never silently: a missing go toolchain, an
-unbuildable CLI, a missing python3 (which guard and post need to parse hook
-payloads — both stand down with a warning rather than enforce blindly or
-block forever), or a verify run in which no check actually executed is
-*reported* to the agent as "not verified" rather than swallowed as success —
-matching the contract's handoff rule that a skipped check must never be
-reported as passing.
+The hooks degrade loudly, never silently. A missing go toolchain, a missing
+python3 (guard and post need it to parse payloads — both stand down with a
+warning rather than enforce blindly or block forever), or a verify run in
+which no check executed is reported as "not verified", never as success.

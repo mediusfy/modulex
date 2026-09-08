@@ -1,3 +1,6 @@
+// Package watermill provides a Modulex EventBus adapter backed by
+// Watermill, bridging its Publisher/Subscriber pairs to the EventBus
+// interface.
 package watermill
 
 import (

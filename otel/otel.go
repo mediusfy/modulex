@@ -1,3 +1,7 @@
+// Package otel wires OpenTelemetry tracing into Modulex: an OTLP tracer
+// provider configured from the environment, a modulex.Tracer adapter, and
+// HTTP/subscriber middleware that keep traces gap-free across process and
+// messaging boundaries.
 package otel
 
 import (

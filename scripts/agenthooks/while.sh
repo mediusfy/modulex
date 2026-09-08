@@ -14,6 +14,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 payload="$(read_payload)"
 
 command -v python3 >/dev/null 2>&1 || exit 0
+cwd_outside_repo "$payload" && exit 0
 
 # Extract the edited file from the payload, if one is present.
 file="$(MODULEX_HOOK_PAYLOAD="$payload" python3 -c '
