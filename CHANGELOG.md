@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Modulex editor plugins for VSCode (`editors/vscode`) and IntelliJ
+  (`editors/intellij`), clients of the local read-only MCP server
+  (`tools/mcpserver`) per ADR-0035 plan step 5: review a diff against a
+  base ref, run focused/full declared verification, discover the
+  repository, read the contract, and create a provenance handoff
+  envelope — offline, with no hosted backend. Both share one
+  editor-agnostic tool-surface description (`editors/tool-surface.json`)
+  and hand-rolled stdio JSON-RPC clients with no MCP SDK dependency.
+
 ## [0.10.2] - 2026-09-08
 
 ### Added
