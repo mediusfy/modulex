@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-09-08
+
+### Changed
+
+- Dependency updates: the OpenTelemetry family to v1.46.0,
+  `google.golang.org/grpc` to v1.83.2, `github.com/go-chi/chi/v5` to
+  v5.3.2, `github.com/stretchr/testify` to v1.12.1,
+  `github.com/nats-io/nats-server/v2` to v2.14.5, and
+  `github.com/rabbitmq/amqp091-go` to v1.14.0. `actions/upload-artifact`
+  bumped to v7.0.1 in the PR-review workflow. No public API changes
+  (`make check-api-compat` clean against v0.10.0).
+
 ### Fixed
 
 - `examples/external-consumer/go.sum` tidied after the v1.46 otel /
@@ -1287,7 +1299,8 @@ Initial v0 prerelease.
   service locator, and pluggable event-bus adapters (Chi, NATS, RabbitMQ,
   Watermill, OpenTelemetry).
 
-[Unreleased]: https://github.com/mediusfy/modulex/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/mediusfy/modulex/compare/v0.10.1...HEAD
+[0.10.1]: https://github.com/mediusfy/modulex/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/mediusfy/modulex/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/mediusfy/modulex/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/mediusfy/modulex/compare/v0.7.0...v0.8.0
