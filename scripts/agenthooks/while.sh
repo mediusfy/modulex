@@ -29,27 +29,27 @@ if isinstance(ti, dict):
 ')"
 
 targets=()
-if [ -n "$file" ]; then
+if [[ -n "$file" ]]; then
   case "$file" in
-    *.go) [ -f "$file" ] && targets+=("$file") ;;
+    *.go) [[ -f "$file" ]] && targets+=("$file") ;;
     *) exit 0 ;;
   esac
 else
   # No per-file payload (per-turn adapters): check every dirty .go file,
   # including untracked ones a Write tool just created.
   while IFS= read -r f; do
-    [ -n "$f" ] && [ -f "$MODULEX_REPO_ROOT/$f" ] && targets+=("$MODULEX_REPO_ROOT/$f")
+    [[ -n "$f" && -f "$MODULEX_REPO_ROOT/$f" ]] && targets+=("$MODULEX_REPO_ROOT/$f")
   done < <(cd "$MODULEX_REPO_ROOT" && {
     git diff --name-only HEAD 2>/dev/null
     git ls-files --others --exclude-standard 2>/dev/null
   } | grep '\.go$' | sort -u)
 fi
 
-[ "${#targets[@]}" -eq 0 ] && exit 0
+[[ "${#targets[@]}" -eq 0 ]] && exit 0
 command -v gofmt >/dev/null 2>&1 || exit 0
 
 unformatted="$(gofmt -s -l "${targets[@]}" 2>/dev/null)"
-if [ -n "$unformatted" ]; then
+if [[ -n "$unformatted" ]]; then
   {
     echo "modulex while-pointcut: focused check gofmt-check failed for:"
     echo "$unformatted"

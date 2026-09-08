@@ -23,16 +23,19 @@ ensure_modulex() {
   command -v go >/dev/null 2>&1 || return 1
   mkdir -p "$MODULEX_REPO_ROOT/.modulex/bin"
   (cd "$MODULEX_REPO_ROOT/tools/agentcli" && go build -o "$MODULEX_BIN" ./cmd/modulex) || return 1
+  return 0
 }
 
 # Print the flat "- item" entries of a top-level list key in the contract
 # (e.g. protected_paths), one per line.
 contract_list() {
-  awk -v key="$1:" '
+  local key="$1"
+  awk -v key="$key:" '
     $0 == key {inblock=1; next}
     inblock && /^[^[:space:]#]/ {inblock=0}
     inblock && /^[[:space:]]*-[[:space:]]/ {sub(/^[[:space:]]*-[[:space:]]*/, ""); print}
   ' "$MODULEX_CONTRACT" 2>/dev/null
+  return 0
 }
 
 # Print the contract's command matrix as "class<TAB>name<TAB>command" lines.
@@ -44,14 +47,16 @@ contract_commands() {
     inblock && /^[[:space:]]+command:/ {cmd=$0; sub(/.*command:[[:space:]]*/, "", cmd)}
     inblock && /^[[:space:]]+class:/ {cls=$0; sub(/.*class:[[:space:]]*/, "", cls); printf "%s\t%s\t%s\n", cls, name, cmd}
   ' "$MODULEX_CONTRACT" 2>/dev/null
+  return 0
 }
 
 # Hook payload: adapters that cannot pipe stdin (the opencode plugin) pass
 # the JSON via MODULEX_HOOK_PAYLOAD instead; stdin wins when present.
 read_payload() {
-  if [ -n "${MODULEX_HOOK_PAYLOAD:-}" ]; then
+  if [[ -n "${MODULEX_HOOK_PAYLOAD:-}" ]]; then
     printf '%s' "$MODULEX_HOOK_PAYLOAD"
-  elif [ ! -t 0 ]; then
+  elif [[ ! -t 0 ]]; then
     cat
   fi
+  return 0
 }

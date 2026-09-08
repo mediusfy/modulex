@@ -58,9 +58,9 @@ fi
 # 2. Focused gofmt over everything this session touched — tracked edits and
 # untracked files a Write tool created.
 dirty_go="$({ git diff --name-only HEAD 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null; } | grep '\.go$' | sort -u || true)"
-if [ -n "$dirty_go" ] && command -v gofmt >/dev/null 2>&1; then
+if [[ -n "$dirty_go" ]] && command -v gofmt >/dev/null 2>&1; then
   unformatted="$(echo "$dirty_go" | xargs gofmt -s -l 2>/dev/null)"
-  if [ -n "$unformatted" ]; then
+  if [[ -n "$unformatted" ]]; then
     printf 'modulex post-pointcut: gofmt-check failed for:\n%s\nRun `gofmt -s -w` on these files.\n' "$unformatted" >&2
     exit 2
   fi
@@ -68,14 +68,14 @@ fi
 
 # 3. Library-planned verification over the committed diff.
 base="$(git merge-base HEAD origin/main 2>/dev/null || true)"
-if [ -z "$base" ] || [ "$base" = "$(git rev-parse HEAD 2>/dev/null)" ]; then
+if [[ -z "$base" || "$base" = "$(git rev-parse HEAD 2>/dev/null)" ]]; then
   echo "modulex post-pointcut: no committed diff vs origin/main to verify; focused checks passed."
-  [ -n "$dirty_go" ] && echo "Uncommitted .go changes exist — full gates (make build/test/lint) still apply before any push."
+  [[ -n "$dirty_go" ]] && echo "Uncommitted .go changes exist — full gates (make build/test/lint) still apply before any push."
   exit 0
 fi
 
 verify_flags=()
-[ "${MODULEX_HOOK_FULL:-0}" = "1" ] && verify_flags+=("-full")
+[[ "${MODULEX_HOOK_FULL:-0}" = "1" ]] && verify_flags+=("-full")
 verify_err="$MODULEX_REPO_ROOT/.modulex/last-verify.err"
 verify_out="$MODULEX_REPO_ROOT/.modulex/last-verify.json"
 if "$MODULEX_BIN" agent verify -root "$MODULEX_REPO_ROOT" -base "$base" "${verify_flags[@]:-}" >"$verify_out" 2>"$verify_err"; then
