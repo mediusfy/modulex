@@ -17,6 +17,14 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 payload="$(read_payload)"
 
+# Without python3 the stop_hook_active loop-breaker below cannot run; a
+# blocking gate that can never be released is worse than no gate, so stand
+# down loudly instead (never report checks that didn't run as passing).
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "modulex post-pointcut: python3 unavailable; post gates NOT run — report this, do not report checks as passing." >&2
+  exit 0
+fi
+
 # Claude Code sets stop_hook_active when a Stop hook already blocked once
 # this turn; honor it to avoid an infinite block loop.
 if MODULEX_HOOK_PAYLOAD="$payload" python3 -c '
@@ -47,8 +55,9 @@ if ! drift="$("$MODULEX_BIN" agent generate -root "$MODULEX_REPO_ROOT" -check 2>
   exit 2
 fi
 
-# 2. Focused gofmt over everything this session touched (dirty files).
-dirty_go="$(git diff --name-only HEAD 2>/dev/null | grep '\.go$' || true)"
+# 2. Focused gofmt over everything this session touched — tracked edits and
+# untracked files a Write tool created.
+dirty_go="$({ git diff --name-only HEAD 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null; } | grep '\.go$' | sort -u || true)"
 if [ -n "$dirty_go" ] && command -v gofmt >/dev/null 2>&1; then
   unformatted="$(echo "$dirty_go" | xargs gofmt -s -l 2>/dev/null)"
   if [ -n "$unformatted" ]; then

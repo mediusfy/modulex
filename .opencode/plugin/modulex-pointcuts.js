@@ -28,6 +28,7 @@ export const ModulexPointcuts = async ({ $, directory }) => {
 
   let posting = false;
   let debounce;
+  const pendingEdits = new Set();
 
   return {
     "tool.execute.before": async (input, output) => {
@@ -44,13 +45,19 @@ export const ModulexPointcuts = async ({ $, directory }) => {
 
     event: async ({ event }) => {
       if (event.type === "file.edited") {
-        const file = event.properties?.file;
+        // Accumulate every edited file so a burst of edits doesn't cancel
+        // earlier files' checks — the debounce only delays the flush.
+        if (event.properties?.file) pendingEdits.add(event.properties.file);
         clearTimeout(debounce);
         debounce = setTimeout(async () => {
-          const res = await run("while.sh", {
-            tool_input: { file_path: file },
-          });
-          if (res.exitCode === 2) console.error(res.stderr.toString());
+          const files = [...pendingEdits];
+          pendingEdits.clear();
+          for (const file of files) {
+            const res = await run("while.sh", {
+              tool_input: { file_path: file },
+            });
+            if (res.exitCode === 2) console.error(res.stderr.toString());
+          }
         }, 1500);
       } else if (event.type === "session.idle" && !posting) {
         posting = true;

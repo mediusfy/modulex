@@ -13,6 +13,8 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 payload="$(read_payload)"
 
+command -v python3 >/dev/null 2>&1 || exit 0
+
 # Extract the edited file from the payload, if one is present.
 file="$(MODULEX_HOOK_PAYLOAD="$payload" python3 -c '
 import json, os
@@ -33,10 +35,14 @@ if [ -n "$file" ]; then
     *) exit 0 ;;
   esac
 else
-  # No per-file payload (per-turn adapters): check every dirty .go file.
+  # No per-file payload (per-turn adapters): check every dirty .go file,
+  # including untracked ones a Write tool just created.
   while IFS= read -r f; do
     [ -n "$f" ] && [ -f "$MODULEX_REPO_ROOT/$f" ] && targets+=("$MODULEX_REPO_ROOT/$f")
-  done < <(cd "$MODULEX_REPO_ROOT" && git diff --name-only HEAD 2>/dev/null | grep '\.go$')
+  done < <(cd "$MODULEX_REPO_ROOT" && {
+    git diff --name-only HEAD 2>/dev/null
+    git ls-files --others --exclude-standard 2>/dev/null
+  } | grep '\.go$' | sort -u)
 fi
 
 [ "${#targets[@]}" -eq 0 ] && exit 0

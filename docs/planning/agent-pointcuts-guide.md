@@ -68,7 +68,9 @@ process that needs to agree an approval exists.
 ## Failure posture
 
 The hooks degrade transparently, never silently: a missing go toolchain, an
-unbuildable CLI, or a verify run in which no check actually executed is
+unbuildable CLI, a missing python3 (which guard and post need to parse hook
+payloads — both stand down with a warning rather than enforce blindly or
+block forever), or a verify run in which no check actually executed is
 *reported* to the agent as "not verified" rather than swallowed as success —
 matching the contract's handoff rule that a skipped check must never be
 reported as passing.
