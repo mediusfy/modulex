@@ -71,12 +71,13 @@
 // solution:
 //
 //   - A changed file inside a nested Go module other than the root module
-//     (examples/external-consumer/*, tools/*/*) is mapped to that module's
-//     own checks, run from the module's root via `go -C <dir>` (see
-//     nestedModuleDir). The nested-module set is a hardcoded convention —
-//     every direct child of tools/ plus examples/external-consumer — not
-//     discovered from go.mod files on disk, so a new nested module outside
-//     that convention would silently fall back to root-module mapping. A
+//     (examples/external-consumer/*, tools/*/*, services/*/*) is mapped to
+//     that module's own checks, run from the module's root via `go -C
+//     <dir>` (see nestedModuleDir). The nested-module set is a hardcoded
+//     convention — every direct child of tools/ or services/ plus
+//     examples/external-consumer — not discovered from go.mod files on
+//     disk, so a new nested module outside that convention would silently
+//     fall back to root-module mapping. A
 //     future revision could consult discovery.Repository.Modules instead;
 //     PlanFor's signature deliberately leaves room for that (see "Why
 //     PlanFor, not Plan" above) without requiring it today.
@@ -358,17 +359,20 @@ func focusedChecksForFile(path string) []CheckSpec {
 // nestedModuleDir returns the repository-relative directory of the nested
 // Go module path belongs to, or "" when path is part of the root module.
 // The repository's nested-module convention is fixed: every direct child of
-// tools/ is its own Go module, as is examples/external-consumer (each has
-// its own go.mod plus a replace directive toward the root). A root-module
-// `./tools/...` package pattern therefore matches nothing — go exits
+// tools/ or services/ is its own Go module, as is
+// examples/external-consumer (each has its own go.mod plus a replace
+// directive toward the root). A root-module `./tools/...` or
+// `./services/...` package pattern therefore matches nothing — go exits
 // nonzero with "matched no packages" — so checks for these paths must run
 // from the nested module's own root via `go -C`. PlanFor stays a pure path
 // mapping, so this encodes the convention rather than reading go.mod files
 // off disk.
 func nestedModuleDir(path string) string {
-	if strings.HasPrefix(path, "tools/") {
-		if sub := topLevelSegment(strings.TrimPrefix(path, "tools/")); sub != "" {
-			return "tools/" + sub
+	for _, parent := range []string{"tools/", "services/"} {
+		if strings.HasPrefix(path, parent) {
+			if sub := topLevelSegment(strings.TrimPrefix(path, parent)); sub != "" {
+				return parent + sub
+			}
 		}
 	}
 	if strings.HasPrefix(path, "examples/external-consumer/") {
@@ -440,12 +444,13 @@ func focusedChecksForGoFile(path string) []CheckSpec {
 	if dir := nestedModuleDir(path); dir != "" {
 		return nestedModuleChecks(path, dir)
 	}
-	if strings.HasPrefix(path, "tools/") {
-		// A .go file directly under tools/ (no subdirectory) belongs to no
-		// root-module package — every tools/* child is its own module — so
-		// a root-module `./tools/...` pattern would match no packages and
-		// always fail. There is no focused command to offer; recommend the
-		// full gates.
+	if strings.HasPrefix(path, "tools/") || strings.HasPrefix(path, "services/") {
+		// A .go file directly under tools/ or services/ (no subdirectory)
+		// belongs to no root-module package — every child of those
+		// directories is its own module — so a root-module `./tools/...`
+		// or `./services/...` pattern would match no packages and always
+		// fail. There is no focused command to offer; recommend the full
+		// gates.
 		return fallbackToFullGates(path)
 	}
 	pkg := topLevelSegment(path)
