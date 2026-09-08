@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `examples/external-consumer/go.sum` tidied after the v1.46 otel /
+  dependency bumps left it with a stale entry, restoring a green
+  `make check-nested-modules`.
+
 ## [0.10.0] - 2026-09-08
 
 ### Added
