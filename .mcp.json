@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "modulex": {
+      "command": "bash",
+      "args": ["-c", "cd tools/mcpserver && exec go run ./cmd/mcpserver"]
+    }
+  }
+}

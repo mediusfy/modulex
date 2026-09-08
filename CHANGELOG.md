@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Agent pointcuts: a tool-agnostic hook layer (`scripts/agenthooks/`) that
+  wires the repository contract into Claude Code (`.claude/settings.json` +
+  `.mcp.json`), opencode (`.opencode/plugin/` + `opencode.json`), and
+  Antigravity (`.antigravity/hooks/hooks.json`). Four interception points —
+  `pre` (session-start `modulex doctor` + generated-doc drift report),
+  `guard` (blocks protected-path edits, hand-edits of the generated
+  AGENTS.md/CLAUDE.md, and destructive/approval-required commands without a
+  `modulex agent approve` grant), `while` (the contract's focused checks on
+  each touched file), and `post` (gates session conclusion on drift, gofmt,
+  and `modulex agent verify`). Every check shells into the `modulex` CLI, so
+  `modulex.agent.yaml` has one enforcement path regardless of which agent is
+  driving. See `docs/planning/agent-pointcuts-guide.md`.
+
 - Three new CLI commands, each a thin face over existing library code:
   `modulex agent verify` plans the checks a `base...head` diff recommends
   (via `verify.PlanFor`) and runs them with `run_verification`'s exact

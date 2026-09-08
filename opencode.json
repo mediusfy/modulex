@@ -1,0 +1,14 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "modulex": {
+      "type": "local",
+      "enabled": true,
+      "command": [
+        "bash",
+        "-c",
+        "cd tools/mcpserver && exec go run ./cmd/mcpserver"
+      ]
+    }
+  }
+}

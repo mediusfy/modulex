@@ -224,5 +224,8 @@ the same way `tools/provenanceci`'s CLI is invoked from a CI step, except
   `approval.Broker`/`FileStore`, which `run_verification`'s `approval_status` reads
 - [Agent CLI Guide](agent-cli-guide.md) —
   `modulex agent approve`, the only way to write a grant this server can see
+- [Agent Pointcuts Guide](agent-pointcuts-guide.md) — the session hooks that
+  register this server with Claude Code (`.mcp.json`) and opencode
+  (`opencode.json`) and enforce the same contract around every tool call
 - Jira MOD-63/MOD-65/MOD-64/MOD-66: `verify`/`review`/`discovery`/`provenance`,
   the packages this server wraps
