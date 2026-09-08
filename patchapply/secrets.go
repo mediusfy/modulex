@@ -6,7 +6,7 @@ import "regexp"
 // secret-shaped strings. This list intentionally mirrors
 // provenance.secretPatterns (see provenance/provenance.go) and
 // contract.secretPatterns (see contract/secrets.go) for consistency across
-// this repository's ADR-0032 family, but is declared independently here
+// this repository's agent experience goals, but is declared independently here
 // rather than shared: provenance and contract are separately versioned
 // leaf packages, and neither exports these regexes, so copying a few lines
 // locally is simpler and safer than adding an import-and-reach-into-
@@ -20,7 +20,7 @@ import "regexp"
 // JWT-shaped strings), but it cannot catch every secret format, and it can
 // both miss secrets (false negatives) and flag non-secrets (false
 // positives). See docs/planning/agent-safety-policy.md's "Secrets and
-// credentials" section and ADR-0032's requirement to "redact command
+// credentials" section and the requirement to "redact command
 // output before it enters provenance artifacts" — this package applies
 // that same requirement to its own diagnostic output (see previewContent
 // in patchapply.go).

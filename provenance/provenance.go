@@ -1,7 +1,5 @@
 // Package provenance defines a versioned, JSON-marshalable schema for
-// recording what an AI coding agent did to a repository and why, per
-// ADR-0032 ("Agent-First Development Experience"), P1: "Add provenance and
-// handoff JSON".
+// recording what an AI coding agent did to a repository and why.
 //
 // This package is a standalone data schema. It intentionally does not import
 // github.com/mediusfy/modulex or any other package in this repository: a
@@ -15,7 +13,7 @@
 //	    SchemaVersion: provenance.SchemaVersion,
 //	    Repository: provenance.RepoState{
 //	        Path:   "/repo",
-//	        Branch: "MOD-66-provenance-handoff-json",
+//	        Branch: "feat/provenance-handoff-json",
 //	        Commit: "abc1234",
 //	        Dirty:  false,
 //	    },
@@ -86,8 +84,8 @@ const (
 )
 
 // CommandClass classifies a command by the kind of impact it can have, per
-// ADR-0032's requirement to "classify commands by filesystem, network,
-// destructive, and approval impact."
+// the requirement to classify commands by filesystem, network,
+// destructive, and approval impact.
 type CommandClass string
 
 const (
@@ -115,8 +113,8 @@ const (
 )
 
 // VerificationCategory groups a VerificationResult by the kind of check it
-// represents, per ADR-0032's "focused and full verification results" and
-// "boundary, compatibility, security, and secret-scan results." Modeling
+// represents, keeping focused and full verification results alongside
+// boundary, compatibility, security, and secret-scan results. Modeling
 // these as a Category field on one VerificationResult type (rather than
 // separate top-level slices per category) keeps the schema flat and lets new
 // categories be added without a breaking schema change.
@@ -132,8 +130,8 @@ const (
 	VerificationChangelog     VerificationCategory = "changelog"
 	// VerificationProtectedPaths categorizes a check of whether a diff
 	// touches a path contract.Contract.ProtectedPaths declares off-limits
-	// without explicit human approval, per ADR-0032's "generated and
-	// protected paths" and docs/planning/agent-safety-policy.md's
+	// without explicit human approval, protecting paths as described in
+	// docs/planning/agent-safety-policy.md's
 	// protected-paths list. See review.CheckProtectedPaths.
 	VerificationProtectedPaths VerificationCategory = "protected_paths"
 )
@@ -229,7 +227,7 @@ type VerificationResult struct {
 }
 
 // Approval records a human approval granted for an elevated action (push,
-// release, deletion, infrastructure change, etc.), per ADR-0032's
+// release, deletion, infrastructure change, etc.), respecting the
 // human-approval boundary.
 type Approval struct {
 	// Action names what was approved (e.g. "push", "release").
@@ -340,7 +338,7 @@ var specificSecretPatterns = []*regexp.Regexp{
 // both miss secrets (false negatives) and flag non-secrets (false
 // positives). The only real prevention is not putting secrets into these
 // fields in the first place — see docs/planning/agent-safety-policy.md,
-// the human-facing policy this schema operationalizes, and ADR-0032's
+// the human-facing policy this schema operationalizes, and the
 // requirement to "redact command output before it enters provenance
 // artifacts."
 //
@@ -393,7 +391,7 @@ func redactString(s string) (string, bool) {
 // the exported form of the same best-effort, pattern-based detection Redact
 // uses internally (see secretPatterns' doc comment for what it does and does
 // not catch), exposed so other packages needing secret-shaped-value
-// detection (e.g. review's diff secret scan, Jira MOD-65) reuse this one
+// detection reuse this one
 // pattern set instead of maintaining a second, divergent copy.
 func RedactSecrets(s string) (string, bool) {
 	return redactString(s)

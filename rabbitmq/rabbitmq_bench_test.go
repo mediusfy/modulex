@@ -48,7 +48,7 @@ func BenchmarkEventBus_Subscribe_Sequential(b *testing.B) {
 }
 
 // BenchmarkEventBus_SubscribeWithOptions_Throughput measures bounded
-// concurrent processing at several worker counts, for ADR-0034's required
+// concurrent processing at several worker counts, for the required
 // current-vs-bounded throughput comparison against
 // BenchmarkEventBus_Subscribe_Sequential above.
 func BenchmarkEventBus_SubscribeWithOptions_Throughput(b *testing.B) {

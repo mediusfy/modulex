@@ -15,7 +15,7 @@ import (
 // BenchmarkEventBus_Subscribe_Sequential is the default, current adapter
 // delivery path (one handler invocation at a time per subscription),
 // against which BenchmarkEventBus_SubscribeWithOptions_Throughput's
-// workers=1 case should roughly match, per ADR-0034's requirement that
+// workers=1 case should roughly match, fulfilling the requirement that
 // default behavior remains unchanged.
 func BenchmarkEventBus_Subscribe_Sequential(b *testing.B) {
 	payload := eventbustest.NewBenchPayloadJSON(b)
@@ -44,7 +44,7 @@ func BenchmarkEventBus_Subscribe_Sequential(b *testing.B) {
 }
 
 // BenchmarkEventBus_SubscribeWithOptions_Throughput measures bounded
-// concurrent processing at several worker counts, for ADR-0034's required
+// concurrent processing at several worker counts, for the required
 // current-vs-bounded throughput comparison against
 // BenchmarkEventBus_Subscribe_Sequential above.
 func BenchmarkEventBus_SubscribeWithOptions_Throughput(b *testing.B) {

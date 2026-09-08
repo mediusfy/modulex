@@ -1,8 +1,7 @@
 // Package discovery scans a repository directory and reports what an AI
 // coding agent needs to select a project and begin useful work, per
-// ADR-0032 ("Agent-First Development Experience"), P0: "Add Modulex agent
-// project discovery and command classification" (Jira MOD-64), step 1 of
-// the ADR's "Standard agent workflow": `modulex agent discover` identifies
+// project discovery and command classification. As step 1 of
+// the "Standard agent workflow": `modulex agent discover` identifies
 // the repository root, projects, modules, composition roots, instruction
 // files, Make targets, CI workflows, and available indexes.
 //
@@ -13,8 +12,7 @@
 // schema rather than inventing a parallel one. Discover is otherwise pure
 // standard library and never consults global, user-scoped configuration
 // (no ~/.claude, no ~/.kimi-code, nothing outside the given root and PATH),
-// per the ADR's "discovery works without global hooks" acceptance
-// criterion.
+// per the acceptance criterion that discovery works without global hooks.
 //
 // Discover is read-only: it enumerates files, parses text, and checks PATH,
 // but it never executes a discovered binary or a Make target. The one
@@ -65,7 +63,7 @@ type InstructionFile struct {
 
 // IndexStatus reports whether a well-known semantic-index directory (e.g.
 // .codegraph, .tokensave) is present at the discovery root. Absence is
-// reported explicitly rather than omitted, per ADR-0032's "missing tools
+// reported explicitly rather than omitted, per "missing tools
 // and optional services are reported explicitly" acceptance criterion.
 type IndexStatus struct {
 	Name    string `json:"name"`

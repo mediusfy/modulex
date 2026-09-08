@@ -17,7 +17,7 @@ func validEnvelope() Envelope {
 		SchemaVersion: SchemaVersion,
 		Repository: RepoState{
 			Path:   "/repo/modulex",
-			Branch: "MOD-66-provenance-handoff-json",
+			Branch: "feat/provenance-handoff-json",
 			Commit: "abc1234def5678",
 			Dirty:  false,
 		},

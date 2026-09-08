@@ -1,10 +1,10 @@
 // Package agentreview is the shared review-and-handoff orchestration behind
 // both the `modulex agent` CLI (tools/agentcli) and the read-only MCP server
-// (tools/mcpserver). Per ADR-0032 and ADR-0035 there is one source of
+// (tools/mcpserver). There is one source of
 // repository logic: the CLI's review/handoff subcommands and the MCP server's
 // review_diff/create_handoff tools both route through this package, so their
 // output is identical by construction rather than by two parallel
-// implementations kept in sync by hand (Jira MOD-76).
+// implementations kept in sync by hand.
 //
 // It is deliberately dependency-light — discovery, review, and provenance
 // only, plus the standard library. Contract loading (and therefore the YAML

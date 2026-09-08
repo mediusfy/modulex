@@ -93,7 +93,7 @@ func TestReview_ProtectedPathHit(t *testing.T) {
 }
 
 // TestReview_CategoriesCoverBoundaryCompatibilityAndChangelog asserts Checks
-// carries the three non-secret-scan categories ADR-0032/Jira MOD-65 names
+// carries the three non-secret-scan categories named in the spec
 // ("boundaries, secrets, API, and changelog"), so a future caller grouping
 // results by Category always sees all of them represented.
 func TestReview_CategoriesCoverBoundaryCompatibilityAndChangelog(t *testing.T) {

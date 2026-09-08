@@ -25,7 +25,7 @@ const maxOutputBytes = 4096
 // Run executes every check in checks and returns exactly one
 // provenance.VerificationResult per input CheckSpec, in the same order —
 // this 1:1 correspondence is the core "does not silently treat missing
-// tools as success" guarantee from ADR-0032/Jira MOD-63: nothing in checks
+// tools as success" guarantee: nothing in checks
 // can disappear from the result set, and every result's Status is one of
 // the five explicit provenance.Status values, never inferred as success by
 // omission.
@@ -151,7 +151,7 @@ var noRulePatterns = []string{"No rule to make target", "don't know how to make"
 // StatusUnavailable ("this check does not exist here"), not StatusFail —
 // the same absence-is-not-failure convention the protected-paths check
 // follows — so `modulex agent review` can run against repositories that
-// aren't modulex without every make-based check going red (ADR-0035's
+// aren't modulex without every make-based check going red (the
 // reusable workflow serves arbitrary callers). A Makefile that HAS the
 // target but fails for any reason still runs and still fails: this
 // preflight only ever converts "the target is not defined" into

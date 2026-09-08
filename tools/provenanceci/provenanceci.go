@@ -1,8 +1,7 @@
 // Package provenanceci builds a provenance.Envelope summarizing one CI run:
 // repository state plus the pass/fail/skipped outcome of every job in that
 // run, mapped from GitHub Actions' `needs.<job>.result` values. It backs
-// the provenanceci CLI (cmd/provenanceci), implementing ADR-0032's P2
-// delivery item "Publish provenance artifacts from CI" (Jira MOD-72). See
+// the provenanceci CLI (cmd/provenanceci), publishing provenance artifacts from CI. See
 // docs/planning/agent-provenance-ci-guide.md and
 // docs/planning/provenance-handoff-schema.md for the Envelope schema this
 // produces.

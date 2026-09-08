@@ -2,7 +2,7 @@
 
 # AGENTS.md — Repository Agent Instructions
 
-This file is baseline guidance for OpenAI/Codex and any other generic, repository-aware coding agent operating in this repository, per ADR-0032's portability guidance. It is read directly from the repository root; no provider-specific hook or global configuration is required to use it.
+This file is baseline guidance for OpenAI/Codex and any other generic, repository-aware coding agent operating in this repository, per the portability guidance. It is read directly from the repository root; no provider-specific hook or global configuration is required to use it.
 
 Generated from `modulex.agent.yaml` (schema v1.0.0). See `docs/planning/agent-repository-contract-guide.md` for the contract's full schema and `docs/planning/agent-instruction-generation-guide.md` for how this file is generated and how to detect drift between it and the checked-in contract. Do not hand-edit below this line — regenerate instead.
 

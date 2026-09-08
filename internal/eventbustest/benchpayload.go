@@ -9,7 +9,7 @@ import (
 // scalar fields plus one nested object, comparable in size to typical
 // modulex EventBus payloads (~150-250 bytes encoded). It is shared by every
 // adapter's benchmarks so cross-package throughput and JSON decode
-// comparisons (see ADR-0034) measure the same fixed cost.
+// comparisons measure the same fixed cost.
 type BenchPayload struct {
 	ID        string            `json:"id"`
 	Type      string            `json:"type"`

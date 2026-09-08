@@ -1,9 +1,6 @@
 // Package agentdocs renders a contract.Contract into provider-specific
-// agent instruction documents, per ADR-0032 ("Agent-First Development
-// Experience", docs/adr/adr-0032-agent-first-development-experience.md),
-// P1: "Generate portable agent instruction files and repository
-// templates" (Jira MOD-67). The ADR's "Portability" section is the source
-// of truth for what this package produces:
+// agent instruction documents. The portability guidance below is the
+// source of truth for what this package produces:
 //
 //	The repository contract is authoritative. Thin adapters may generate:
 //
@@ -151,7 +148,7 @@ type Target string
 const (
 	// TargetAGENTS renders AGENTS.md-flavored guidance: baseline
 	// instructions for OpenAI/Codex and any other generic,
-	// repository-aware coding agent, per ADR-0032's portability section.
+	// repository-aware coding agent, supporting portability.
 	TargetAGENTS Target = "AGENTS.md"
 	// TargetCLAUDE renders CLAUDE.md-flavored guidance: Claude-specific
 	// framing for Claude Code sessions.
@@ -198,7 +195,7 @@ func framingFor(target Target) (targetFraming, error) {
 			title: "AGENTS.md — Repository Agent Instructions",
 			intro: "This file is baseline guidance for OpenAI/Codex and any other " +
 				"generic, repository-aware coding agent operating in this " +
-				"repository, per ADR-0032's portability guidance. It is read " +
+				"repository, per the portability guidance. It is read " +
 				"directly from the repository root; no provider-specific hook or " +
 				"global configuration is required to use it.",
 		}, nil
@@ -227,7 +224,7 @@ func framingFor(target Target) (targetFraming, error) {
 			intro: "This file is guidance for the OpenAI Codex CLI/cloud agent and " +
 				"other generic repository-aware agents that read a dedicated " +
 				"instructions document. Its content mirrors AGENTS.md by design " +
-				"(per ADR-0032, both audiences share one baseline); it is " +
+				"(both audiences share one baseline); it is " +
 				"generated as a separate document so a Codex-specific " +
 				"integration can be pointed at it without depending on " +
 				"AGENTS.md's exact filename.",

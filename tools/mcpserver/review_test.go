@@ -181,7 +181,7 @@ func TestReviewDiff_InvalidProtectedPathGlob(t *testing.T) {
 // TestReviewDiff_UnparseableContractFailsClosed: a present-but-unparseable
 // modulex.agent.yaml must be a handler error, not a review that silently
 // enforces zero protected paths — the CLI's `modulex agent review` fails
-// closed on the same input (MOD-76: identical by construction).
+// closed on the same input (identical by construction).
 func TestReviewDiff_UnparseableContractFailsClosed(t *testing.T) {
 	dir := newGitFixture(t)
 	if err := os.WriteFile(filepath.Join(dir, contractFileName), []byte("protected_paths: [oops\n"), 0o644); err != nil {

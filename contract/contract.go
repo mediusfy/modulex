@@ -1,9 +1,6 @@
 // Package contract defines a versioned, YAML-marshalable schema for a
-// repository's agent contract (`modulex.agent.yaml`), per ADR-0032
-// ("Agent-First Development Experience"), P0: "Define and validate the
-// Modulex agent repository contract" (Jira MOD-62). The ADR's "Canonical
-// repository contract" section describes what such a contract should
-// declare:
+// repository's agent contract (`modulex.agent.yaml`). A canonical
+// repository contract declares:
 //
 //   - projects, Go modules, composition roots, and relevant source paths;
 //   - applicable instruction files and precedence rules;
@@ -80,7 +77,7 @@ const SchemaVersion = "1.0.0"
 
 // Project describes one project this contract covers: a Go module (or a
 // logical grouping of one), its location, and the composition roots
-// (runnable entry points) that wire it together, per ADR-0032's "projects,
+// (runnable entry points) that wire it together, per "projects,
 // Go modules, composition roots, and relevant source paths."
 type Project struct {
 	// Name is a short, stable identifier for this project (e.g. "modulex").
@@ -117,7 +114,7 @@ type InstructionFile struct {
 
 // InstructionPrecedence declares which instruction files apply to this
 // repository and how conflicts between them should be resolved, per
-// ADR-0032's "applicable instruction files and precedence rules."
+// the applicable instruction files and precedence rules.
 type InstructionPrecedence struct {
 	// Files lists every applicable instruction file, in no particular
 	// slice order — Priority (and, for ties, Rule) determines precedence.
@@ -129,7 +126,7 @@ type InstructionPrecedence struct {
 
 // Boundary describes one lifecycle or module boundary this repository
 // enforces (e.g. "the core package must not import an adapter package"),
-// per ADR-0032's "lifecycle and module boundaries."
+// per the lifecycle and module boundaries guidelines.
 type Boundary struct {
 	// Name is a short, stable identifier for this boundary.
 	Name string `yaml:"name"`
@@ -143,7 +140,7 @@ type Boundary struct {
 }
 
 // CommandDecl declares one command this repository's agents may run,
-// classified by impact, per ADR-0032's "safe, mutating, networked,
+// classified by impact, per "safe, mutating, networked,
 // destructive, and approval-required commands." Class reuses
 // provenance.CommandClass rather than a parallel enum, so command
 // classification stays consistent with the provenance/handoff schema and
@@ -192,7 +189,7 @@ type CheckDecl struct {
 
 // VerificationDecl declares this repository's verification commands, split
 // into focused (recommended for a specific change) and full (always
-// required before push or release), per ADR-0032's "focused and
+// required before push or release), per "focused and
 // repository-wide verification commands." This mirrors verify.Plan's
 // FocusedChecks/FullGates split: full is never a function of what changed,
 // and nothing in this schema lets a consumer treat focused as a substitute
@@ -207,7 +204,7 @@ type VerificationDecl struct {
 
 // OptionalService describes an external or optional service this
 // repository's agents may use when available (e.g. a static-analysis
-// dashboard, a vulnerability database), per ADR-0032's "required tools and
+// dashboard, a vulnerability database), per "required tools and
 // optional services." Unlike RequiredTools, an OptionalService's absence
 // should never block ordinary development; consumers should report it as
 // unavailable rather than failing.
@@ -242,7 +239,7 @@ type Contract struct {
 	// Verification declares focused and full verification commands.
 	Verification VerificationDecl `yaml:"verification,omitempty"`
 	// ProtectedPaths lists paths agents must not modify without explicit
-	// human approval, per ADR-0032's "generated and protected paths" and
+	// human approval, protecting paths as detailed in
 	// docs/planning/agent-safety-policy.md's protected-paths list.
 	ProtectedPaths []string `yaml:"protected_paths,omitempty"`
 	// GeneratedPaths lists paths that are machine-generated and should
@@ -256,7 +253,7 @@ type Contract struct {
 	OptionalServices []OptionalService `yaml:"optional_services,omitempty"`
 	// RequiredCredentials lists the *names* of secrets/credentials this
 	// repository's workflows need (e.g. "GITHUB_TOKEN") — never their
-	// values, per ADR-0032's "secret and credential requirements without
+	// values, per "secret and credential requirements without
 	// storing secret values." Validate additionally scans every string
 	// field in this schema (including this one) for secret-shaped values
 	// and fails if any are found; see secrets.go.

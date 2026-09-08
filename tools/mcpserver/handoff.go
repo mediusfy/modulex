@@ -34,7 +34,7 @@ type CreateHandoffOut struct {
 // repository state and the caller-supplied verification results, delegating
 // the assembly (git rev-parse for Commit/Branch, Redact, and Validate) to
 // agentreview.Envelope — the same code the CLI's `modulex agent handoff`
-// calls, so both produce an identical envelope (Jira MOD-76). The agent tool
+// calls, so both produce an identical envelope. The agent tool
 // is recorded as "mcp". ctx is honored for cancellation by the underlying git
 // subprocess calls.
 //

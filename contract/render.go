@@ -8,7 +8,7 @@ import (
 // RenderText renders c as a human-readable, multi-line summary, suitable
 // for pasting into a PR description or printing to a terminal. This is the
 // "human-readable agent guidance can be derived from the contract" piece
-// of ADR-0032's acceptance criteria — the same spirit as verify.RenderText,
+// of the acceptance criteria — the same spirit as verify.RenderText,
 // adapted to a Contract's shape (projects, boundaries, protected paths,
 // ...) rather than verification results.
 //

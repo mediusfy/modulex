@@ -2,7 +2,7 @@
 
 # AGENTS.md — Repository Agent Instructions
 
-This file is baseline guidance for OpenAI/Codex and any other generic, repository-aware coding agent operating in this repository, per ADR-0032's portability guidance. It is read directly from the repository root; no provider-specific hook or global configuration is required to use it.
+This file is baseline guidance for OpenAI/Codex and any other generic, repository-aware coding agent operating in this repository, per the portability guidance. It is read directly from the repository root; no provider-specific hook or global configuration is required to use it.
 
 Generated from `modulex.agent.yaml` (schema v1.0.0). See `docs/planning/agent-repository-contract-guide.md` for the contract's full schema and `docs/planning/agent-instruction-generation-guide.md` for how this file is generated and how to detect drift between it and the checked-in contract. Do not hand-edit below this line — regenerate instead.
 
@@ -88,42 +88,3 @@ See `docs/planning/agent-safety-policy.md` for the full policy; this section sum
 Before reporting work as complete, run the full verification gates above and produce a handoff artifact conforming to: `provenance.Envelope v1.0.0`. Report skipped or unavailable checks explicitly — never report a check as passing when it was skipped or could not run.
 
 <!-- End of generated content. Source: modulex.agent.yaml (schema v1.0.0). Regenerate via agentdocs.Generate rather than editing by hand. -->
-
-<!-- The section below is static, not generated from modulex.agent.yaml — it documents tooling with no contract.Contract field (see tools/agentcli/agentcli.go's toolingAddendum). Edit it there, not here. -->
-
-## CodeGraph
-
-This project uses CodeGraph (`.codegraph/codegraph.db`) as the source of truth for code navigation. Before starting work on this project or beginning a new turn, run:
-
-```bash
-codegraph sync
-```
-
-When investigating code, prefer querying CodeGraph over raw `grep`/`find`. Useful queries:
-
-```bash
-# Find symbols by name
-codegraph query "Manager"
-
-# Find definitions in a file
-codegraph query --file modulex.go "StartModules"
-
-# Show index status
-codegraph status
-```
-
-### Keeping CodeGraph in sync
-
-Git hooks are installed under `.git/hooks` to run `codegraph sync` automatically on commit, checkout, merge, and rewrite. To install them in a fresh clone:
-
-```bash
-./scripts/install-codegraph-hooks.sh
-```
-
-#### Agent-specific hooks
-
-- **Kimi Code CLI**: hooks are configured in `~/.kimi-code/config.toml`. The project-specific hook at `~/.kimi-code/hooks/codegraph-sync.sh` runs `codegraph sync` on `SessionStart` and `UserPromptSubmit` when the session cwd is this repo.
-- **Claude Code**: run `codegraph install` and choose global or local installation to enable native Claude Code hook integration.
-- **Antigravity / `agy`**: does not expose a pre-turn hook mechanism. Rely on the git hooks above and this rule.
-
-All agents (Kimi, Claude, Antigravity) must use CodeGraph for locating symbols, call sites, and references.

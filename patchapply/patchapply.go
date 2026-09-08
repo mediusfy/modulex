@@ -1,7 +1,5 @@
 // Package patchapply implements atomic, content-based file mutation with
-// rollback journaling for a single target directory, per ADR-0032
-// ("Agent-First Development Experience"), P2: "Add atomic patch application
-// and rollback journaling" (Jira MOD-70). The ADR's "Safety and governance"
+// rollback journaling for a single target directory. The "Safety and governance"
 // section requires that the system:
 //
 //	preserve dirty-worktree state and unrelated edits
@@ -140,7 +138,7 @@
 // call site in this repository invokes it yet. It operates on whatever
 // targetDir a caller gives it; this package does not create git worktrees,
 // branches, or any other form of isolation itself — a caller that wants
-// "isolated worktree" semantics (per ADR-0032's "The agent edits in an
+// "isolated worktree" semantics (per "The agent edits in an
 // isolated worktree or applies an explicit patch") is expected to set that
 // up by whatever means before calling [Apply], and pass that path in as
 // targetDir. See docs/planning/agent-atomic-patch-guide.md for a worked

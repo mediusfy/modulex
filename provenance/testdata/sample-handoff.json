@@ -2,7 +2,7 @@
   "schema_version": "1.0.0",
   "repository": {
     "path": "/home/agent/work/modulex",
-    "branch": "MOD-66-provenance-handoff-json",
+    "branch": "feat/provenance-handoff-json",
     "commit": "6de6bf1a9c2e4f7d8b3a1c0e5f6a7b8c9d0e1f2a",
     "dirty": false
   },
@@ -71,7 +71,7 @@
       "name": "git push",
       "classification": "approval_required",
       "status": "approval_required",
-      "reason": "push requires explicit human approval per ADR-0032 safety boundary"
+      "reason": "push requires explicit human approval per the agent safety policy"
     }
   ],
   "verification": [

@@ -3,7 +3,7 @@ package semindex
 // Severity is how a caller should act on a Diagnosis: report it and move
 // on, or treat it as a blocking failure. Modeled separately from Status
 // because the same Status can warrant different treatment in different
-// repositories or workflows — per ADR-0032's "Mismatch is a visible
+// repositories or workflows — because "Mismatch is a visible
 // warning or failure according to contract policy," severity is a policy
 // decision, not something Diagnose or Status hardcodes.
 type Severity string

@@ -1,6 +1,4 @@
-# This repository's agent contract, per ADR-0032
-# (docs/adr/adr-0032-agent-first-development-experience.md), P0: "Define and
-# validate the Modulex agent repository contract" (Jira MOD-62). See
+# This repository's agent contract. See
 # docs/planning/agent-repository-contract-guide.md for the full schema guide.
 #
 # Read by contract.Contract (contract/contract.go), tools/mcpserver's
@@ -44,8 +42,8 @@ instructions:
     - path: AGENTS.md
       priority: 1
       notes: >-
-        Repository-wide instructions: CodeGraph usage, build/lint/test
-        commands, and the pre-push gate list.
+        Repository-wide instructions: build/lint/test commands and the
+        pre-push gate list.
 
 boundaries:
   - name: core-no-adapter-deps

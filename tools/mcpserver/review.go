@@ -42,7 +42,7 @@ type ReviewDiffOut struct {
 // present-but-unparseable contract is a real error, not "no protected paths"
 // — failing open there would silently disable the one check meant to catch
 // unauthorized edits, and the CLI's `modulex agent review` fails closed on
-// the same input (MOD-76: identical by construction). A contract that parses
+// the same input (identical by construction). A contract that parses
 // but fails Validate for some unrelated reason still has its ProtectedPaths
 // enforced — invalid isn't the same as absent. Malformed glob entries are
 // CheckProtectedPaths' own concern: it fails naming them rather than
