@@ -28,7 +28,7 @@ type secretPattern struct {
 // both miss secrets (false negatives) and flag non-secrets (false
 // positives). The only real prevention is not putting secrets into a
 // checked-in modulex.agent.yaml in the first place — see
-// docs/planning/agent-safety-policy.md and ADR-0032's requirement to
+// docs/planning/agent-safety-policy.md and the requirement to
 // "never expose secret values in prompts, reports, or persisted
 // artifacts."
 var secretPatterns = []secretPattern{

@@ -1,6 +1,6 @@
 // Package agentcli implements the `modulex agent` CLI's domain logic —
 // thin wrappers over the same leaf packages (contract, agentdocs, ...)
-// tools/mcpserver already calls, per ADR-0032's "the MCP server must call
+// tools/mcpserver already calls, since "the MCP server must call
 // the same domain and CLI APIs rather than implementing a second source of
 // repository logic." cmd/modulex is the actual binary; this package holds
 // the logic so it stays testable without exec-ing a built binary.
@@ -120,8 +120,8 @@ func loadProtectedPaths(root string) ([]string, error) {
 // resolve its protected paths, and run the shared agentreview.Review over the
 // baseRef...headRef diff. Keeping it in one place means the two subcommands
 // cannot drift apart in how they discover the repo or load the contract —
-// the same by-construction guarantee MOD-76 demands between the CLI and MCP
-// adapters, applied within the CLI itself.
+// the same by-construction guarantee the CLI and MCP adapters share,
+// applied within the CLI itself.
 func reviewRepo(ctx context.Context, root, baseRef, headRef string, allowNetwork bool) (discovery.Repository, []provenance.VerificationResult, error) {
 	repo, err := discoverRepo(root)
 	if err != nil {
@@ -140,7 +140,7 @@ func reviewRepo(ctx context.Context, root, baseRef, headRef string, allowNetwork
 // It discovers the repo and resolves protected paths here (the adapter's job),
 // then delegates the actual check run to agentreview.Review — the same code
 // tools/mcpserver's review_diff calls, so the CLI and MCP results are identical
-// by construction (Jira MOD-76). It never mutates the repository.
+// by construction. It never mutates the repository.
 func Review(ctx context.Context, root, baseRef, headRef string, allowNetwork bool) ([]provenance.VerificationResult, error) {
 	_, results, err := reviewRepo(ctx, root, baseRef, headRef, allowNetwork)
 	return results, err
@@ -178,10 +178,9 @@ var OutputFiles = []outputFile{
 }
 
 // GeneratedFiles renders every entry in OutputFiles from c, returning a map
-// of file name to full content: agentdocs.Generate's contract-derived
-// output followed by toolingAddendum (see its doc comment for why that
-// part is static rather than contract-driven). Deterministic for the same
-// c, since agentdocs.Generate is and toolingAddendum is a constant.
+// of file name to full content — agentdocs.Generate's contract-derived
+// output, nothing appended. Deterministic for the same c, since
+// agentdocs.Generate is.
 func GeneratedFiles(c contract.Contract) (map[string]string, error) {
 	out := make(map[string]string, len(OutputFiles))
 	for _, f := range OutputFiles {
@@ -189,7 +188,7 @@ func GeneratedFiles(c contract.Contract) (map[string]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("generating %s: %w", f.name, err)
 		}
-		out[f.name] = body + "\n" + toolingAddendumHeader + "\n\n" + toolingAddendum + "\n"
+		out[f.name] = body
 	}
 	return out, nil
 }
@@ -213,59 +212,6 @@ func WriteGeneratedFiles(root string, c contract.Contract) ([]string, error) {
 	}
 	return written, nil
 }
-
-// toolingAddendum covers repository tooling that has no corresponding
-// contract.Contract field — CodeGraph usage and the per-agent hook setup
-// documented in AGENTS.md before this package existed (see
-// scripts/install-codegraph-hooks.sh, added alongside the contract this
-// package now generates from). agentdocs.Generate's output already covers
-// everything contract.Contract *does* carry (commands, verification,
-// protected paths, credentials, handoff format); this section is appended
-// after it rather than folded into agentdocs itself, which stays
-// schema-pure per its own package doc comment ("Does not touch the
-// filesystem" / no field for "how to configure CodeGraph").
-//
-// Identical for every agentdocs.Target: CodeGraph and its per-provider hook
-// story apply the same way regardless of which file a reader opened it
-// from, matching how AGENTS.md's original "Agent-specific hooks" section
-// already named Kimi, Claude Code, and Antigravity side by side rather than
-// splitting the content by target file.
-const toolingAddendumHeader = "<!-- The section below is static, not generated from modulex.agent.yaml — " +
-	"it documents tooling with no contract.Contract field (see " +
-	"tools/agentcli/agentcli.go's toolingAddendum). Edit it there, not here. -->"
-
-const toolingAddendum = `## CodeGraph
-
-This project uses CodeGraph (` + "`.codegraph/codegraph.db`" + `) as the source of truth for code navigation. Before starting work on this project or beginning a new turn, run:
-
-` + "```bash\ncodegraph sync\n```" + `
-
-When investigating code, prefer querying CodeGraph over raw ` + "`grep`/`find`" + `. Useful queries:
-
-` + "```bash" + `
-# Find symbols by name
-codegraph query "Manager"
-
-# Find definitions in a file
-codegraph query --file modulex.go "StartModules"
-
-# Show index status
-codegraph status
-` + "```" + `
-
-### Keeping CodeGraph in sync
-
-Git hooks are installed under ` + "`.git/hooks`" + ` to run ` + "`codegraph sync`" + ` automatically on commit, checkout, merge, and rewrite. To install them in a fresh clone:
-
-` + "```bash\n./scripts/install-codegraph-hooks.sh\n```" + `
-
-#### Agent-specific hooks
-
-- **Kimi Code CLI**: hooks are configured in ` + "`~/.kimi-code/config.toml`" + `. The project-specific hook at ` + "`~/.kimi-code/hooks/codegraph-sync.sh`" + ` runs ` + "`codegraph sync`" + ` on ` + "`SessionStart`" + ` and ` + "`UserPromptSubmit`" + ` when the session cwd is this repo.
-- **Claude Code**: run ` + "`codegraph install`" + ` and choose global or local installation to enable native Claude Code hook integration.
-- **Antigravity / ` + "`agy`" + `**: does not expose a pre-turn hook mechanism. Rely on the git hooks above and this rule.
-
-All agents (Kimi, Claude, Antigravity) must use CodeGraph for locating symbols, call sites, and references.`
 
 // CheckGeneratedFiles reports which of OutputFiles at root have drifted from
 // what GeneratedFiles(c) would render right now — `modulex agent generate

@@ -6,7 +6,7 @@
 //
 // # Scoping: gRPC only, not Connect
 //
-// ADR-0031's roadmap item 3 calls for "gRPC and/or Connect" topology
+// The topology-adapter roadmap calls for "gRPC and/or Connect" topology
 // adapters. This package implements gRPC only. connectrpc.com/connect is not
 // a dependency of this module today, and adding it would be a genuinely new
 // dependency; google.golang.org/grpc and google.golang.org/protobuf, by

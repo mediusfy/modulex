@@ -22,7 +22,7 @@ type ClassificationRule struct {
 // ClassificationRules is the ordered, first-match-wins rule table
 // ClassifyCommand consults, built from
 // docs/planning/agent-safety-policy.md's command-classification table for
-// ADR-0032 P0 (Jira MOD-64). It reuses provenance.CommandClass rather than
+// the agent requirements. It reuses provenance.CommandClass rather than
 // a parallel enum, per that package's whole reason for existing as a
 // separate, composable leaf package.
 //

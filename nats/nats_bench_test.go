@@ -13,8 +13,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// BenchmarkEventBus_Subscribe is core NATS's current (and, per ADR-0034
-// rule 4, only) delivery path: core NATS has no broker acknowledgement or
+// BenchmarkEventBus_Subscribe is core NATS's current delivery path:
+// core NATS has no broker acknowledgement or
 // retry semantics, so it is not a SubscribeWithOptions candidate the way
 // Watermill and RabbitMQ are. This benchmark establishes that baseline for
 // comparison against the other adapters' throughput benchmarks.

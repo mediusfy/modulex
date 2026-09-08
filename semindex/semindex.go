@@ -1,9 +1,7 @@
 // Package semindex diagnoses whether a semantic code index (CodeGraph,
 // TokenSave, or any similar tool that builds an offline index of a
 // repository) actually belongs to the git worktree an agent is currently
-// working in, per ADR-0032 ("Agent-First Development Experience"), P2:
-// "Add CodeGraph/TokenSave index-root validation and diagnostics" (Jira
-// MOD-71). ADR-0032's "Safety and governance" section requires that
+// working in. The "Safety and governance" section requires that
 // agents:
 //
 //	verify that semantic indexes such as CodeGraph or TokenSave point at
@@ -165,8 +163,8 @@ type IndexRoot struct {
 
 // Diagnosis is the result of comparing one semantic index's declared root
 // against the active worktree root, including human-readable remediation
-// guidance. Per ADR-0032's "redact command output before it enters
-// provenance artifacts" and this ticket's "without exposing source
+// guidance. Given the requirement to "redact command output before it enters
+// provenance artifacts" and "without exposing source
 // content" requirement, Remediation is built only from Name, the two root
 // paths, and static guidance text — never file listings, index contents,
 // or anything else about the repository.

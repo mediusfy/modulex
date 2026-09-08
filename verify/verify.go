@@ -1,8 +1,7 @@
 // Package verify maps a set of changed repository paths to focused
 // verification checks, and pairs them with the repository's always-required
-// full gates, per ADR-0032 ("Agent-First Development Experience"), P0: "Add
-// focused agent verification with explicit skipped statuses" (Jira MOD-63),
-// step 5 of the ADR's "Standard agent workflow":
+// full gates, adding focused agent verification with explicit skipped statuses.
+// As part of the "Standard agent workflow":
 //
 //	`modulex agent verify` runs focused checks followed by required
 //	repository gates and reports skipped checks separately from
@@ -37,8 +36,8 @@
 //     gates (make build, test, test-arch, lint, and the boundary/
 //     compatibility/changelog scripts), unconditionally, every time.
 //
-// FullGates is never a function of changedFiles. This is deliberate: per
-// ADR-0032's acceptance criterion "Full gates remain required before push
+// FullGates is never a function of changedFiles. This is deliberate: because
+// "Full gates remain required before push
 // or release," a caller must never be able to skip the full gate set just
 // because the focused checks looked sufficient. Nothing in this package's
 // API lets FocusedChecks stand in for FullGates.

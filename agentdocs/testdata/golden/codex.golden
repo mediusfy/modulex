@@ -2,7 +2,7 @@
 
 # Codex / Repository-Aware Agent Instructions
 
-This file is guidance for the OpenAI Codex CLI/cloud agent and other generic repository-aware agents that read a dedicated instructions document. Its content mirrors AGENTS.md by design (per ADR-0032, both audiences share one baseline); it is generated as a separate document so a Codex-specific integration can be pointed at it without depending on AGENTS.md's exact filename.
+This file is guidance for the OpenAI Codex CLI/cloud agent and other generic repository-aware agents that read a dedicated instructions document. Its content mirrors AGENTS.md by design (both audiences share one baseline); it is generated as a separate document so a Codex-specific integration can be pointed at it without depending on AGENTS.md's exact filename.
 
 Generated from `modulex.agent.yaml` (schema v1.0.0). See `docs/planning/agent-repository-contract-guide.md` for the contract's full schema and `docs/planning/agent-instruction-generation-guide.md` for how this file is generated and how to detect drift between it and the checked-in contract. Do not hand-edit below this line — regenerate instead.
 

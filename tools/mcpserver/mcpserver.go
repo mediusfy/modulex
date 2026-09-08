@@ -1,5 +1,5 @@
-// Package mcpserver implements the read-only half of ADR-0032's
-// ("Agent-First Development Experience") "MCP boundary", Jira MOD-68:
+// Package mcpserver implements the read-only half of the
+// "MCP boundary":
 //
 //	The initial MCP server is read-only and should expose stable operations
 //	such as: discover projects; read the repository contract; inspect the
@@ -43,7 +43,7 @@
 //
 // run_verification (see verification.go) and review_diff (see review.go)
 // both execute this repository's own declared build/test/lint commands —
-// exactly what ADR-0032 lists as part of the read-only server's surface
+// exactly what is required as part of the read-only server's surface
 // ("run declared verification"). "Read-only" here means "no tool writes to
 // the repository or mutates external state," not "no tool ever spawns a
 // process." See run_verification's doc comment in verification.go for the

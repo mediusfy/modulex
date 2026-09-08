@@ -12,8 +12,8 @@ import (
 
 // BenchmarkJSONDecode measures the cost of decoding one message payload in
 // isolation, as a baseline for comparing against Processor.Submit's own
-// overhead (BenchmarkProcessor_SubmitWait_JSONDecode below). ADR-0034
-// requires this comparison before any allocation optimization (sync.Pool,
+// overhead (BenchmarkProcessor_SubmitWait_JSONDecode below).
+// This comparison is required before any allocation optimization (sync.Pool,
 // etc.) is justified.
 func BenchmarkJSONDecode(b *testing.B) {
 	payload := eventbustest.NewBenchPayload()
@@ -119,9 +119,9 @@ func BenchmarkProcessor_SubmitWait_JSONDecode(b *testing.B) {
 // back-to-back without waiting for each individually (waiting only at the
 // end), approximating sustained throughput at a fixed worker count. This is
 // the "current implementation" (bounded standard-library processing) half
-// of ADR-0034's required current-vs-bounded-vs-ants comparison; an ants/v2
-// adapter benchmark should be added alongside this one before ADR-0034's
-// item 5 is decided.
+// of the required current-vs-bounded-vs-ants comparison; an ants/v2
+// adapter benchmark should be added alongside this one before a final
+// approach is decided.
 func BenchmarkProcessor_Throughput(b *testing.B) {
 	data, err := json.Marshal(eventbustest.NewBenchPayload())
 	if err != nil {

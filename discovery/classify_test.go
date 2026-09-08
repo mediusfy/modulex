@@ -12,7 +12,6 @@ func TestClassifyCommand(t *testing.T) {
 		cmd  string
 		want provenance.CommandClass
 	}{
-		// Required by ADR-0032 P0 acceptance criteria.
 		{"make fmt", "make fmt", provenance.ClassMutating},
 		{"make deps", "make deps", provenance.ClassNetworked},
 		{"make vuln", "make vuln", provenance.ClassNetworked},

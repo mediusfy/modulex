@@ -512,7 +512,7 @@ func WithReplayPolicy(p ReplayPolicy) DurableSubscribeOption {
 // a plain EventBus), but the capabilities are independent and are checked
 // independently via type assertion.
 //
-// DurableConsumer documents the six semantics named by MOD-54, three as the
+// DurableConsumer documents six durable-consumption semantics, three as the
 // SubscribeDurable method contract and three as documented properties a
 // correct implementation must uphold:
 //

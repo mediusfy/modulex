@@ -30,7 +30,7 @@ type Broker struct {
 // already-approved state: every [Broker.Check]/[Broker.CheckToken] call
 // against a freshly constructed Broker returns provenance.StatusApprovalRequired
 // until [Broker.Grant] is called explicitly. This is the concrete mechanism
-// behind ADR-0032's "no elevated operation is enabled by default"
+// behind the "no elevated operation is enabled by default"
 // requirement.
 func NewBroker() *Broker {
 	return &Broker{

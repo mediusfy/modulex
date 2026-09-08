@@ -1,7 +1,7 @@
 // Package review implements "agent diff review": checking a changeset for
 // boundary violations, secret-shaped values, API compatibility breaks,
-// protected-path edits, and missing changelog obligations, per ADR-0032
-// (Jira MOD-65). It depends on verify for CheckSpec/Run and on provenance
+// protected-path edits, and missing changelog obligations.
+// It depends on verify for CheckSpec/Run and on provenance
 // for VerificationResult/VerificationCategory, so its output is exactly
 // what `modulex agent handoff` consumes.
 //

@@ -53,6 +53,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Scrubbed ADR and Jira ticket references from Go doc comments, the
+  repository contract's header, and the generated agent docs — comments now
+  carry the reasoning inline instead of pointing at internal planning
+  artifacts. The static CodeGraph tooling addendum is no longer appended to
+  the generated AGENTS.md/CLAUDE.md (`tools/agentcli`'s `toolingAddendum`
+  removed); the generated files are now purely contract-derived.
 - `.github/workflows/pr-review.yml` no longer calls pr_pipeline's reusable
   workflow: GitHub refuses a public caller resolving a private repository's
   reusable workflow, and pr_pipeline is staying private (ADR-0035's

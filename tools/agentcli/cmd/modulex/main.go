@@ -1,8 +1,7 @@
 // Command modulex is the unified modulex CLI: one shell-invokable front door
 // to the repo-workflow tooling that previously shipped as separate binaries.
 // The `agent` commands expose the same domain logic tools/mcpserver exposes
-// over MCP, for an agent or CI step that doesn't speak MCP, per ADR-0032
-// (docs/adr/adr-0032-agent-first-development-experience.md). See
+// over MCP, for an agent or CI step that doesn't speak MCP. See
 // tools/agentcli (the agentcli package) for the logic each agent subcommand
 // wraps, and docs/planning/agent-cli-guide.md for the full guide.
 //
