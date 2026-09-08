@@ -42,8 +42,8 @@ instructions:
     - path: AGENTS.md
       priority: 1
       notes: >-
-        Repository-wide instructions: CodeGraph usage, build/lint/test
-        commands, and the pre-push gate list.
+        Repository-wide instructions: build/lint/test commands and the
+        pre-push gate list.
 
 boundaries:
   - name: core-no-adapter-deps
