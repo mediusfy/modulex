@@ -1,0 +1,93 @@
+{
+  "name": "modulex",
+  "displayName": "Modulex",
+  "description": "Review a diff, run declared verification, and produce provenance handoffs against the local checkout, via the read-only modulex MCP server (tools/mcpserver). Works offline; no hosted backend.",
+  "version": "0.1.0",
+  "publisher": "mediusfy",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mediusfy/modulex",
+    "directory": "editors/vscode"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./out/src/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "modulex.reviewDiff",
+        "category": "Modulex",
+        "title": "Review Diff Against Base Ref"
+      },
+      {
+        "command": "modulex.runFocusedVerification",
+        "category": "Modulex",
+        "title": "Run Focused Verification (changed files)"
+      },
+      {
+        "command": "modulex.runFullGates",
+        "category": "Modulex",
+        "title": "Run Full Verification Gates"
+      },
+      {
+        "command": "modulex.discoverRepository",
+        "category": "Modulex",
+        "title": "Discover Repository"
+      },
+      {
+        "command": "modulex.readContract",
+        "category": "Modulex",
+        "title": "Read Repository Contract"
+      },
+      {
+        "command": "modulex.createHandoff",
+        "category": "Modulex",
+        "title": "Create Handoff Envelope"
+      },
+      {
+        "command": "modulex.restartServer",
+        "category": "Modulex",
+        "title": "Restart MCP Server"
+      }
+    ],
+    "configuration": {
+      "title": "Modulex",
+      "properties": {
+        "modulex.server.command": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Command line (argv) that starts the modulex MCP server over stdio, run from the workspace root. Leave empty to auto-detect: a modulex checkout uses `go run ./tools/mcpserver/cmd/mcpserver`; other repositories can point this at a prebuilt `mcpserver` binary."
+        },
+        "modulex.review.baseRef": {
+          "type": "string",
+          "default": "origin/main",
+          "description": "Default base ref offered by Modulex: Review Diff Against Base Ref."
+        },
+        "modulex.allowNetwork": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow networked checks to run. When false (default), networked checks are reported as skipped — this keeps every command fully offline."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -w -p .",
+    "pretest": "npm run compile",
+    "test": "node --test \"out/test/*.test.js\""
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0"
+  }
+}

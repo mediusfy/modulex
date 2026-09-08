@@ -1,0 +1,143 @@
+{
+  "schema_version": "1.0.0",
+  "description": "Shared, editor-agnostic description of the read-only modulex MCP server's tool surface (ADR-0035 plan step 5: the VSCode and IntelliJ plugins share one description of the tool surface). The authoritative schemas live in tools/mcpserver/*.go; this file mirrors them for editor-plugin consumption and must be updated when they change. editors/vscode/src/toolSurface.ts is a typed mirror of this file.",
+  "server": {
+    "name": "modulex",
+    "transport": "stdio",
+    "framing": "newline-delimited JSON-RPC 2.0",
+    "command_hint": ["go", "run", "-C", "tools/mcpserver", "./cmd/mcpserver"],
+    "command_hint_cwd": "repository root of a modulex checkout"
+  },
+  "tools": [
+    {
+      "name": "discover_repository",
+      "title": "Discover repository",
+      "input": [
+        {
+          "name": "root",
+          "type": "string",
+          "required": false,
+          "description": "repository root to scan; defaults to \".\""
+        }
+      ],
+      "result_key": "repository"
+    },
+    {
+      "name": "read_contract",
+      "title": "Read repository contract",
+      "input": [
+        {
+          "name": "root",
+          "type": "string",
+          "required": false,
+          "description": "repository root containing modulex.agent.yaml; defaults to \".\""
+        }
+      ],
+      "result_key": null,
+      "result_fields": ["present", "contract", "validation_errors"]
+    },
+    {
+      "name": "recommend_verification",
+      "title": "Recommend verification",
+      "input": [
+        {
+          "name": "changed_files",
+          "type": "string[]",
+          "required": false,
+          "description": "paths (relative to the repository root) that changed"
+        }
+      ],
+      "result_key": "plan",
+      "notes": "plan.FocusedChecks / plan.FullGates use Go-default PascalCase field names (verify.Plan has no json tags)."
+    },
+    {
+      "name": "run_verification",
+      "title": "Run verification",
+      "input": [
+        {
+          "name": "root",
+          "type": "string",
+          "required": false,
+          "description": "repository root; defaults to \".\""
+        },
+        {
+          "name": "checks",
+          "type": "CheckSpecIn[]",
+          "required": true,
+          "description": "snake_case check specs: name, command, category, reason, required_tool, networked"
+        },
+        {
+          "name": "allow_network",
+          "type": "boolean",
+          "required": false,
+          "description": "if false (default), a networked check is reported as skipped"
+        }
+      ],
+      "result_key": "results",
+      "result_fields": ["results", "approval_status"]
+    },
+    {
+      "name": "review_diff",
+      "title": "Review diff",
+      "input": [
+        {
+          "name": "root",
+          "type": "string",
+          "required": false,
+          "description": "repository root; defaults to \".\""
+        },
+        {
+          "name": "base_ref",
+          "type": "string",
+          "required": true,
+          "description": "git ref to diff from, e.g. \"origin/main\""
+        },
+        {
+          "name": "head_ref",
+          "type": "string",
+          "required": true,
+          "description": "git ref to diff to, e.g. \"HEAD\""
+        },
+        {
+          "name": "allow_network",
+          "type": "boolean",
+          "required": false,
+          "description": "if false (default), a networked check is reported as skipped"
+        }
+      ],
+      "result_key": "results"
+    },
+    {
+      "name": "create_handoff",
+      "title": "Create handoff envelope",
+      "input": [
+        {
+          "name": "root",
+          "type": "string",
+          "required": false,
+          "description": "repository root; defaults to \".\""
+        },
+        {
+          "name": "agent_name",
+          "type": "string",
+          "required": true,
+          "description": "identifies the calling agent"
+        },
+        {
+          "name": "verification",
+          "type": "VerificationResult[]",
+          "required": false,
+          "description": "results from prior run_verification/review_diff calls"
+        }
+      ],
+      "result_key": "envelope"
+    }
+  ],
+  "verification_statuses": [
+    "pass",
+    "fail",
+    "skipped",
+    "unavailable",
+    "approval_required"
+  ]
+}
