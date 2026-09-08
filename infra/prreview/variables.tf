@@ -3,8 +3,9 @@
 # requires explicit human approval per docs/planning/agent-safety-policy.md.
 
 variable "project_id" {
-  description = "GCP project hosting the service."
+  description = "GCP project hosting the service — modulex's own dedicated project."
   type        = string
+  default     = "modulex-508021"
 }
 
 variable "region" {
