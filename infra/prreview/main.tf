@@ -228,7 +228,7 @@ resource "google_cloud_run_v2_service" "worker" {
     containers {
       image = var.image_worker
       resources {
-        limits = { cpu = "2", memory = "2Gi" }
+        limits = { cpu = "2", memory = "4Gi" }
       }
       env {
         name  = "GOOGLE_CLOUD_PROJECT"

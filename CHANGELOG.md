@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- prreview worker image: writable Go cache (HOME/GOCACHE/GOMODCACHE/
+  GOPATH under /tmp) and 4Gi memory, so tenant checks that run go/make
+  succeed under the nonroot uid; found by the first production review.
+
 ### Added
 
 - Hosted PR-review GitHub App on GCP (`services/prreview` +

@@ -62,6 +62,22 @@ implementation, so the full pipeline is table-tested without GCP:
 | `tenants` | per-installation AI config | Secret Manager |
 | `ratelimit` | per-installation quota | in-process |
 
+## Per-installation AI keys
+
+Enable AI commentary for an installation by creating its key secret and
+granting the worker access (the worker's Secret Manager access is
+per-secret, so each new key needs its own grant):
+
+```sh
+printf '%s' '{"api_key": "sk-ant-...", "model": "claude-opus-5"}' | \
+  gcloud secrets create prreview-ai-<installation-id> --data-file=-
+gcloud secrets add-iam-policy-binding prreview-ai-<installation-id> \
+  --member serviceAccount:prreview-worker@<project>.iam.gserviceaccount.com \
+  --role roles/secretmanager.secretAccessor
+```
+
+Without a key (or its grant) the installation's reviews post engine-only.
+
 ## Deploy
 
 Infrastructure lives in `infra/prreview` (Terraform). Applying it is an
