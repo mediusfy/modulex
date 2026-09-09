@@ -9,7 +9,6 @@
 //	PORT                    listen port (Cloud Run sets this)
 //	GOOGLE_CLOUD_PROJECT    Firestore/Secret Manager project
 //	TASKS_QUEUE_PATH        queue path (for follow-up tasks)
-//	WORKER_URL              this service's own task endpoint (follow-ups)
 //	INVOKER_SERVICE_ACCOUNT OIDC service account for follow-up tasks
 //	GITHUB_APP_ID           GitHub App ID
 //	GITHUB_APP_PRIVATE_KEY  App private key PEM (Secret Manager secret env)
@@ -74,14 +73,17 @@ func main() {
 
 	fsStore := &store.Firestore{Client: fs}
 	httpClient := &http.Client{Timeout: 30 * time.Second}
+	queueTemplate := queue.CloudTasks{
+		Client:                tasks,
+		QueuePath:             mustEnv(log, "TASKS_QUEUE_PATH"),
+		InvokerServiceAccount: mustEnv(log, "INVOKER_SERVICE_ACCOUNT"),
+		// WorkerURL is set per request from the incoming task's Host: the
+		// service cannot know its own Cloud Run URL at deploy time without
+		// a Terraform self-reference cycle, and the URL the task actually
+		// arrived on is by definition the right follow-up target.
+	}
 	w := &worker.Worker{
 		Jobs: fsStore,
-		Queue: &queue.CloudTasks{
-			Client:                tasks,
-			QueuePath:             mustEnv(log, "TASKS_QUEUE_PATH"),
-			WorkerURL:             mustEnv(log, "WORKER_URL"),
-			InvokerServiceAccount: mustEnv(log, "INVOKER_SERVICE_ACCOUNT"),
-		},
 		Tokens: &githubauth.AppAuth{
 			AppID:      mustEnv(log, "GITHUB_APP_ID"),
 			PrivateKey: appKey,
@@ -112,14 +114,20 @@ func main() {
 			http.Error(rw, "malformed task", http.StatusBadRequest)
 			return
 		}
-		if err := w.Handle(r.Context(), req); err != nil {
+		// Per-request copies: the worker is shared across concurrent
+		// requests and must not be mutated in place.
+		followUpQueue := queueTemplate
+		followUpQueue.WorkerURL = "https://" + r.Host + "/task"
+		requestWorker := *w
+		requestWorker.Queue = &followUpQueue
+		if err := requestWorker.Handle(r.Context(), req); err != nil {
 			log.Error("review failed; task will retry", "error", err)
 			http.Error(rw, "review failed", http.StatusInternalServerError)
 			return
 		}
 		rw.WriteHeader(http.StatusOK)
 	})
-	mux.HandleFunc("/healthz", func(rw http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/health", func(rw http.ResponseWriter, _ *http.Request) {
 		rw.WriteHeader(http.StatusOK)
 	})
 

@@ -5,7 +5,7 @@ output "receiver_url" {
 
 output "worker_url" {
   description = "Worker task endpoint (invoked only by the Cloud Tasks OIDC identity)."
-  value       = local.worker_url
+  value       = "${google_cloud_run_v2_service.worker.uri}/task"
 }
 
 output "queue_path" {

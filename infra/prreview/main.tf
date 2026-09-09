@@ -29,10 +29,10 @@ terraform {
 provider "google" {
   project = var.project_id
   region  = var.region
-}
-
-data "google_project" "this" {
-  project_id = var.project_id
+  # billingbudgets.googleapis.com requires a quota project under
+  # user-credential auth; bill API quota to the service's own project.
+  user_project_override = true
+  billing_project       = var.project_id
 }
 
 locals {
@@ -40,9 +40,6 @@ locals {
     service = "prreview"
     adr     = "adr-0035"
   }
-  # Cloud Run deterministic URL — avoids a self-referential cycle when the
-  # worker needs its own URL (for follow-up tasks) in its own env.
-  worker_url = "https://prreview-worker-${data.google_project.this.number}.${var.region}.run.app/task"
 }
 
 # --- APIs -------------------------------------------------------------------
@@ -55,6 +52,11 @@ resource "google_project_service" "apis" {
     "secretmanager.googleapis.com",
     "artifactregistry.googleapis.com",
     "billingbudgets.googleapis.com",
+    # Meta-APIs the provider itself needs once user_project_override
+    # routes quota through this project.
+    "cloudresourcemanager.googleapis.com",
+    "iam.googleapis.com",
+    "orgpolicy.googleapis.com",
   ])
   service            = each.value
   disable_on_destroy = false
@@ -210,6 +212,12 @@ resource "google_cloud_run_v2_service" "worker" {
   location = var.region
   labels   = merge(local.labels_base, { component = "worker" })
 
+  lifecycle {
+    # The API echoes an empty top-level scaling block; without this the
+    # plan shows a perpetual no-op diff.
+    ignore_changes = [scaling]
+  }
+
   template {
     service_account = google_service_account.worker.email
     scaling {
@@ -229,10 +237,6 @@ resource "google_cloud_run_v2_service" "worker" {
       env {
         name  = "TASKS_QUEUE_PATH"
         value = google_cloud_tasks_queue.reviews.id
-      }
-      env {
-        name  = "WORKER_URL"
-        value = local.worker_url
       }
       env {
         name  = "INVOKER_SERVICE_ACCOUNT"
@@ -266,9 +270,16 @@ resource "google_cloud_run_v2_service_iam_member" "worker_invoker" {
 # --- Cloud Run: receiver (public webhook endpoint) --------------------------
 
 resource "google_cloud_run_v2_service" "receiver" {
-  name     = "prreview-receiver"
-  location = var.region
-  labels   = merge(local.labels_base, { component = "receiver" })
+  name                 = "prreview-receiver"
+  location             = var.region
+  labels               = merge(local.labels_base, { component = "receiver" })
+  invoker_iam_disabled = true
+
+  lifecycle {
+    # The API echoes an empty top-level scaling block; without this the
+    # plan shows a perpetual no-op diff.
+    ignore_changes = [scaling]
+  }
 
   template {
     service_account = google_service_account.receiver.email
@@ -291,7 +302,7 @@ resource "google_cloud_run_v2_service" "receiver" {
       }
       env {
         name  = "WORKER_URL"
-        value = local.worker_url
+        value = "${google_cloud_run_v2_service.worker.uri}/task"
       }
       env {
         name  = "INVOKER_SERVICE_ACCOUNT"
@@ -311,13 +322,10 @@ resource "google_cloud_run_v2_service" "receiver" {
 }
 
 # GitHub must reach the webhook unauthenticated; the HMAC signature is the
-# authentication (MOD-83).
-resource "google_cloud_run_v2_service_iam_member" "receiver_public" {
-  name     = google_cloud_run_v2_service.receiver.name
-  location = var.region
-  role     = "roles/run.invoker"
-  member   = "allUsers"
-}
+# authentication (MOD-83). Public access is granted by disabling the
+# invoker IAM check on the receiver (below, invoker_iam_disabled) rather
+# than an allUsers IAM binding, which the org's domain-restricted-sharing
+# policy rejects; this keeps that policy intact org-wide.
 
 # --- Cost & metering (MOD-87) ----------------------------------------------
 # Per-installation usage is metered by the service itself (the Firestore
@@ -331,6 +339,12 @@ resource "google_billing_budget" "prreview" {
 
   budget_filter {
     projects = ["projects/${var.project_id}"]
+  }
+
+  lifecycle {
+    # The API canonicalizes the project ID to its number; without this
+    # the plan shows a perpetual no-op diff.
+    ignore_changes = [budget_filter[0].projects]
   }
 
   amount {

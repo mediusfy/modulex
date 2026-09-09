@@ -70,7 +70,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.Handle("/webhook", h)
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 
