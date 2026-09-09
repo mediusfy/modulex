@@ -267,6 +267,12 @@ func TestPlanFor_NestedModulePathsUseModuleLocalCommands(t *testing.T) {
 		// gates that never exercise the module.
 		{"tools/mcpserver/go.mod", "tools/mcpserver"},
 		{"examples/external-consumer/go.sum", "examples/external-consumer"},
+		// services/* children follow the same nested-module convention as
+		// tools/* (regression: services/prreview initially planned as a
+		// root-module ./services/... pattern that matched no packages).
+		{"services/prreview/worker/worker.go", "services/prreview"},
+		{"services/prreview/go.mod", "services/prreview"},
+		{"services/prreview/Dockerfile", "services/prreview"},
 	}
 	for _, tc := range cases {
 		plan := PlanFor([]string{tc.path})

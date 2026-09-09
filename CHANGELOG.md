@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Hosted PR-review GitHub App on GCP (`services/prreview` +
+  `infra/prreview`), the optional zero-setup delivery of the review
+  engine per ADR-0035 plan step 6: a scale-to-zero Cloud Run receiver
+  (HMAC-verified, delivery-ID-deduped via native Firestore TTL,
+  per-installation rate limits) and worker (Firestore per-PR lease
+  serialization, installation-scoped tokens, incremental reviews,
+  caller-keyed Anthropic commentary that degrades to engine-only,
+  single PR comment updated in place, per-installation usage ledger),
+  with Terraform for the full stack including a billing budget. No
+  always-on datastore; no compute cost while idle.
+
+### Fixed
+
+- `verify.PlanFor` now maps files under `services/*` to module-local
+  `go -C` checks, extending the nested-module convention beyond
+  `tools/*` and `examples/external-consumer`; previously a new
+  `services/` module planned root-module `./services/...` commands that
+  matched no packages and always failed.
+
 ## [0.10.2] - 2026-09-08
 
 ### Added
