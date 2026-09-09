@@ -26,4 +26,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git make ca-cer
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/worker /worker
 USER 65532:65532
+# The nonroot uid has no home; tenant checks that run go/make need a
+# writable cache, and /tmp is the only writable path on Cloud Run.
+ENV HOME=/tmp GOCACHE=/tmp/gocache GOMODCACHE=/tmp/gomod GOPATH=/tmp/go
 ENTRYPOINT ["/worker"]
