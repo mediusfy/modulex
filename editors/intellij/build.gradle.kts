@@ -9,6 +9,13 @@ plugins {
 group = "com.mediusfy.modulex"
 version = "0.1.0"
 
+// Pin the full transitive dependency graph (gradle.lockfile, committed):
+// predictable builds and the supply-chain guarantee Sonar's text:S8569
+// checks for. Refresh with: gradle dependencies --write-locks
+dependencyLocking {
+    lockAllConfigurations()
+}
+
 repositories {
     mavenCentral()
     intellijPlatform {
