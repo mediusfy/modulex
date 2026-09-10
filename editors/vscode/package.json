@@ -83,11 +83,13 @@
     "compile": "tsc -p .",
     "watch": "tsc -w -p .",
     "pretest": "npm run compile",
-    "test": "node --test \"out/test/*.test.js\""
+    "test": "node --test \"out/test/*.test.js\" \"out/test/*.e2e.test.js\"",
+    "test:integration": "npm run compile && node ./out/src/integration/runTests.js"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
+    "@vscode/test-electron": "^3.1.0",
     "typescript": "^5.4.0"
   }
 }

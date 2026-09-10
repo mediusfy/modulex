@@ -1,3 +1,4 @@
+import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -18,6 +19,8 @@ repositories {
 dependencies {
     intellijPlatform {
         intellijIdeaCommunity("2025.1.4.1")
+        // Platform test fixtures for in-IDE tests (ActionsRegistrationTest).
+        testFramework(TestFrameworkType.Platform)
     }
     // Gson stays an explicit dependency (not borrowed from the platform)
     // so the core — McpClient, ToolSurface, Render — compiles and tests
@@ -27,9 +30,12 @@ dependencies {
     testImplementation(kotlin("test"))
     testImplementation("org.junit.jupiter:junit-jupiter:5.11.4")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
-    // The IntelliJ Platform Gradle Plugin's test bootstrap needs JUnit 4 on
-    // the classpath even though these tests are JUnit 5.
-    testRuntimeOnly("junit:junit:4.13.2")
+    // JUnit 4 must be a compile dependency: BasePlatformTestCase extends
+    // JUnit 3's TestCase (shipped in the junit4 jar), and the platform
+    // test bootstrap needs it at runtime too. The JUnit3-style fixture
+    // tests run via the vintage engine alongside the JUnit 5 core tests.
+    testImplementation("junit:junit:4.13.2")
+    testRuntimeOnly("org.junit.vintage:junit-vintage-engine:5.11.4")
 }
 
 kotlin {
