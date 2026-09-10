@@ -18,6 +18,7 @@ import kotlin.test.assertTrue
  * editors/vscode/test/mcpClient.test.ts.
  */
 private class FakeTransport : McpTransport {
+    @Volatile private var closed = false
     private val toClient = PipedOutputStream()
     private val fromServer = PipedInputStream(toClient)
     private val toServer = PipedOutputStream()
@@ -65,7 +66,10 @@ private class FakeTransport : McpTransport {
         }
     }
 
+    override fun isAlive(): Boolean = !closed
+
     override fun close() {
+        closed = true
         toServer.close()
         toClient.close()
     }

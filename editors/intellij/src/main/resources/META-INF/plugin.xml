@@ -15,6 +15,9 @@
 
   <extensions defaultExtensionNs="com.intellij">
     <notificationGroup id="Modulex" displayType="BALLOON"/>
+    <projectConfigurable groupId="tools" displayName="Modulex"
+                         id="com.mediusfy.modulex.settings"
+                         instance="com.mediusfy.modulex.intellij.ModulexConfigurable"/>
   </extensions>
 
   <actions>

@@ -78,8 +78,17 @@ func main() {
 	if port == "" {
 		port = "8080"
 	}
+	// Explicit server timeouts: the default http.Server has none, which
+	// leaves the endpoint open to slowloris-style connection exhaustion.
+	server := &http.Server{
+		Addr:              ":" + port,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+	}
 	log.Info("receiver listening", "port", port)
-	if err := http.ListenAndServe(":"+port, mux); err != nil {
+	if err := server.ListenAndServe(); err != nil {
 		log.Error("serve", "error", err)
 		os.Exit(1)
 	}

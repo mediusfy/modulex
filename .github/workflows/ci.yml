@@ -201,6 +201,54 @@ jobs:
         GITHUB_ACTOR: ${{ github.actor }}
       run: ./scripts/check-changelog.sh "origin/${{ github.event.pull_request.base.ref }}" "${{ github.event.pull_request.head.sha }}"
 
+  nested-modules:
+    name: Nested Go Modules
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+    - name: Set up Go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+      with:
+        go-version: '1.26.x'
+
+    # Root-module go build/test never descends into the nested modules
+    # (tools/*, examples/external-consumer, services/prreview); this is
+    # the only CI job that compiles and tests them.
+    - name: Verify nested modules are tidy and build/test cleanly
+      run: make check-nested-modules
+
+  editor-plugins:
+    name: Editor Plugins
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+    - name: Set up Node
+      uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+      with:
+        node-version: '22'
+
+    - name: VSCode extension unit tests
+      working-directory: editors/vscode
+      run: |
+        npm ci
+        npm test
+
+    - name: Set up Java
+      uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+      with:
+        distribution: temurin
+        java-version: '21'
+
+    - name: IntelliJ plugin tests
+      working-directory: editors/intellij
+      run: ./gradlew --no-daemon test
+
   provenance:
     name: Publish Provenance Artifact
     runs-on: ubuntu-latest
@@ -213,6 +261,8 @@ jobs:
       - module-boundary
       - api-compat
       - changelog
+      - nested-modules
+      - editor-plugins
     # Always publish a record of this run's outcome, even when one or more
     # of the jobs above failed or was cancelled — that is the case a
     # provenance artifact is most useful for. This job itself only fails if
@@ -246,6 +296,8 @@ jobs:
         RESULT_MODULE_BOUNDARY: ${{ needs.module-boundary.result }}
         RESULT_API_COMPAT: ${{ needs.api-compat.result }}
         RESULT_CHANGELOG: ${{ needs.changelog.result }}
+        RESULT_NESTED_MODULES: ${{ needs.nested-modules.result }}
+        RESULT_EDITOR_PLUGINS: ${{ needs.editor-plugins.result }}
       run: |
         /tmp/provenanceci \
           -commit "$COMMIT" \
@@ -258,7 +310,9 @@ jobs:
           -job "consumer-boundary=$RESULT_CONSUMER_BOUNDARY" \
           -job "module-boundary=$RESULT_MODULE_BOUNDARY" \
           -job "api-compat=$RESULT_API_COMPAT" \
-          -job "changelog=$RESULT_CHANGELOG"
+          -job "changelog=$RESULT_CHANGELOG" \
+          -job "nested-modules=$RESULT_NESTED_MODULES" \
+          -job "editor-plugins=$RESULT_EDITOR_PLUGINS"
 
     - name: Upload provenance artifact
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

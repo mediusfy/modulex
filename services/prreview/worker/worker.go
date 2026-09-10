@@ -12,6 +12,8 @@ package worker
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -37,11 +39,18 @@ type Worker struct {
 	Reviewer   engine.Reviewer
 	Commentary ai.Commentary
 	Comments   githubauth.Commenter
-	Ledger     store.Ledger
-	Tenants    tenants.Resolver
-	LeaseTTL   time.Duration
-	Log        *slog.Logger
-	Now        func() time.Time
+	// PRs resolves the PR's true head from GitHub after the lease is
+	// acquired: Cloud Tasks deliveries are unordered, so a late or
+	// retried task must be re-anchored on the authoritative head rather
+	// than trusted. Optional (nil skips the correction, e.g. in tests).
+	PRs      githubauth.PRReader
+	Ledger   store.Ledger
+	Tenants  tenants.Resolver
+	LeaseTTL time.Duration
+	Log      *slog.Logger
+	Now      func() time.Time
+	// NewOwner mints the lease fencing token; overridable in tests.
+	NewOwner func() string
 }
 
 func (w *Worker) now() time.Time {
@@ -49,6 +58,18 @@ func (w *Worker) now() time.Time {
 		return w.Now()
 	}
 	return time.Now()
+}
+
+func (w *Worker) newOwner() string {
+	if w.NewOwner != nil {
+		return w.NewOwner()
+	}
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		// Fallback keeps fencing best-effort rather than failing reviews.
+		return fmt.Sprintf("t-%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(buf)
 }
 
 // Handle processes one review task.
@@ -59,10 +80,11 @@ func (w *Worker) Handle(ctx context.Context, req webhook.ReviewRequest) error {
 		Repo:           req.Repo,
 		PRNumber:       req.PRNumber,
 	}
+	owner := w.newOwner()
 
 	var action store.AcquireAction
 	job, err := w.Jobs.Mutate(ctx, key, func(j store.Job) store.Job {
-		j2, a := store.AcquireDecision(j, w.now(), req.HeadSHA, w.LeaseTTL)
+		j2, a := store.AcquireDecision(j, w.now(), req.HeadSHA, w.LeaseTTL, owner)
 		action = a
 		return j2
 	})
@@ -75,17 +97,37 @@ func (w *Worker) Handle(ctx context.Context, req webhook.ReviewRequest) error {
 	}
 
 	reviewedSHA := job.TargetSHA
-	if err := w.reviewOnce(ctx, key, req, job, reviewedSHA); err != nil {
-		w.releaseLease(ctx, key)
+	if err := w.reviewOnce(ctx, key, req, job, reviewedSHA, owner); err != nil {
+		w.releaseLease(ctx, key, owner)
 		return err
 	}
 	return nil
 }
 
-func (w *Worker) reviewOnce(ctx context.Context, key store.JobKey, req webhook.ReviewRequest, job store.Job, reviewedSHA string) error {
+func (w *Worker) reviewOnce(ctx context.Context, key store.JobKey, req webhook.ReviewRequest, job store.Job, reviewedSHA, owner string) error {
 	token, err := w.Tokens.InstallationToken(ctx, req.InstallationID)
 	if err != nil {
 		return fmt.Errorf("minting installation token: %w", err)
+	}
+
+	// Re-anchor on GitHub's answer for the PR head: the lease target may
+	// have been set by a stale, reordered, or retried task. Failure to
+	// resolve degrades to the lease target rather than dropping the job.
+	if w.PRs != nil {
+		if head, err := w.PRs.PRHead(ctx, token, req.Owner, req.Repo, req.PRNumber); err != nil {
+			w.Log.Warn("PR head lookup failed; using lease target", "job", key.String(), "error", err)
+		} else if head != reviewedSHA {
+			w.Log.Info("lease target stale; re-anchored on PR head", "job", key.String(), "lease", reviewedSHA, "head", head)
+			reviewedSHA = head
+			if _, err := w.Jobs.Mutate(ctx, key, func(j store.Job) store.Job {
+				if j.LeaseOwner == owner {
+					j.TargetSHA = head
+				}
+				return j
+			}); err != nil {
+				return fmt.Errorf("re-anchoring target for %s: %w", key, err)
+			}
+		}
 	}
 
 	// Incremental review (MOD-84): diff from the last-reviewed SHA when
@@ -125,30 +167,39 @@ func (w *Worker) reviewOnce(ctx context.Context, key store.JobKey, req webhook.R
 	}
 
 	// Post before completing, but never for a SHA that is no longer the
-	// target: a newer delivery may have advanced it during the review.
+	// target and never on a lease this worker no longer holds.
 	current, err := w.Jobs.Get(ctx, key)
 	if err != nil {
 		return fmt.Errorf("re-reading job before post: %w", err)
 	}
-	var commentID int64
-	if current.TargetSHA == reviewedSHA {
+	if current.TargetSHA == reviewedSHA && current.LeaseOwner == owner {
 		body := ComposeComment(reviewedSHA, results, commentary)
 		if current.CommentID != 0 {
 			if err := w.Comments.UpdateComment(ctx, token, req.Owner, req.Repo, current.CommentID, body); err != nil {
 				return fmt.Errorf("updating comment: %w", err)
 			}
-			commentID = current.CommentID
 		} else {
-			commentID, err = w.Comments.CreateComment(ctx, token, req.Owner, req.Repo, req.PRNumber, body)
+			commentID, err := w.Comments.CreateComment(ctx, token, req.Owner, req.Repo, req.PRNumber, body)
 			if err != nil {
 				return fmt.Errorf("creating comment: %w", err)
+			}
+			// Persist the ID immediately and unconditionally (even if the
+			// target advances before completion): losing it would orphan
+			// the comment and break the single-comment invariant.
+			if _, err := w.Jobs.Mutate(ctx, key, func(j store.Job) store.Job {
+				if j.CommentID == 0 {
+					j.CommentID = commentID
+				}
+				return j
+			}); err != nil {
+				return fmt.Errorf("persisting comment id for %s: %w", key, err)
 			}
 		}
 	}
 
 	var outcome store.CompleteOutcome
 	if _, err := w.Jobs.Mutate(ctx, key, func(j store.Job) store.Job {
-		j2, o := store.CompleteDecision(j, reviewedSHA, commentID, tokensUsed)
+		j2, o := store.CompleteDecision(j, reviewedSHA, tokensUsed, owner)
 		outcome = o
 		return j2
 	}); err != nil {
@@ -175,11 +226,11 @@ func (w *Worker) reviewOnce(ctx context.Context, key store.JobKey, req webhook.R
 
 // releaseLease is a best-effort idle reset after a failure, so the task
 // queue's immediate retry is not blocked until the lease TTL expires.
-func (w *Worker) releaseLease(ctx context.Context, key store.JobKey) {
+// Fenced by owner: a stale worker whose lease was taken over must not
+// wipe the takeover worker's active lease.
+func (w *Worker) releaseLease(ctx context.Context, key store.JobKey, owner string) {
 	if _, err := w.Jobs.Mutate(ctx, key, func(j store.Job) store.Job {
-		j.Status = store.StatusIdle
-		j.LeaseExpiry = time.Time{}
-		return j
+		return store.ReleaseDecision(j, owner)
 	}); err != nil {
 		w.Log.Warn("lease release failed; TTL will expire it", "job", key.String(), "error", err)
 	}
@@ -209,7 +260,8 @@ func ComposeComment(sha string, results []provenance.VerificationResult, comment
 			if detail == "" {
 				detail = r.Reason
 			}
-			fmt.Fprintf(&b, "<details><summary>%s</summary>\n\n```\n%s\n```\n</details>\n\n", r.Name, detail)
+			fmt.Fprintf(&b, "<details><summary>%s</summary>\n\n```\n%s\n```\n</details>\n\n",
+				escapeUntrusted(r.Name), escapeUntrusted(detail))
 		}
 	}
 	if commentary != "" {
@@ -226,4 +278,14 @@ func shortSHA(sha string) string {
 		return sha[:10]
 	}
 	return sha
+}
+
+// escapeUntrusted neutralizes check output before it is embedded in the
+// comment's code fence: the output covers the PR author's own code, so a
+// crafted failure message could otherwise close the fence and inject
+// Markdown under the bot's identity. A zero-width space inside any
+// backtick run keeps fences and inline code from terminating early
+// without visibly altering the text.
+func escapeUntrusted(s string) string {
+	return strings.ReplaceAll(s, "`", "`\u200b")
 }

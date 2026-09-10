@@ -51,3 +51,23 @@ class ToolSurfaceTest {
         }
     }
 }
+
+class CommandLineTest {
+    @Test
+    fun splitCommandHonorsQuotes() {
+        data class Row(val name: String, val line: String, val want: List<String>)
+        val rows = listOf(
+            Row("empty", "", emptyList()),
+            Row("plain args", "go run ./cmd", listOf("go", "run", "./cmd")),
+            Row(
+                "quoted path with spaces",
+                "\"C:\\Program Files\\modulex\\mcpserver.exe\" --flag",
+                listOf("C:\\Program Files\\modulex\\mcpserver.exe", "--flag"),
+            ),
+            Row("collapses runs of spaces", "a   b", listOf("a", "b")),
+        )
+        for (row in rows) {
+            assertEquals(row.want, splitCommand(row.line), row.name)
+        }
+    }
+}

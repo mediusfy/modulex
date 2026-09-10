@@ -52,6 +52,13 @@ func (m *Memory) Seen(_ context.Context, deliveryID string, ttl time.Duration) (
 	return false, nil
 }
 
+func (m *Memory) Forget(_ context.Context, deliveryID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.dedup, deliveryID)
+	return nil
+}
+
 func (m *Memory) Add(_ context.Context, installationID int64, reviews, tokens int64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

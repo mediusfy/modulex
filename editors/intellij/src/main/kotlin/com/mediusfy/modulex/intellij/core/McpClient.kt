@@ -22,6 +22,8 @@ interface McpTransport {
     val reader: BufferedReader
     val writer: BufferedWriter
 
+    fun isAlive(): Boolean
+
     fun close()
 }
 
@@ -42,12 +44,18 @@ private class ProcessTransport(private val process: Process, onServerLog: (Strin
         }
     }
 
+    override fun isAlive(): Boolean = process.isAlive
+
     override fun close() {
         process.destroy()
     }
 }
 
 class McpClient(private val transport: McpTransport) {
+    /** False once the server process has exited; callers should respawn. */
+    val alive: Boolean
+        get() = transport.isAlive()
+
     private val gson = Gson()
     private var nextId = 1
     private val lock = Any()

@@ -1,15 +1,24 @@
 // Package engine adapts the modulex review engine for the hosted worker
 // (ADR-0035 "The hosted App is a third thin adapter over the same engine";
-// it adds delivery and tenancy, never new check logic). Reviewer mirrors
-// tools/mcpserver's review_diff composition — discovery, the repository
-// contract's protected paths, then agentreview.Review — so the hosted App
-// produces identical results to the reusable workflow for the same diff.
+// it adds delivery and tenancy, never new check logic).
+//
+// SECURITY BOUNDARY: unlike CI and the editor plugins — which run in the
+// repository owner's own trust domain — the hosted worker reviews
+// UNTRUSTED tenant checkouts inside the shared multi-tenant service. It
+// therefore runs ONLY the engine's pure checks (review.ScanSecrets,
+// review.CheckProtectedPaths), never a tenant-declared command:
+// agentreview.Review would execute the checkout's own make targets via
+// sh -c, handing every PR author arbitrary code execution next to the
+// App's credentials. Declared-gate coverage for hosted tenants belongs in
+// their own CI, where their code already runs.
 package engine
 
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,10 +26,9 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/mediusfy/modulex/agentreview"
 	"github.com/mediusfy/modulex/contract"
-	"github.com/mediusfy/modulex/discovery"
 	"github.com/mediusfy/modulex/provenance"
+	"github.com/mediusfy/modulex/review"
 )
 
 // Reviewer runs the deterministic review engine over a checkout.
@@ -28,26 +36,34 @@ type Reviewer interface {
 	Review(ctx context.Context, dir, baseRef, headRef string) ([]provenance.VerificationResult, error)
 }
 
-// Modulex is the production Reviewer: the same composition as the MCP
-// server's review_diff tool. Networked checks are always skipped — the
-// worker reviews with allowNetwork=false so a tenant's declared commands
-// cannot exfiltrate through the service.
+// Modulex is the production Reviewer: the pure-check subset of the review
+// engine (see the package comment for why declared commands never run
+// here).
 type Modulex struct{}
 
 func (Modulex) Review(ctx context.Context, dir, baseRef, headRef string) ([]provenance.VerificationResult, error) {
-	repo, err := discovery.Discover(dir)
-	if err != nil {
-		return nil, fmt.Errorf("discovering checkout: %w", err)
-	}
+	// The contract is read fail-CLOSED, matching the mcpserver and
+	// agentcli adapters: a present-but-broken modulex.agent.yaml must
+	// error, not silently disable protected-path enforcement.
 	var protectedPaths []string
 	raw, err := os.ReadFile(filepath.Join(dir, "modulex.agent.yaml"))
-	if err == nil {
+	switch {
+	case err == nil:
 		var c contract.Contract
-		if yaml.Unmarshal(raw, &c) == nil {
-			protectedPaths = c.ProtectedPaths
+		if err := yaml.Unmarshal(raw, &c); err != nil {
+			return nil, fmt.Errorf("modulex.agent.yaml is present but unparseable: %w", err)
 		}
+		protectedPaths = c.ProtectedPaths
+	case errors.Is(err, fs.ErrNotExist):
+		// No contract is a normal state: review without protected paths.
+	default:
+		return nil, fmt.Errorf("reading modulex.agent.yaml: %w", err)
 	}
-	return agentreview.Review(ctx, repo, baseRef, headRef, false, protectedPaths), nil
+
+	return []provenance.VerificationResult{
+		review.ScanSecrets(ctx, dir, baseRef, headRef),
+		review.CheckProtectedPaths(ctx, dir, baseRef, headRef, protectedPaths),
+	}, nil
 }
 
 // Fetcher produces a local checkout of the PR to review and the diff text
@@ -86,18 +102,25 @@ func (GitFetcher) Fetch(ctx context.Context, cloneURL, token, baseRef, headSHA s
 	// The diff base may be a branch name (first review) or the
 	// last-reviewed commit SHA (incremental review, MOD-84); a SHA is
 	// fetched directly, a branch via an explicit refspec — a combined
-	// fetch would leave FETCH_HEAD ambiguous.
-	baseFetch := []string{"fetch", "--quiet", "--depth", "50", "origin",
+	// fetch would leave FETCH_HEAD ambiguous. Fetches are blobless
+	// partial fetches (--filter=blob:none), NOT shallow: the review diffs
+	// use the three-dot base...head form, which needs the merge base — a
+	// shallow fetch drops it whenever the branch point is older than the
+	// depth, silently disabling the secret and protected-path checks on
+	// exactly the large, stale PRs that most need them. Blobless keeps
+	// the full commit graph small; git fetches file contents on demand
+	// while diffing.
+	baseFetch := []string{"fetch", "--quiet", "--filter=blob:none", "origin",
 		"+refs/heads/" + baseRef + ":refs/heads/" + BaseRefName}
 	baseBranch := []string(nil)
 	if isCommitSHA(baseRef) {
-		baseFetch = []string{"fetch", "--quiet", "--depth", "50", "origin", baseRef}
+		baseFetch = []string{"fetch", "--quiet", "--filter=blob:none", "origin", baseRef}
 		baseBranch = []string{"branch", "--quiet", BaseRefName, baseRef}
 	}
 	steps := [][]string{
 		{"init", "--quiet"},
 		{"remote", "add", "origin", cloneURL},
-		{"fetch", "--quiet", "--depth", "50", "origin", headSHA},
+		{"fetch", "--quiet", "--filter=blob:none", "origin", headSHA},
 		baseFetch,
 	}
 	if baseBranch != nil {

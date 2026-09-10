@@ -39,6 +39,42 @@ type Commenter interface {
 	UpdateComment(ctx context.Context, token, owner, repo string, commentID int64, body string) error
 }
 
+// PRReader resolves a PR's current head SHA — the authoritative ordering
+// source the lease state machine lacks (Cloud Tasks deliveries are
+// unordered, so the worker re-anchors its target on GitHub's answer).
+type PRReader interface {
+	PRHead(ctx context.Context, token, owner, repo string, prNumber int) (string, error)
+}
+
+// PRHead implements PRReader over the GitHub REST API.
+func (c *RESTCommenter) PRHead(ctx context.Context, token, owner, repo string, prNumber int) (string, error) {
+	url := fmt.Sprintf("%s/repos/%s/%s/pulls/%d", c.BaseURL, owner, repo, prNumber)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("reading PR head: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("reading PR head: status %d: %s", resp.StatusCode, body)
+	}
+	var out struct {
+		Head struct {
+			SHA string `json:"sha"`
+		} `json:"head"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil || out.Head.SHA == "" {
+		return "", errors.New("PR response missing head sha")
+	}
+	return out.Head.SHA, nil
+}
+
 // AppAuth is the production TokenMinter: a GitHub App's ID and private key
 // sign a short-lived JWT, exchanged for an installation token via the REST
 // API. The private key comes from Secret Manager at startup, never from

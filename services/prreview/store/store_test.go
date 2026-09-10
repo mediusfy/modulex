@@ -17,6 +17,7 @@ func TestAcquireDecision(t *testing.T) {
 		job        Job
 		now        time.Time
 		headSHA    string
+		owner      string
 		wantAction AcquireAction
 		wantJob    Job
 	}{
@@ -25,40 +26,59 @@ func TestAcquireDecision(t *testing.T) {
 			job:        Job{},
 			now:        t0,
 			headSHA:    "sha1",
+			owner:      "w1",
 			wantAction: ActionRun,
-			wantJob:    Job{Status: StatusRunning, TargetSHA: "sha1", LeaseExpiry: t0.Add(leaseTTL)},
+			wantJob:    Job{Status: StatusRunning, TargetSHA: "sha1", LeaseExpiry: t0.Add(leaseTTL), LeaseOwner: "w1"},
 		},
 		{
 			name:       "idle PR with history re-acquires",
-			job:        Job{Status: StatusIdle, LastReviewedSHA: "old", CommentID: 5, ReviewCount: 2},
+			job:        Job{Status: StatusIdle, TargetSHA: "old", LastReviewedSHA: "old", CommentID: 5, ReviewCount: 2},
 			now:        t0,
 			headSHA:    "sha2",
+			owner:      "w2",
 			wantAction: ActionRun,
 			wantJob: Job{
-				Status: StatusRunning, TargetSHA: "sha2", LeaseExpiry: t0.Add(leaseTTL),
+				Status: StatusRunning, TargetSHA: "sha2", LeaseExpiry: t0.Add(leaseTTL), LeaseOwner: "w2",
 				LastReviewedSHA: "old", CommentID: 5, ReviewCount: 2,
 			},
 		},
 		{
 			name:       "delivery during a running review only advances the target",
-			job:        Job{Status: StatusRunning, TargetSHA: "sha1", LeaseExpiry: t0.Add(5 * time.Minute)},
+			job:        Job{Status: StatusRunning, TargetSHA: "sha1", LeaseExpiry: t0.Add(5 * time.Minute), LeaseOwner: "w1"},
 			now:        t0,
 			headSHA:    "sha2",
+			owner:      "w2",
 			wantAction: ActionSkip,
-			wantJob:    Job{Status: StatusRunning, TargetSHA: "sha2", LeaseExpiry: t0.Add(5 * time.Minute)},
+			wantJob:    Job{Status: StatusRunning, TargetSHA: "sha2", LeaseExpiry: t0.Add(5 * time.Minute), LeaseOwner: "w1"},
 		},
 		{
 			name:       "expired lease is taken over so a crashed worker retries",
-			job:        Job{Status: StatusRunning, TargetSHA: "sha1", LeaseExpiry: t0.Add(-time.Second)},
+			job:        Job{Status: StatusRunning, TargetSHA: "sha1", LeaseExpiry: t0.Add(-time.Second), LeaseOwner: "w1"},
 			now:        t0,
 			headSHA:    "sha2",
+			owner:      "w2",
 			wantAction: ActionRun,
-			wantJob:    Job{Status: StatusRunning, TargetSHA: "sha2", LeaseExpiry: t0.Add(leaseTTL)},
+			wantJob:    Job{Status: StatusRunning, TargetSHA: "sha2", LeaseExpiry: t0.Add(leaseTTL), LeaseOwner: "w2"},
+		},
+		{
+			name: "task for an already-reviewed SHA keeps the pending target",
+			job: Job{
+				Status: StatusIdle, TargetSHA: "sha2",
+				LastReviewedSHA: "sha1", CommentID: 7, ReviewCount: 1,
+			},
+			now:        t0,
+			headSHA:    "sha1", // late retry of the reviewed push
+			owner:      "w3",
+			wantAction: ActionRun,
+			wantJob: Job{
+				Status: StatusRunning, TargetSHA: "sha2", LeaseExpiry: t0.Add(leaseTTL), LeaseOwner: "w3",
+				LastReviewedSHA: "sha1", CommentID: 7, ReviewCount: 1,
+			},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotJob, gotAction := AcquireDecision(tt.job, tt.now, tt.headSHA, leaseTTL)
+			gotJob, gotAction := AcquireDecision(tt.job, tt.now, tt.headSHA, leaseTTL, tt.owner)
 			if gotAction != tt.wantAction {
 				t.Fatalf("action: got %q, want %q", gotAction, tt.wantAction)
 			}
@@ -70,22 +90,21 @@ func TestAcquireDecision(t *testing.T) {
 }
 
 func TestCompleteDecision(t *testing.T) {
-	running := Job{Status: StatusRunning, TargetSHA: "sha1", LeaseExpiry: t0.Add(leaseTTL), ReviewCount: 1, TokensUsed: 100}
 	tests := []struct {
 		name        string
 		job         Job
 		reviewedSHA string
-		commentID   int64
 		tokens      int64
+		owner       string
 		wantOutcome CompleteOutcome
 		wantJob     Job
 	}{
 		{
 			name:        "current review posts and advances memory and ledger",
-			job:         running,
+			job:         Job{Status: StatusRunning, TargetSHA: "sha1", LeaseExpiry: t0.Add(leaseTTL), LeaseOwner: "w1", CommentID: 77, ReviewCount: 1, TokensUsed: 100},
 			reviewedSHA: "sha1",
-			commentID:   77,
 			tokens:      250,
+			owner:       "w1",
 			wantOutcome: CompleteOutcome{Post: true},
 			wantJob: Job{
 				Status: StatusIdle, TargetSHA: "sha1", LastReviewedSHA: "sha1",
@@ -94,31 +113,61 @@ func TestCompleteDecision(t *testing.T) {
 		},
 		{
 			name:        "superseded review never posts and enqueues one follow-up",
-			job:         Job{Status: StatusRunning, TargetSHA: "sha2", LeaseExpiry: t0.Add(leaseTTL), CommentID: 77, ReviewCount: 2},
+			job:         Job{Status: StatusRunning, TargetSHA: "sha2", LeaseExpiry: t0.Add(leaseTTL), LeaseOwner: "w1", CommentID: 77, ReviewCount: 2},
 			reviewedSHA: "sha1",
-			commentID:   99,
 			tokens:      500,
+			owner:       "w1",
 			wantOutcome: CompleteOutcome{FollowUp: true, FollowUpSHA: "sha2"},
 			wantJob:     Job{Status: StatusIdle, TargetSHA: "sha2", CommentID: 77, ReviewCount: 2},
 		},
 		{
-			name:        "zero comment id keeps the prior comment for the next update",
-			job:         Job{Status: StatusRunning, TargetSHA: "sha1", CommentID: 55},
+			name:        "stale worker (lease taken over) mutates nothing",
+			job:         Job{Status: StatusRunning, TargetSHA: "sha3", LeaseExpiry: t0.Add(leaseTTL), LeaseOwner: "w2"},
 			reviewedSHA: "sha1",
-			commentID:   0,
-			tokens:      0,
-			wantOutcome: CompleteOutcome{Post: true},
-			wantJob:     Job{Status: StatusIdle, TargetSHA: "sha1", LastReviewedSHA: "sha1", CommentID: 55, ReviewCount: 1},
+			tokens:      100,
+			owner:       "w1",
+			wantOutcome: CompleteOutcome{},
+			wantJob:     Job{Status: StatusRunning, TargetSHA: "sha3", LeaseExpiry: t0.Add(leaseTTL), LeaseOwner: "w2"},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotJob, gotOutcome := CompleteDecision(tt.job, tt.reviewedSHA, tt.commentID, tt.tokens)
+			gotJob, gotOutcome := CompleteDecision(tt.job, tt.reviewedSHA, tt.tokens, tt.owner)
 			if gotOutcome != tt.wantOutcome {
 				t.Fatalf("outcome: got %+v, want %+v", gotOutcome, tt.wantOutcome)
 			}
 			if gotJob != tt.wantJob {
 				t.Fatalf("job: got %+v, want %+v", gotJob, tt.wantJob)
+			}
+		})
+	}
+}
+
+func TestReleaseDecision(t *testing.T) {
+	running := Job{Status: StatusRunning, TargetSHA: "sha1", LeaseExpiry: t0.Add(leaseTTL), LeaseOwner: "w1", CommentID: 3}
+	tests := []struct {
+		name  string
+		job   Job
+		owner string
+		want  Job
+	}{
+		{
+			name:  "holder releases: lease idled, memory kept",
+			job:   running,
+			owner: "w1",
+			want:  Job{Status: StatusIdle, TargetSHA: "sha1", CommentID: 3},
+		},
+		{
+			name:  "stale worker cannot wipe a takeover lease",
+			job:   Job{Status: StatusRunning, TargetSHA: "sha2", LeaseExpiry: t0.Add(leaseTTL), LeaseOwner: "w2"},
+			owner: "w1",
+			want:  Job{Status: StatusRunning, TargetSHA: "sha2", LeaseExpiry: t0.Add(leaseTTL), LeaseOwner: "w2"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ReleaseDecision(tt.job, tt.owner); got != tt.want {
+				t.Fatalf("got %+v, want %+v", got, tt.want)
 			}
 		})
 	}
@@ -147,8 +196,8 @@ func TestLeaseSerializesConcurrentDeliveries(t *testing.T) {
 			maxRunning := 0
 			posted := []string{}
 
-			var review func(sha string)
-			review = func(sha string) {
+			var review func(sha, owner string)
+			review = func(sha, owner string) {
 				mu.Lock()
 				running++
 				if running > maxRunning {
@@ -156,10 +205,9 @@ func TestLeaseSerializesConcurrentDeliveries(t *testing.T) {
 				}
 				mu.Unlock()
 
-				// "Review" happens here; then complete.
 				var outcome CompleteOutcome
 				_, err := mem.Mutate(ctx, key, func(j Job) Job {
-					j2, o := CompleteDecision(j, sha, 1, 10)
+					j2, o := CompleteDecision(j, sha, 10, owner)
 					outcome = o
 					return j2
 				})
@@ -199,9 +247,6 @@ func TestLeaseSerializesConcurrentDeliveries(t *testing.T) {
 			}
 			mu.Lock()
 			defer mu.Unlock()
-			for _, sha := range posted[:len(posted)-1] {
-				_ = sha // every posted SHA was the target at post time by construction
-			}
 			if posted[len(posted)-1] != final.TargetSHA {
 				t.Fatalf("last posted %q, want final target %q", posted[len(posted)-1], final.TargetSHA)
 			}
@@ -209,11 +254,12 @@ func TestLeaseSerializesConcurrentDeliveries(t *testing.T) {
 	}
 }
 
-func deliver(ctx context.Context, t *testing.T, mem *Memory, key JobKey, sha string, review func(string)) {
+func deliver(ctx context.Context, t *testing.T, mem *Memory, key JobKey, sha string, review func(sha, owner string)) {
 	t.Helper()
+	owner := "owner-" + sha
 	var action AcquireAction
 	job, err := mem.Mutate(ctx, key, func(j Job) Job {
-		j2, a := AcquireDecision(j, time.Now(), sha, leaseTTL)
+		j2, a := AcquireDecision(j, time.Now(), sha, leaseTTL, owner)
 		action = a
 		return j2
 	})
@@ -222,7 +268,7 @@ func deliver(ctx context.Context, t *testing.T, mem *Memory, key JobKey, sha str
 		return
 	}
 	if action == ActionRun {
-		review(job.TargetSHA)
+		review(job.TargetSHA, owner)
 	}
 }
 
@@ -253,6 +299,19 @@ func TestMemoryDedup(t *testing.T) {
 				now = t0.Add(2 * time.Minute)
 				if seen, _ := mem.Seen(ctx, "d1", time.Minute); seen {
 					t.Fatal("expired record still reported seen")
+				}
+			},
+		},
+		{
+			name: "forgotten record is not seen (failed-enqueue redelivery path)",
+			run: func(t *testing.T, mem *Memory) {
+				ctx := context.Background()
+				_, _ = mem.Seen(ctx, "d1", time.Hour)
+				if err := mem.Forget(ctx, "d1"); err != nil {
+					t.Fatal(err)
+				}
+				if seen, _ := mem.Seen(ctx, "d1", time.Hour); seen {
+					t.Fatal("forgotten record still reported seen")
 				}
 			},
 		},
