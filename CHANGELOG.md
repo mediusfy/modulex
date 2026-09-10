@@ -7,13 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- prreview worker image: writable Go cache (HOME/GOCACHE/GOMODCACHE/
-  GOPATH under /tmp) and 4Gi memory, so tenant checks that run go/make
-  succeed under the nonroot uid; found by the first production review.
-
 ### Added
+
+- Modulex editor plugins for VSCode (`editors/vscode`) and IntelliJ
+  (`editors/intellij`), clients of the local read-only MCP server
+  (`tools/mcpserver`) per ADR-0035 plan step 5: review a diff against a
+  base ref, run focused/full declared verification, discover the
+  repository, read the contract, and create a provenance handoff
+  envelope — offline, with no hosted backend. Both share one
+  editor-agnostic tool-surface description (`editors/tool-surface.json`)
+  and hand-rolled stdio JSON-RPC clients with no MCP SDK dependency.
 
 - Hosted PR-review GitHub App on GCP (`services/prreview` +
   `infra/prreview`), the optional zero-setup delivery of the review
@@ -27,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   always-on datastore; no compute cost while idle.
 
 ### Fixed
+
+- prreview worker image: writable Go cache (HOME/GOCACHE/GOMODCACHE/
+  GOPATH under /tmp) and 4Gi memory, so tenant checks that run go/make
+  succeed under the nonroot uid; found by the first production review.
 
 - `verify.PlanFor` now maps files under `services/*` to module-local
   `go -C` checks, extending the nested-module convention beyond

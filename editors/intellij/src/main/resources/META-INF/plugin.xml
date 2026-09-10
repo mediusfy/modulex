@@ -1,0 +1,53 @@
+<idea-plugin>
+  <id>com.mediusfy.modulex</id>
+  <name>Modulex</name>
+  <vendor url="https://github.com/mediusfy/modulex">mediusfy</vendor>
+  <description><![CDATA[
+    A client of the local, read-only modulex MCP server (tools/mcpserver),
+    per ADR-0035 plan step 5 (Jira MOD-82). Review a diff against a base
+    ref, run focused or full declared verification, discover the
+    repository, read the agent contract, and create a provenance handoff
+    envelope — against your local checkout, offline, with no hosted
+    backend.
+  ]]></description>
+
+  <depends>com.intellij.modules.platform</depends>
+
+  <extensions defaultExtensionNs="com.intellij">
+    <notificationGroup id="Modulex" displayType="BALLOON"/>
+  </extensions>
+
+  <actions>
+    <group id="Modulex.Menu" text="Modulex" popup="true">
+      <add-to-group group-id="ToolsMenu" anchor="last"/>
+      <action id="Modulex.ReviewDiff"
+              class="com.mediusfy.modulex.intellij.ReviewDiffAction"
+              text="Review Diff Against Base Ref"
+              description="Run the modulex review engine between a base ref and HEAD"/>
+      <action id="Modulex.RunFocusedVerification"
+              class="com.mediusfy.modulex.intellij.RunFocusedVerificationAction"
+              text="Run Focused Verification (Changed Files)"
+              description="Recommend and run the checks focused on the working tree's changed files"/>
+      <action id="Modulex.RunFullGates"
+              class="com.mediusfy.modulex.intellij.RunFullGatesAction"
+              text="Run Full Verification Gates"
+              description="Run the repository's full declared verification gates"/>
+      <action id="Modulex.DiscoverRepository"
+              class="com.mediusfy.modulex.intellij.DiscoverRepositoryAction"
+              text="Discover Repository"
+              description="Open the discover_repository report as JSON"/>
+      <action id="Modulex.ReadContract"
+              class="com.mediusfy.modulex.intellij.ReadContractAction"
+              text="Read Repository Contract"
+              description="Open the parsed modulex.agent.yaml contract"/>
+      <action id="Modulex.CreateHandoff"
+              class="com.mediusfy.modulex.intellij.CreateHandoffAction"
+              text="Create Handoff Envelope"
+              description="Create a provenance handoff envelope with the most recent results"/>
+      <action id="Modulex.RestartServer"
+              class="com.mediusfy.modulex.intellij.RestartServerAction"
+              text="Restart MCP Server"
+              description="Stop the MCP server; it restarts on the next command"/>
+    </group>
+  </actions>
+</idea-plugin>
