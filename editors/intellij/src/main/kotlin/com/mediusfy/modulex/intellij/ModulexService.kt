@@ -19,6 +19,7 @@ import com.mediusfy.modulex.intellij.core.NO_SERVER_GUIDANCE
 import com.mediusfy.modulex.intellij.core.VerificationResult
 import com.mediusfy.modulex.intellij.core.VerificationStatus
 import com.mediusfy.modulex.intellij.core.resolveServerSpec
+import com.mediusfy.modulex.intellij.core.splitCommand
 import java.io.File
 
 /**
@@ -51,14 +52,24 @@ class ModulexService(private val project: Project) : Disposable {
         get() = PropertiesComponent.getInstance(project).getValue("modulex.review.baseRef", "origin/main")
         set(value) = PropertiesComponent.getInstance(project).setValue("modulex.review.baseRef", value, "origin/main")
 
-    val allowNetwork: Boolean
+    var allowNetwork: Boolean
         get() = PropertiesComponent.getInstance(project).getBoolean("modulex.allowNetwork", false)
+        set(value) = PropertiesComponent.getInstance(project).setValue("modulex.allowNetwork", value)
 
     @Synchronized
     fun client(): McpClient {
-        client?.let { return it }
+        client?.let {
+            if (it.alive) {
+                return it
+            }
+            // The server process died (e.g. compile error in the checkout):
+            // drop the dead client and respawn instead of failing every
+            // action until a manual restart.
+            it.dispose()
+            client = null
+        }
         val projectRoot = root ?: throw IllegalStateException("Modulex needs an open project directory.")
-        val configured = serverCommand.split(" ").filter { it.isNotBlank() }
+        val configured = splitCommand(serverCommand)
         val spec =
             resolveServerSpec(projectRoot, configured)
                 ?: throw IllegalStateException(NO_SERVER_GUIDANCE)

@@ -44,6 +44,12 @@ type Job struct {
 	Status      JobStatus
 	TargetSHA   string
 	LeaseExpiry time.Time
+	// LeaseOwner is the fencing token of the worker holding the lease: a
+	// random per-attempt id. Complete/release mutations from a worker
+	// whose token no longer matches (its lease expired and was taken
+	// over) are ignored, so a stale worker can never wipe or finish the
+	// takeover worker's lease.
+	LeaseOwner string
 
 	// Review memory (ADR-0035 "Remembers prior PRs").
 	LastReviewedSHA string
@@ -67,17 +73,29 @@ const (
 )
 
 // AcquireDecision is the pure lease-acquisition rule: given the current job
-// document, the time, and the delivery's head SHA, it returns the mutated
-// job and the action. Rapid pushes to one PR collapse: while a review runs,
-// deliveries only advance TargetSHA; an expired lease is taken over so a
-// crashed worker's PR retries rather than wedging forever.
-func AcquireDecision(job Job, now time.Time, headSHA string, leaseTTL time.Duration) (Job, AcquireAction) {
-	job.TargetSHA = headSHA
+// document, the time, the delivery's head SHA, and the acquiring worker's
+// fencing token, it returns the mutated job and the action. Rapid pushes
+// to one PR collapse: while a review runs, deliveries only advance
+// TargetSHA; an expired lease is taken over so a crashed worker's PR
+// retries rather than wedging forever.
+//
+// TargetSHA never regresses onto an already-reviewed SHA: a late or
+// retried task whose headSHA equals LastReviewedSHA keeps the pending
+// target instead (Cloud Tasks gives no ordering guarantee, so an old
+// task can arrive after a newer push advanced the target). The worker
+// additionally re-resolves the PR's true head from GitHub after
+// acquiring, which is the authoritative correction for orderings this
+// rule cannot see.
+func AcquireDecision(job Job, now time.Time, headSHA string, leaseTTL time.Duration, owner string) (Job, AcquireAction) {
+	if headSHA != job.LastReviewedSHA || job.TargetSHA == "" {
+		job.TargetSHA = headSHA
+	}
 	if job.Status == StatusRunning && now.Before(job.LeaseExpiry) {
 		return job, ActionSkip
 	}
 	job.Status = StatusRunning
 	job.LeaseExpiry = now.Add(leaseTTL)
+	job.LeaseOwner = owner
 	return job, ActionRun
 }
 
@@ -93,18 +111,20 @@ type CompleteOutcome struct {
 	FollowUpSHA string
 }
 
-// CompleteDecision is the pure completion rule: given the job document and
-// the SHA this worker just reviewed, it returns the mutated job and the
-// outcome. The lease is released either way; review memory and the ledger
-// advance only for a non-superseded review.
-func CompleteDecision(job Job, reviewedSHA string, commentID int64, tokensUsed int64) (Job, CompleteOutcome) {
+// CompleteDecision is the pure completion rule: given the job document,
+// the SHA this worker just reviewed, and the worker's fencing token, it
+// returns the mutated job and the outcome. A worker whose lease was taken
+// over (owner mismatch) mutates nothing and gets a zero outcome — the
+// takeover worker owns the PR now. Otherwise the lease is released;
+// review memory and the ledger advance only for a non-superseded review.
+func CompleteDecision(job Job, reviewedSHA string, tokensUsed int64, owner string) (Job, CompleteOutcome) {
+	if job.LeaseOwner != owner {
+		return job, CompleteOutcome{}
+	}
 	outcome := CompleteOutcome{}
 	if job.TargetSHA == reviewedSHA {
 		outcome.Post = true
 		job.LastReviewedSHA = reviewedSHA
-		if commentID != 0 {
-			job.CommentID = commentID
-		}
 		job.ReviewCount++
 		job.TokensUsed += tokensUsed
 	} else {
@@ -113,7 +133,21 @@ func CompleteDecision(job Job, reviewedSHA string, commentID int64, tokensUsed i
 	}
 	job.Status = StatusIdle
 	job.LeaseExpiry = time.Time{}
+	job.LeaseOwner = ""
 	return job, outcome
+}
+
+// ReleaseDecision is the pure failure-path release: idle the lease so the
+// task queue's retry is not blocked until the TTL — but only when this
+// worker still holds it (no fencing-token match, no mutation).
+func ReleaseDecision(job Job, owner string) Job {
+	if job.LeaseOwner != owner {
+		return job
+	}
+	job.Status = StatusIdle
+	job.LeaseExpiry = time.Time{}
+	job.LeaseOwner = ""
+	return job
 }
 
 // JobStore persists Job documents with a serializable read-modify-write
@@ -128,9 +162,11 @@ type JobStore interface {
 
 // DedupStore records GitHub delivery IDs (MOD-83). Records self-expire via
 // the store's TTL mechanism; Seen returns true when the ID was already
-// recorded, atomically recording it otherwise.
+// recorded, atomically recording it otherwise. Forget removes a record so
+// a failed enqueue does not swallow the redelivery it provoked.
 type DedupStore interface {
 	Seen(ctx context.Context, deliveryID string, ttl time.Duration) (bool, error)
+	Forget(ctx context.Context, deliveryID string) error
 }
 
 // Usage is one installation's aggregated ledger view (MOD-87).

@@ -24,7 +24,10 @@ import {
 
 const execFileAsync = promisify(execFile);
 
-let client: McpClient | undefined;
+// clientPromise (not a resolved client) is the shared state: two commands
+// racing during server startup must share one in-flight start, or each
+// spawns its own `go run` server and the loser leaks as an orphan.
+let clientPromise: Promise<McpClient> | undefined;
 let output: vscode.OutputChannel;
 // lastResults feeds create_handoff's verification field, so a handoff made
 // after a review/verification run records what actually ran.
@@ -35,8 +38,17 @@ function workspaceRoot(): string | undefined {
 }
 
 async function getClient(): Promise<McpClient> {
-  if (client?.alive) {
-    return client;
+  if (clientPromise) {
+    try {
+      const existing = await clientPromise;
+      if (existing.alive) {
+        return existing;
+      }
+      existing.dispose();
+    } catch {
+      // The previous start failed; fall through and start fresh.
+    }
+    clientPromise = undefined;
   }
   const root = workspaceRoot();
   if (!root) {
@@ -52,8 +64,22 @@ async function getClient(): Promise<McpClient> {
   output.appendLine(
     `starting MCP server: ${spec.command} ${spec.args.join(" ")} (cwd ${spec.cwd})`,
   );
-  client = await McpClient.start(spec, (line) => output.appendLine(line));
-  return client;
+  const starting = McpClient.start(spec, (line) => output.appendLine(line));
+  clientPromise = starting;
+  try {
+    return await starting;
+  } catch (err) {
+    if (clientPromise === starting) {
+      clientPromise = undefined;
+    }
+    throw err;
+  }
+}
+
+function disposeClient(): void {
+  const pending = clientPromise;
+  clientPromise = undefined;
+  void pending?.then((c) => c.dispose()).catch(() => {});
 }
 
 async function withProgress<T>(
@@ -241,8 +267,7 @@ async function createHandoff(): Promise<void> {
 }
 
 function restartServer(): void {
-  client?.dispose();
-  client = undefined;
+  disposeClient();
   void vscode.window.showInformationMessage(
     "Modulex: MCP server stopped; it restarts on the next command.",
   );
@@ -279,6 +304,5 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {
-  client?.dispose();
-  client = undefined;
+  disposeClient();
 }

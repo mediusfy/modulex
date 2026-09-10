@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	cloudtasks "cloud.google.com/go/cloudtasks/apiv2"
 	taskspb "cloud.google.com/go/cloudtasks/apiv2/cloudtaskspb"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/mediusfy/modulex/services/prreview/webhook"
 )
@@ -35,6 +37,11 @@ func (c *CloudTasks) Enqueue(ctx context.Context, req webhook.ReviewRequest) err
 	_, err = c.Client.CreateTask(ctx, &taskspb.CreateTaskRequest{
 		Parent: c.QueuePath,
 		Task: &taskspb.Task{
+			// Match the worker's Cloud Run timeout: the 600s default would
+			// abandon-and-retry a task whose first attempt is still legally
+			// running (and whose lease just expired), producing concurrent
+			// reviews of the same SHA.
+			DispatchDeadline: durationpb.New(15 * time.Minute),
 			MessageType: &taskspb.Task_HttpRequest{
 				HttpRequest: &taskspb.HttpRequest{
 					HttpMethod: taskspb.HttpMethod_POST,

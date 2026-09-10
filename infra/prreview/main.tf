@@ -35,6 +35,10 @@ provider "google" {
   billing_project       = var.project_id
 }
 
+data "google_project" "this" {
+  project_id = var.project_id
+}
+
 locals {
   labels_base = {
     service = "prreview"
@@ -150,10 +154,9 @@ resource "google_service_account_iam_member" "worker_uses_invoker" {
 # Secret *containers* are managed here; secret *values* are added by a
 # human (gcloud secrets versions add), never by Terraform state or an
 # agent. Per-installation AI keys (prreview-ai-<id>) are created out of
-# band as installations enable commentary; the worker's accessor grant
-# is project-wide on Secret Manager but the service only ever reads the
-# prreview-ai-* name pattern (enforced in code; tighten with per-secret
-# IAM as installations are onboarded).
+# band as installations enable commentary; the worker reads them through
+# the prefix-conditioned grant below, so onboarding needs no per-secret
+# IAM.
 
 resource "google_secret_manager_secret" "webhook_secret" {
   secret_id = "prreview-webhook-secret"
@@ -183,6 +186,21 @@ resource "google_secret_manager_secret_iam_member" "worker_app_key" {
   secret_id = google_secret_manager_secret.app_private_key.secret_id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.worker.email}"
+}
+
+# Per-installation AI keys: one conditional grant covering the whole
+# prreview-ai-* name prefix, so creating prreview-ai-<installation> is
+# sufficient to activate a tenant's commentary (IAM conditions match on
+# the project *number* form of resource.name).
+resource "google_project_iam_member" "worker_ai_secrets" {
+  project = var.project_id
+  role    = "roles/secretmanager.secretAccessor"
+  member  = "serviceAccount:${google_service_account.worker.email}"
+  condition {
+    title       = "prreview-ai-secrets-only"
+    description = "Access limited to the per-installation AI key secrets."
+    expression  = "resource.name.startsWith(\"projects/${data.google_project.this.number}/secrets/prreview-ai-\")"
+  }
 }
 
 # --- Cloud Tasks ------------------------------------------------------------

@@ -63,8 +63,15 @@ func main() {
 		log.Error("app private key", "error", err)
 		os.Exit(1)
 	}
+	// Defense in depth: the parsed key lives only in process memory from
+	// here on; nothing this process spawns (git, review subprocesses)
+	// should inherit the PEM through the environment.
+	_ = os.Unsetenv("GITHUB_APP_PRIVATE_KEY")
 
-	leaseTTL := 10 * time.Minute
+	// The lease must outlive the longest possible task attempt (Cloud Run
+	// timeout 900s < Cloud Tasks DispatchDeadline 15m), or a retry could
+	// take over the lease while the first attempt still runs.
+	leaseTTL := 20 * time.Minute
 	if v := os.Getenv("LEASE_TTL"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			leaseTTL = d
@@ -73,6 +80,7 @@ func main() {
 
 	fsStore := &store.Firestore{Client: fs}
 	httpClient := &http.Client{Timeout: 30 * time.Second}
+	githubREST := &githubauth.RESTCommenter{BaseURL: "https://api.github.com", HTTP: httpClient}
 	queueTemplate := queue.CloudTasks{
 		Client:                tasks,
 		QueuePath:             mustEnv(log, "TASKS_QUEUE_PATH"),
@@ -93,7 +101,8 @@ func main() {
 		Fetcher:    engine.GitFetcher{},
 		Reviewer:   engine.Modulex{},
 		Commentary: ai.Anthropic{},
-		Comments:   &githubauth.RESTCommenter{BaseURL: "https://api.github.com", HTTP: httpClient},
+		Comments:   githubREST,
+		PRs:        githubREST,
 		Ledger:     fsStore,
 		Tenants:    &tenants.SecretManager{Client: secrets, ProjectID: project},
 		LeaseTTL:   leaseTTL,
@@ -135,8 +144,17 @@ func main() {
 	if port == "" {
 		port = "8080"
 	}
+	// Explicit server timeouts: the default http.Server has none, which
+	// leaves the endpoint open to slowloris-style connection exhaustion.
+	server := &http.Server{
+		Addr:              ":" + port,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+	}
 	log.Info("worker listening", "port", port)
-	if err := http.ListenAndServe(":"+port, mux); err != nil {
+	if err := server.ListenAndServe(); err != nil {
 		log.Error("serve", "error", err)
 		os.Exit(1)
 	}

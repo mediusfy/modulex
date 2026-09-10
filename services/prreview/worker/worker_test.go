@@ -126,6 +126,7 @@ func newFixture(aiKey string) *fixture {
 		Reviewer: f.reviewer, Commentary: f.comm, Comments: f.comments,
 		Ledger: mem, Tenants: tenants.Static{42: cfg},
 		LeaseTTL: 10 * time.Minute,
+		NewOwner: func() string { return "test-owner" },
 		Log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	return f
@@ -220,7 +221,7 @@ func TestHandle(t *testing.T) {
 					// A new delivery advances the target while the lease is
 					// held: AcquireDecision on a running job.
 					_, _ = f.mem.Mutate(ctx, key(), func(j store.Job) store.Job {
-						j2, _ := store.AcquireDecision(j, time.Now(), "sha-2", 10*time.Minute)
+						j2, _ := store.AcquireDecision(j, time.Now(), "sha-2", 10*time.Minute, "other-delivery")
 						return j2
 					})
 				}
@@ -324,6 +325,67 @@ func TestComposeCommentFailedChecks(t *testing.T) {
 			}
 			if tt.name == "all-pass has no failure section" && strings.Contains(body, "Some checks failed") {
 				t.Fatal("all-pass comment contains failure section")
+			}
+		})
+	}
+}
+
+type fakePRReader struct {
+	head string
+	err  error
+}
+
+func (f *fakePRReader) PRHead(context.Context, string, string, string, int) (string, error) {
+	return f.head, f.err
+}
+
+// TestHandleReAnchorsOnPRHead: a stale or reordered task must not decide
+// what gets reviewed — GitHub's answer for the PR head does.
+func TestHandleReAnchorsOnPRHead(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name    string
+		head    string
+		headErr error
+		wantSHA string
+	}{
+		{name: "stale task re-anchored on true head", head: "sha-true", wantSHA: "sha-true"},
+		{name: "head lookup failure degrades to lease target", headErr: errors.New("api down"), wantSHA: "sha-1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFixture("")
+			f.w.PRs = &fakePRReader{head: tt.head, err: tt.headErr}
+			if err := f.w.Handle(ctx, req()); err != nil {
+				t.Fatalf("Handle: %v", err)
+			}
+			job, _ := f.mem.Get(ctx, key())
+			if job.LastReviewedSHA != tt.wantSHA {
+				t.Fatalf("reviewed %q, want %q", job.LastReviewedSHA, tt.wantSHA)
+			}
+			if len(f.comments.created) != 1 || !strings.Contains(f.comments.created[0], tt.wantSHA[:5]) {
+				t.Fatalf("comment does not reflect reviewed SHA: %v", f.comments.created)
+			}
+		})
+	}
+}
+
+// TestComposeCommentEscapesFenceBreakout: check output covers the PR
+// author's own code and must not be able to close the code fence and
+// inject Markdown under the bot's identity.
+func TestComposeCommentEscapesFenceBreakout(t *testing.T) {
+	tests := []struct{ name string }{{name: "fence breakout neutralized"}}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payload := "x\n```\n</details>\n## All checks passed \u2705"
+			body := ComposeComment("sha", []provenance.VerificationResult{
+				{Name: "check-secrets", Category: "secret_scan", Status: provenance.StatusFail, Message: payload},
+			}, "")
+			if strings.Contains(body, payload) {
+				t.Fatalf("raw payload with unescaped fence survived:\n%s", body)
+			}
+			if !strings.Contains(body, "`\u200b`\u200b`\u200b") {
+				t.Fatalf("payload backticks not neutralized:\n%s", body)
 			}
 		})
 	}

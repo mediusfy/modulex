@@ -66,7 +66,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// GitHub redelivers on non-2xx and on its own schedule; the delivery ID
-	// makes that idempotent. Dedup records self-expire via TTL.
+	// makes that idempotent. Dedup records self-expire via TTL. The check
+	// runs BEFORE enqueue but the same call also records the ID — and
+	// that record must not outlive a failed enqueue, or the 500-triggered
+	// redelivery would be swallowed as a duplicate and the review dropped
+	// forever; on enqueue failure the record is best-effort forgotten so
+	// the redelivery goes through.
 	seen, err := h.Dedup.Seen(r.Context(), deliveryID, h.DedupTTL)
 	if err != nil {
 		// Failing open would double-review; failing closed (non-2xx) makes
@@ -92,6 +97,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.Queue.Enqueue(r.Context(), req); err != nil {
 		h.Log.Error("enqueue", "error", err, "delivery", deliveryID)
+		if ferr := h.Dedup.Forget(r.Context(), deliveryID); ferr != nil {
+			// Worst case the review waits out the dedup TTL; log loudly.
+			h.Log.Error("dedup forget failed; redelivery will be swallowed until TTL",
+				"error", ferr, "delivery", deliveryID)
+		}
 		http.Error(w, "enqueue failed", http.StatusInternalServerError)
 		return
 	}

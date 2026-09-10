@@ -36,6 +36,7 @@ type jobDoc struct {
 	Status          string    `firestore:"status"`
 	TargetSHA       string    `firestore:"target_sha"`
 	LeaseExpiry     time.Time `firestore:"lease_expiry"`
+	LeaseOwner      string    `firestore:"lease_owner"`
 	LastReviewedSHA string    `firestore:"last_reviewed_sha"`
 	CommentID       int64     `firestore:"comment_id"`
 	ReviewCount     int64     `firestore:"review_count"`
@@ -45,6 +46,7 @@ type jobDoc struct {
 func toDoc(j Job) jobDoc {
 	return jobDoc{
 		Status: string(j.Status), TargetSHA: j.TargetSHA, LeaseExpiry: j.LeaseExpiry,
+		LeaseOwner:      j.LeaseOwner,
 		LastReviewedSHA: j.LastReviewedSHA, CommentID: j.CommentID,
 		ReviewCount: j.ReviewCount, TokensUsed: j.TokensUsed,
 	}
@@ -53,6 +55,7 @@ func toDoc(j Job) jobDoc {
 func fromDoc(d jobDoc) Job {
 	return Job{
 		Status: JobStatus(d.Status), TargetSHA: d.TargetSHA, LeaseExpiry: d.LeaseExpiry,
+		LeaseOwner:      d.LeaseOwner,
 		LastReviewedSHA: d.LastReviewedSHA, CommentID: d.CommentID,
 		ReviewCount: d.ReviewCount, TokensUsed: d.TokensUsed,
 	}
@@ -128,6 +131,13 @@ func (f *Firestore) Seen(ctx context.Context, deliveryID string, ttl time.Durati
 		return false, fmt.Errorf("firestore dedup %s: %w", deliveryID, err)
 	}
 	return seen, nil
+}
+
+func (f *Firestore) Forget(ctx context.Context, deliveryID string) error {
+	if _, err := f.Client.Collection("dedup").Doc(deliveryID).Delete(ctx); err != nil {
+		return fmt.Errorf("firestore dedup forget %s: %w", deliveryID, err)
+	}
+	return nil
 }
 
 func (f *Firestore) Add(ctx context.Context, installationID int64, reviews, tokens int64) error {
