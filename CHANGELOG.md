@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Hosted PR-review worker: the engine now runs only the pure checks
+  (secret scan, protected paths) and never a tenant-declared command —
+  previously any PR author on an installed repo could execute arbitrary
+  code beside the App's credentials. Also: fail-closed contract parsing,
+  fence-escaped check output in PR comments, HTTP server timeouts on
+  both services, and the App key dropped from the worker env after
+  parsing.
+
+### Fixed
+
+- Hosted PR-review reliability: lease fencing tokens, re-anchoring on
+  GitHub's authoritative PR head, immediate comment-ID persistence,
+  dedup rollback on enqueue failure, a Cloud Tasks dispatch deadline
+  exceeding the worker timeout, blobless fetches so three-dot diffs
+  keep their merge base, and a prefix-conditioned IAM grant so
+  per-installation AI keys activate without manual bindings.
+- Editor plugins: IntelliJ gains dead-server respawn, a Settings page,
+  and quote-aware server-command parsing; VSCode no longer spawns
+  duplicate servers on concurrent commands.
+- `make check-nested-modules` (and CI) now covers `services/prreview`,
+  and CI gains editor-plugin test jobs — previously nothing built or
+  tested those trees.
+
 ### Added
 
 - Modulex editor plugins for VSCode (`editors/vscode`) and IntelliJ
