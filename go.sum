@@ -1,5 +1,5 @@
-github.com/ThreeDotsLabs/watermill v1.5.2 h1:0ES33Eq1jEsP/pWvtE4n8bE0bs+9Jq7boT7wGBCVY6Q=
-github.com/ThreeDotsLabs/watermill v1.5.2/go.mod h1:i9/968UriGphWfEbfMuYSD1qFbYRjb0mE0r+rV0FPp4=
+github.com/ThreeDotsLabs/watermill v1.5.3 h1:GoTR7fW1ZT+itzUv/w3VB6Um1B7oTBrOWjJ8sOA9XqU=
+github.com/ThreeDotsLabs/watermill v1.5.3/go.mod h1:i9/968UriGphWfEbfMuYSD1qFbYRjb0mE0r+rV0FPp4=
 github.com/antithesishq/antithesis-sdk-go v0.7.2-default-no-op h1:p2zFsAzvhIpFya8AIOHIbWf7NGvO34QpLGclyf7nXj8=
 github.com/antithesishq/antithesis-sdk-go v0.7.2-default-no-op/go.mod h1:FQyySiasQQM8735Ddel3MRojmy4dA1IqCeyJ5jmPMbI=
 github.com/cenkalti/backoff/v5 v5.0.3 h1:ZN+IMa753KfX5hd8vVaMixjnqRZ3y8CuJKRKj1xcsSM=
