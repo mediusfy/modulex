@@ -1,6 +1,6 @@
 module github.com/mediusfy/modulex
 
-go 1.25.0
+go 1.26.0
 
 // v0.4.0 was tagged on the wrong commit (a small CI-permissions change that
 // branched off an older main, missing the release's actual content) and
@@ -12,7 +12,7 @@ retract v0.4.0
 require (
 	github.com/ThreeDotsLabs/watermill v1.5.2
 	github.com/go-chi/chi/v5 v5.3.2
-	github.com/nats-io/nats-server/v2 v2.14.5
+	github.com/nats-io/nats-server/v2 v2.14.6
 	github.com/nats-io/nats.go v1.53.1
 	github.com/rabbitmq/amqp091-go v1.14.0
 	github.com/stretchr/testify v1.12.1
