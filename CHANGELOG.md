@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Hosted PR-review AI commentary now supports OpenAI, DeepSeek, and
+  Ollama in addition to Anthropic. Each installation selects its
+  backend via a `provider` field in its `prreview-ai-<id>` secret;
+  ADR-0035's caller-keyed model holds for every provider, including
+  Ollama, where the installation supplies and owns its own server.
+
+### Fixed
+
+- `tenants.parseAIConfigPayload`: a JSON secret payload using the wrong
+  field names (missing `api_key`/`base_url`) no longer falls through to
+  being treated as a literal bare API key — previously the whole JSON
+  blob would have been sent to the provider as "the key".
+
 ### Security
 
 - Hosted PR-review worker: the engine now runs only the pure checks
