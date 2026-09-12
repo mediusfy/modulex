@@ -100,7 +100,7 @@ func main() {
 		},
 		Fetcher:    engine.GitFetcher{},
 		Reviewer:   engine.Modulex{},
-		Commentary: ai.Anthropic{},
+		Commentary: ai.Dispatch{},
 		Comments:   githubREST,
 		PRs:        githubREST,
 		Ledger:     fsStore,
