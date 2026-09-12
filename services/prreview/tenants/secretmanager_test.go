@@ -15,8 +15,8 @@ func TestParseAIConfigPayload(t *testing.T) {
 		},
 		{
 			name:    "bare-string legacy secret defaults to anthropic",
-			payload: "sk-ant-api03-raw-key\n",
-			want:    AIConfig{Provider: "anthropic", APIKey: "sk-ant-api03-raw-key"},
+			payload: "sk-ant-raw-key\n",
+			want:    AIConfig{Provider: "anthropic", APIKey: "sk-ant-raw-key"},
 		},
 		{
 			name:    "explicit provider is preserved",
