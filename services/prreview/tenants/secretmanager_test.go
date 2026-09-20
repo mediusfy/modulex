@@ -34,6 +34,16 @@ func TestParseAIConfigPayload(t *testing.T) {
 			want:    AIConfig{Provider: "ollama", BaseURL: "https://my-ollama:11434", Model: "llama3.1"},
 		},
 		{
+			name:    "base_url with no provider is left ambiguous, not defaulted to anthropic",
+			payload: `{"base_url": "https://my-ollama:11434", "model": "llama3.1"}`,
+			want:    AIConfig{BaseURL: "https://my-ollama:11434", Model: "llama3.1"},
+		},
+		{
+			name:    "JSON-quoted legacy key unwraps without the surrounding quotes",
+			payload: `"sk-ant-api03-x"`,
+			want:    AIConfig{Provider: "anthropic", APIKey: "sk-ant-api03-x"},
+		},
+		{
 			name:    "empty payload disables AI commentary",
 			payload: "",
 			want:    AIConfig{},

@@ -129,9 +129,24 @@ func TestDispatchErrorPaths(t *testing.T) {
 		},
 		{
 			name:      "openai-compatible surfaces upstream error status",
-			cfg:       Config{Provider: "openai", Model: "m"},
+			cfg:       Config{Provider: "openai", APIKey: "sk-test", Model: "m"},
 			serverErr: true,
 			wantErr:   "status 401",
+		},
+		{
+			name:    "openai without api_key",
+			cfg:     Config{Provider: "openai", Model: "m", BaseURL: "http://example.invalid"},
+			wantErr: "openai requires api_key",
+		},
+		{
+			name:    "deepseek without api_key",
+			cfg:     Config{Provider: "deepseek", Model: "m", BaseURL: "http://example.invalid"},
+			wantErr: "deepseek requires api_key",
+		},
+		{
+			name:    "empty provider with base_url is ambiguous, not a silent anthropic fallback",
+			cfg:     Config{Model: "m", BaseURL: "http://example.invalid"},
+			wantErr: "provider is required when base_url is set",
 		},
 	}
 	for _, tt := range tests {

@@ -168,6 +168,10 @@ func TestHandle(t *testing.T) {
 				if usage.Reviews != 1 || usage.Tokens != 250 {
 					t.Fatalf("usage %+v, want 1 review / 250 tokens", usage)
 				}
+				want := ai.Config{APIKey: "key-42", Model: "claude-opus-5"}
+				if f.comm.gotConfig != want {
+					t.Fatalf("commentary got config %+v, want %+v", f.comm.gotConfig, want)
+				}
 			},
 		},
 		{

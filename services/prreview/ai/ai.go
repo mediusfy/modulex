@@ -24,6 +24,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -93,34 +94,48 @@ func buildPrompt(results []provenance.VerificationResult, diff string) string {
 // stays caller-keyed by construction even with four providers behind it.
 type Dispatch struct{}
 
+// openAIProviders drives the per-provider defaults for every OpenAI-wire
+// provider (openai, deepseek, ollama) from one table, so a new provider or a
+// fix to the URL-building rule touches one place instead of one case per
+// provider.
+var openAIProviders = map[string]struct {
+	defaultBaseURL string // empty means base_url is required (e.g. ollama)
+	pathSuffix     string
+}{
+	"openai":   {defaultBaseURL: "https://api.openai.com/v1", pathSuffix: "/chat/completions"},
+	"deepseek": {defaultBaseURL: "https://api.deepseek.com", pathSuffix: "/chat/completions"},
+	"ollama":   {pathSuffix: "/v1/chat/completions"},
+}
+
 func (Dispatch) Comment(ctx context.Context, cfg Config, results []provenance.VerificationResult, diff string) (string, int64, error) {
 	provider := strings.ToLower(strings.TrimSpace(cfg.Provider))
 	if provider == "" {
+		if cfg.BaseURL != "" {
+			// anthropic never reads BaseURL, so an empty provider paired
+			// with a base_url is an ambiguous/malformed config (likely
+			// meant for openai/deepseek/ollama), never a legacy anthropic
+			// secret — silently defaulting to anthropic here would make
+			// AI commentary fail forever with nothing logged, since
+			// anthropicComment treats a missing API key as a silent no-op.
+			return "", 0, fmt.Errorf("provider is required when base_url is set (got empty provider with base_url %q)", cfg.BaseURL)
+		}
 		provider = "anthropic"
 	}
-	switch provider {
-	case "anthropic":
+	if provider == "anthropic" {
 		return anthropicComment(ctx, cfg, results, diff)
-	case "openai":
-		base := cfg.BaseURL
-		if base == "" {
-			base = "https://api.openai.com/v1"
-		}
-		return openAICompatibleComment(ctx, "openai", strings.TrimRight(base, "/")+"/chat/completions", cfg, results, diff)
-	case "deepseek":
-		base := cfg.BaseURL
-		if base == "" {
-			base = "https://api.deepseek.com"
-		}
-		return openAICompatibleComment(ctx, "deepseek", strings.TrimRight(base, "/")+"/chat/completions", cfg, results, diff)
-	case "ollama":
-		if cfg.BaseURL == "" {
-			return "", 0, fmt.Errorf("ollama requires base_url (the installation's own Ollama server address)")
-		}
-		return openAICompatibleComment(ctx, "ollama", strings.TrimRight(cfg.BaseURL, "/")+"/v1/chat/completions", cfg, results, diff)
-	default:
+	}
+	spec, ok := openAIProviders[provider]
+	if !ok {
 		return "", 0, fmt.Errorf("unsupported AI provider %q", cfg.Provider)
 	}
+	base := cfg.BaseURL
+	if base == "" {
+		if spec.defaultBaseURL == "" {
+			return "", 0, fmt.Errorf("%s requires base_url (the installation's own Ollama server address)", provider)
+		}
+		base = spec.defaultBaseURL
+	}
+	return openAICompatibleComment(ctx, provider, strings.TrimRight(base, "/")+spec.pathSuffix, cfg, results, diff)
 }
 
 // anthropicComment is the production path over the official Go SDK.
@@ -190,8 +205,10 @@ type openAIChatResponse struct {
 	} `json:"error"`
 }
 
-// httpClient is overridden in tests to point at an httptest.Server.
-var httpClient = http.DefaultClient
+// httpClient is shared by every OpenAI-wire provider call. Tests redirect
+// requests by pointing cfg.BaseURL at an httptest.Server rather than
+// swapping this var, since it is unsynchronized package state.
+var httpClient = &http.Client{Timeout: 30 * time.Second}
 
 // openAICompatibleComment calls any OpenAI chat-completions-compatible
 // endpoint: OpenAI itself, DeepSeek, and Ollama's OpenAI-compatibility
@@ -199,6 +216,13 @@ var httpClient = http.DefaultClient
 func openAICompatibleComment(ctx context.Context, provider, url string, cfg Config, results []provenance.VerificationResult, diff string) (string, int64, error) {
 	if cfg.Model == "" {
 		return "", 0, fmt.Errorf("%s requires a model (provider model catalogs change too often to default safely)", provider)
+	}
+	if cfg.APIKey == "" && provider != "ollama" {
+		// Ollama documents its key as "required, but unused" for an
+		// unauthenticated local server; openai and deepseek always require
+		// one. Checking here surfaces a clear local error instead of an
+		// opaque upstream 401.
+		return "", 0, fmt.Errorf("%s requires api_key", provider)
 	}
 	reqBody, err := json.Marshal(openAIChatRequest{
 		Model: cfg.Model,
@@ -226,7 +250,10 @@ func openAICompatibleComment(ctx context.Context, provider, url string, cfg Conf
 		return "", 0, fmt.Errorf("%s commentary: %w", provider, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", 0, fmt.Errorf("%s commentary: reading response: %w", provider, err)
+	}
 	if resp.StatusCode != http.StatusOK {
 		var out openAIChatResponse
 		msg := string(body)

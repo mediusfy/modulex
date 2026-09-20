@@ -60,10 +60,26 @@ func parseAIConfigPayload(payload []byte) AIConfig {
 		if cfg.APIKey == "" && cfg.BaseURL == "" {
 			return AIConfig{}
 		}
-		if cfg.Provider == "" {
+		if cfg.Provider == "" && cfg.BaseURL == "" {
+			// Only the exact legacy shape (a key, no base_url) predates
+			// multi-provider support. anthropic never reads BaseURL, so a
+			// base_url with no provider is an openai/deepseek/ollama secret
+			// missing its provider field, never a legacy anthropic one —
+			// defaulting that case to anthropic would silently disable AI
+			// commentary instead of surfacing the misconfiguration.
 			cfg.Provider = "anthropic"
 		}
 		return AIConfig{Provider: cfg.Provider, APIKey: cfg.APIKey, Model: cfg.Model, BaseURL: cfg.BaseURL}
+	}
+	// A JSON-quoted string (the secret was created as "sk-ant-..." instead
+	// of the bare token) unwraps to the same legacy bare-key path, rather
+	// than being treated as a literal payload with the quotes included.
+	var quoted string
+	if json.Unmarshal(payload, &quoted) == nil {
+		if raw := strings.TrimSpace(quoted); raw != "" {
+			return AIConfig{Provider: "anthropic", APIKey: raw}
+		}
+		return AIConfig{}
 	}
 	// Not valid JSON at all: a bare-key legacy secret, from before this
 	// format existed. Always anthropic, since that predates
