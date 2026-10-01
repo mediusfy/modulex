@@ -160,7 +160,7 @@ func TestGitFetcher_TokenNeverAppearsInArgv(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const token = "super-secret-installation-token-xyz" //nolint:gosec // test fixture, not a real credential
+	const token = "super-secret-installation-token-xyz" // nosecret: test fixture, not a real credential
 	dir, cleanup, err := GitFetcher{}.Fetch(context.Background(), repo, token, "main", headSHA)
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
