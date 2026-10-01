@@ -89,3 +89,44 @@ func TestLimiter(t *testing.T) {
 		})
 	}
 }
+
+// TestLimiter_EvictsExpiredInstallations proves counts stays bounded by the
+// number of installations active within the last window, not by every
+// distinct installation ever seen — a long-lived warm process serving many
+// one-off installations must not accumulate a permanent map entry for each
+// one.
+func TestLimiter_EvictsExpiredInstallations(t *testing.T) {
+	t0 := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name          string
+		window        time.Duration
+		installations int64
+	}{
+		{name: "1000 distinct installations, each seen once, outside the window", window: time.Hour, installations: 1000},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := New(1, tt.window)
+			now := t0
+			l.SetClock(func() time.Time { return now })
+
+			for id := int64(0); id < tt.installations; id++ {
+				l.Allow(id)
+			}
+			if got := len(l.counts); got != int(tt.installations) {
+				t.Fatalf("counts len = %d immediately after %d first-time installations, want %d", got, tt.installations, tt.installations)
+			}
+
+			// Advance well past the window and make one more call (from a
+			// installation not seen before): the sweep this triggers must
+			// evict every entry whose window has fully expired, leaving
+			// only the one just-created entry behind.
+			now = now.Add(2 * tt.window)
+			l.Allow(tt.installations)
+
+			if got := len(l.counts); got != 1 {
+				t.Fatalf("counts len = %d after the sweep, want 1 (only the installation just seen)", got)
+			}
+		})
+	}
+}

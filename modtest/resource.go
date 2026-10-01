@@ -89,7 +89,10 @@ func AssertResourceOwnership(t TB, mod modulex.Module, owner func() ResourceOwne
 		if err := s.Start(context.Background()); err != nil {
 			t.Fatalf("modtest: Start: %v", err)
 		}
-		if o := owner(); o != nil && o.Closed() {
+		o := owner()
+		if o == nil {
+			t.Errorf("modtest: owner() returned nil after Start; module %q must still own its resource while running", mod.Name())
+		} else if o.Closed() {
 			t.Errorf("modtest: resource owner for module %q reports Closed() == true immediately after Start; the resource must remain open while the module is running", mod.Name())
 		}
 	}

@@ -501,7 +501,16 @@ func applyAll(realTargetDir string, changes []FileChange, fullPaths []string, en
 		} else {
 			createdDir, err := applyWrite(fullPaths[i], c.NewContent)
 			if err != nil {
-				rollbackErr := rollbackEntries(realTargetDir, applied)
+				// applyWrite can fail after it already created a new
+				// directory chain (ensureDir succeeded, the write/rename
+				// that followed did not). createdDir names that chain even
+				// on this error path, so it must be folded into the entry
+				// handed to rollbackEntries alongside the already-applied
+				// ones — otherwise this call's own directory creation is
+				// never rolled back, leaving it on disk despite Apply
+				// reporting a full rollback to the pre-Apply state.
+				entry.CreatedDir = createdDir
+				rollbackErr := rollbackEntries(realTargetDir, append(applied, entry))
 				return nil, combineApplyRollbackErr(
 					fmt.Errorf("patchapply: change %d (%q): writing: %w", i, c.Path, err), rollbackErr)
 			}

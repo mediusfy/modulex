@@ -153,6 +153,18 @@ var ClassificationRules = []ClassificationRule{
 	},
 }
 
+// shellMetacharacters matches the characters a POSIX shell gives special
+// meaning to for chaining, backgrounding, substituting, or redirecting
+// commands: ; & | ` $ < > and newlines. verify.Run executes every
+// classified command via "sh -c <Command>" (see verify/run.go), so a
+// command string containing any of these can smuggle an additional
+// shell-level action past a rule whose Pattern only matches a safe-looking
+// prefix (only the go-family rule above is fully anchored at $; every other
+// rule is anchored at ^ alone). Rejecting these up front keeps every rule
+// honest without having to re-anchor each one at $, which would also break
+// legitimate multi-token commands like "git push origin main".
+var shellMetacharacters = regexp.MustCompile("[;&|`$<>\n\r]")
+
 // ClassifyCommand classifies cmd (a full command line, e.g. "make release
 // VERSION=v0.2.0" or "git push origin main") by matching it against
 // ClassificationRules in order and returning the first match's class and
@@ -166,6 +178,9 @@ var ClassificationRules = []ClassificationRule{
 // assuming permission."
 func ClassifyCommand(cmd string) (provenance.CommandClass, string) {
 	trimmed := strings.TrimSpace(cmd)
+	if shellMetacharacters.MatchString(trimmed) {
+		return provenance.ClassApprovalRequired, "command contains a shell metacharacter (;, &, |, `, $, <, >, or a newline) that could chain, substitute, or redirect beyond the matched command; fail-safe default treats this as approval-required rather than classifying by prefix alone"
+	}
 	for _, rule := range ClassificationRules {
 		if rule.Pattern.MatchString(trimmed) {
 			return rule.Class, rule.Reason

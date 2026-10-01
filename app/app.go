@@ -116,7 +116,7 @@ func WithPostStop(fn func(context.Context) error) Option {
 // application-level Shutdown before it, or a tracer provider's Shutdown
 // after it) should use WithPreStop/WithPostStop rather than reimplementing
 // this lifecycle by hand.
-func Run(logger *slog.Logger, configLoader func(target interface{}) error, modules []modulex.Module, opts ...Option) error {
+func Run(logger *slog.Logger, configLoader func(target interface{}) error, modules []modulex.Module, opts ...Option) (err error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -184,21 +184,25 @@ func Run(logger *slog.Logger, configLoader func(target interface{}) error, modul
 		return errors.Join(errs...)
 	}
 
-	// Ensure resources are stopped if Init or Start fails midway.
+	// Ensure resources are stopped if Init or Start fails midway. The cleanup
+	// error is joined into Run's named return value, per
+	// WithPreStop/WithPostStop's documented contract that hook (and
+	// StopModules) errors are joined into Run's return value even when Run
+	// exits early because InitModules or StartModules failed.
 	var fullyStarted bool
 	defer func() {
 		if !fullyStarted {
-			if err := runStop(); err != nil {
-				logger.Error("cleanup after failed startup encountered errors", slog.Any("error", err))
+			if stopErr := runStop(); stopErr != nil {
+				err = errors.Join(err, stopErr)
 			}
 		}
 	}()
 
-	if err := mgr.InitModules(ctx); err != nil {
-		return fmt.Errorf("app: init failed: %w", err)
+	if initErr := mgr.InitModules(ctx); initErr != nil {
+		return fmt.Errorf("app: init failed: %w", initErr)
 	}
-	if err := mgr.StartModules(ctx); err != nil {
-		return fmt.Errorf("app: start failed: %w", err)
+	if startErr := mgr.StartModules(ctx); startErr != nil {
+		return fmt.Errorf("app: start failed: %w", startErr)
 	}
 
 	fullyStarted = true

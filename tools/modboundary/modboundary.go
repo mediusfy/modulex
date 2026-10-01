@@ -206,20 +206,26 @@ func checkSQLTableRef(pass *analysis.Pass, val string, pos token.Pos, schemaTabl
 	}
 }
 
+// sqlKeywordPattern matches any of isLikelySQLReference's SQL keywords as a
+// whole word, so e.g. "set" does not fire inside "assets" or "on" inside
+// "constitution".
+var sqlKeywordPattern = regexp.MustCompile(`\b(select|from|where|join|insert|update|delete|into|set|on|table|alter|drop|create|truncate|grant)\b`)
+
 // isLikelySQLReference checks whether a lowercased string containing a
-// lowercased table name is likely a SQL reference rather than an accidental
-// substring match. It looks for SQL keywords near the table name.
+// lowercased table name (the caller already confirmed this via a
+// word-boundary match) is likely a genuine SQL reference rather than an
+// unrelated string that merely happens to contain the table name as a
+// substring (e.g. an error message like "orders not found" next to a table
+// named "orders"). It looks for SQL keywords near the table name, or — since
+// a bare constant value legitimately has no keyword at all — treats the
+// string as a likely reference only when it is nothing but the table name
+// itself (e.g. a `TableName = "orders"` constant), not merely a string that
+// contains it somewhere.
 func isLikelySQLReference(lower, table string) bool {
-	keywords := []string{"select", "from", "where", "join", "insert", "update", "delete", "into", "set", "on", "table", "alter", "drop", "create", "truncate", "grant"}
-	// Check if any SQL keyword appears in the same string as the table name.
-	for _, kw := range keywords {
-		if strings.Contains(lower, kw) {
-			return true
-		}
+	if sqlKeywordPattern.MatchString(lower) {
+		return true
 	}
-	// If the string is just the table name (or contains it boundaried), it's
-	// likely a reference (e.g. config values, table name constants).
-	return strings.Contains(lower, table)
+	return strings.TrimSpace(lower) == table
 }
 
 // globToRegexp translates a shell-style glob pattern into an anchored

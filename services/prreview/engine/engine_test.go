@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -115,4 +116,91 @@ func TestModulexReview(t *testing.T) {
 			}
 		})
 	}
+}
+
+// shellQuote wraps s in single quotes for safe embedding in a POSIX shell
+// script, escaping any single quote it contains.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// TestGitFetcher_TokenNeverAppearsInArgv proves the installation token is
+// never present in any git subprocess's command-line arguments — only in
+// its environment (GIT_CONFIG_KEY_0/GIT_CONFIG_VALUE_0) — by resolving
+// "git" (via PATH) to a stub script that logs its own argv before exec'ing
+// the real git binary, so the fetch still runs for real against a local
+// repository. argv is readable by anything else in the same process
+// namespace (`ps`, /proc/<pid>/cmdline); the environment is materially more
+// restricted (/proc/<pid>/environ, same user or root only).
+func TestGitFetcher_TokenNeverAppearsInArgv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script PATH stub requires a POSIX shell")
+	}
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not found in PATH")
+	}
+
+	repo := gitRepo(t, map[string]string{"new.txt": "x"})
+	headSHA := strings.TrimSpace(runGit(t, repo, "rev-parse", "feature"))
+
+	argvLog := filepath.Join(t.TempDir(), "argv.log")
+	stubDir := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"echo \"$@\" >> " + shellQuote(argvLog) + "\n" +
+		"exec " + shellQuote(realGit) + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(stubDir, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	oldPath := os.Getenv("PATH")
+	t.Cleanup(func() { _ = os.Setenv("PATH", oldPath) })
+	if err := os.Setenv("PATH", stubDir+string(os.PathListSeparator)+oldPath); err != nil {
+		t.Fatal(err)
+	}
+
+	const token = "super-secret-installation-token-xyz" //nolint:gosec // test fixture, not a real credential
+	dir, cleanup, err := GitFetcher{}.Fetch(context.Background(), repo, token, "main", headSHA)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	defer cleanup()
+
+	logged, err := os.ReadFile(argvLog)
+	if err != nil {
+		t.Fatalf("reading argv log: %v", err)
+	}
+	// The raw token is never embedded directly in argv — it rides inside a
+	// base64-encoded "user:token" Basic-auth blob, which doesn't preserve
+	// the raw token as a substring, so checking for the raw token alone
+	// would miss the actual exposure. Check for the exact blob the Basic
+	// auth header carries instead.
+	authBlob := basicAuth("x-access-token", token)
+	if strings.Contains(string(logged), authBlob) {
+		t.Fatalf("auth header appeared in a git subprocess's argv:\n%s", logged)
+	}
+	if strings.Contains(string(logged), token) {
+		t.Fatalf("token appeared in a git subprocess's argv:\n%s", logged)
+	}
+	if !strings.Contains(string(logged), "fetch") {
+		t.Fatalf("stub does not appear to have been invoked for any fetch; log:\n%s", logged)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, "new.txt")); err != nil {
+		t.Fatalf("expected the real clone to still succeed and contain new.txt: %v", err)
+	}
+}
+
+// runGit runs git with args in dir and returns combined stdout+stderr,
+// failing the test on a non-zero exit.
+func runGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, out)
+	}
+	return string(out)
 }

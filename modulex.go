@@ -1030,20 +1030,28 @@ func (m *Manager) closeEventBus(ctx context.Context) error {
 // preserving trace ancestry when a Tracer is configured, and returns a handle
 // for awaiting completion.
 func (m *Manager) Go(ctx context.Context, taskName string, fn func(ctx context.Context) error) (*TaskHandle, error) {
-	m.stateMu.Lock()
-	state := m.state
-	if state == StateStopping || state == StateStopped {
-		m.stateMu.Unlock()
-		return nil, fmt.Errorf("%w: cannot start task %q while in %q state", ErrRegistryLocked, taskName, state)
-	}
-	m.stateMu.Unlock()
-
 	taskName = strings.TrimSpace(taskName)
 	if taskName == "" {
 		return nil, fmt.Errorf("%w", ErrInvalidTaskName)
 	}
 	if fn == nil {
 		return nil, fmt.Errorf("task function must not be nil")
+	}
+
+	// stateMu is held for the state check AND the taskCtx/registration check
+	// below, in the same stateMu-then-taskMu order StopModules uses. Checking
+	// them in two separate critical sections (as a prior version of this
+	// function did) left a window where StopModules could run to completion
+	// — including resetTaskCtx installing a fresh, uncancelled taskCtx —
+	// between the two checks, letting a task be registered and spawned after
+	// shutdown had already finished. Holding stateMu throughout blocks
+	// StopModules's own stateMu.Lock() (where it transitions to
+	// StateStopping and cancels taskCtx) until this function returns.
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	state := m.state
+	if state == StateStopping || state == StateStopped {
+		return nil, fmt.Errorf("%w: cannot start task %q while in %q state", ErrRegistryLocked, taskName, state)
 	}
 
 	m.taskMu.Lock()

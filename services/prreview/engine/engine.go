@@ -78,8 +78,13 @@ type Fetcher interface {
 }
 
 // GitFetcher is the production Fetcher, shelling out to git. The token is
-// passed via a one-shot Basic auth header, never written to disk or into
-// the remote URL (which would land in .git/config).
+// passed via a one-shot Basic auth header, carried entirely through the
+// subprocess's environment (GIT_CONFIG_COUNT/KEY/VALUE, git >= 2.31) rather
+// than a "-c" command-line argument or the remote URL — never written to
+// disk, never in argv (readable via `ps` or /proc/<pid>/cmdline by anything
+// else in the same process namespace; env is readable only via
+// /proc/<pid>/environ by the same user or root, a materially smaller
+// exposure), and never in .git/config.
 type GitFetcher struct{}
 
 func (GitFetcher) Fetch(ctx context.Context, cloneURL, token, baseRef, headSHA string) (string, func(), error) {
@@ -90,9 +95,14 @@ func (GitFetcher) Fetch(ctx context.Context, cloneURL, token, baseRef, headSHA s
 	cleanup := func() { _ = os.RemoveAll(dir) }
 	authHeader := "Authorization: Basic " +
 		basicAuth("x-access-token", token)
+	authEnv := []string{
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=http." + cloneURL + ".extraheader",
+		"GIT_CONFIG_VALUE_0=" + authHeader,
+	}
 	run := func(args ...string) error {
-		cmd := exec.CommandContext(ctx, "git",
-			append([]string{"-C", dir, "-c", "http." + cloneURL + ".extraheader=" + authHeader}, args...)...)
+		cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = append(os.Environ(), authEnv...)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, redactToken(string(out), token))

@@ -83,6 +83,14 @@ resource "google_firestore_database" "db" {
   location_id = var.region
   type        = "FIRESTORE_NATIVE"
   depends_on  = [google_project_service.apis]
+
+  lifecycle {
+    # This is the worker's dedup/lease store (see the TTL config below); a
+    # plan that forces replacement (e.g. a future location_id change, which
+    # is ForceNew) or a mistaken destroy must never silently take it out
+    # from under production.
+    prevent_destroy = true
+  }
 }
 
 # Native TTL on dedup records: they self-expire at zero storage cost with
@@ -165,6 +173,13 @@ resource "google_secret_manager_secret" "webhook_secret" {
     auto {}
   }
   depends_on = [google_project_service.apis]
+
+  lifecycle {
+    # Destroying the container also destroys every version — the live
+    # webhook HMAC secret, added out of band — so this must never go via a
+    # plan or mistaken destroy with no explicit guard.
+    prevent_destroy = true
+  }
 }
 
 resource "google_secret_manager_secret" "app_private_key" {
@@ -174,6 +189,13 @@ resource "google_secret_manager_secret" "app_private_key" {
     auto {}
   }
   depends_on = [google_project_service.apis]
+
+  lifecycle {
+    # Destroying the container also destroys every version — the live
+    # GitHub App private key, added out of band — so this must never go via
+    # a plan or mistaken destroy with no explicit guard.
+    prevent_destroy = true
+  }
 }
 
 resource "google_secret_manager_secret_iam_member" "receiver_webhook_secret" {

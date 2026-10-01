@@ -3,6 +3,7 @@ package otel
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"strconv"
@@ -194,18 +195,13 @@ func sanitizeEndpoint(endpoint string) (hostPort string, isHTTP bool) {
 
 func isLoopbackHost(endpoint string) bool {
 	host := endpoint
-	if h, _, err := netSplitHost(endpoint); err == nil {
+	// net.SplitHostPort strips IPv6 brackets (e.g. "[::1]:4317" -> "::1"),
+	// unlike a plain last-colon split, which would leave the host as
+	// "[::1]" and never match the bare "::1" literal below.
+	if h, _, err := net.SplitHostPort(endpoint); err == nil {
 		host = h
 	}
 	return host == "127.0.0.1" || host == "localhost" || host == "::1"
-}
-
-func netSplitHost(endpoint string) (string, string, error) {
-	idx := strings.LastIndex(endpoint, ":")
-	if idx < 0 {
-		return endpoint, "", nil
-	}
-	return endpoint[:idx], endpoint[idx+1:], nil
 }
 
 func envOrDefault(key, fallback string) string {

@@ -50,6 +50,19 @@ async function getClient(): Promise<McpClient> {
     }
     clientPromise = undefined;
   }
+  if (!vscode.workspace.isTrusted) {
+    // Both the auto-detected `go run` command and a configured
+    // modulex.server.command spawn a local process from the workspace
+    // root; neither must ever run against a workspace the user has not
+    // explicitly trusted, since an untrusted repository could otherwise get
+    // this extension to compile-and-run its own attacker-controlled
+    // tools/mcpserver, or set modulex.server.command to an arbitrary argv
+    // via a committed .vscode/settings.json.
+    throw new Error(
+      "Modulex needs a trusted workspace to start its local MCP server. Use " +
+        '"Workspaces: Manage Workspace Trust" to trust this folder first.',
+    );
+  }
   const root = workspaceRoot();
   if (!root) {
     throw new Error("Modulex needs an open workspace folder.");
