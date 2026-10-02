@@ -113,7 +113,7 @@ func ParsePullRequestEvent(eventType, deliveryID string, body []byte) (ReviewReq
 	switch {
 	case req.InstallationID == 0:
 		return ReviewRequest{}, errors.New("pull_request payload missing installation id")
-	case req.Owner == "" || req.Repo == "":
+	case req.Owner == "" || req.Repo == "" || req.CloneURL == "":
 		return ReviewRequest{}, errors.New("pull_request payload missing repository identity")
 	case req.PRNumber == 0 || req.HeadSHA == "" || req.BaseRef == "":
 		return ReviewRequest{}, errors.New("pull_request payload missing PR identity")

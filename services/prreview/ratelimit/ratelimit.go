@@ -12,11 +12,12 @@ import (
 
 // Limiter is a fixed-window per-installation rate limiter.
 type Limiter struct {
-	mu     sync.Mutex
-	limit  int
-	window time.Duration
-	counts map[int64]*windowCount
-	now    func() time.Time
+	mu        sync.Mutex
+	limit     int
+	window    time.Duration
+	counts    map[int64]*windowCount
+	now       func() time.Time
+	lastSweep time.Time
 }
 
 type windowCount struct {
@@ -47,6 +48,8 @@ func (l *Limiter) Allow(installationID int64) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
+	l.sweepLocked(now)
+
 	wc := l.counts[installationID]
 	if wc == nil || now.Sub(wc.windowStart) >= l.window {
 		wc = &windowCount{windowStart: now}
@@ -57,4 +60,23 @@ func (l *Limiter) Allow(installationID int64) bool {
 	}
 	wc.count++
 	return true
+}
+
+// sweepLocked removes every installation's entry whose window has fully
+// expired, so counts stays bounded by the number of installations active
+// within the last window rather than growing forever with every distinct
+// installation this Limiter has ever seen across its process lifetime. It
+// runs at most once per window — a full scan on every Allow call would
+// defeat the point of a fixed-window limiter's O(1) hot path — so this is
+// amortized O(1) per call. l.mu must already be held.
+func (l *Limiter) sweepLocked(now time.Time) {
+	if now.Sub(l.lastSweep) < l.window {
+		return
+	}
+	l.lastSweep = now
+	for id, wc := range l.counts {
+		if now.Sub(wc.windowStart) >= l.window {
+			delete(l.counts, id)
+		}
+	}
 }

@@ -1981,6 +1981,88 @@ func TestSupervisedTaskShutdown(t *testing.T) {
 	}
 }
 
+// TestGoNeverSpawnsAfterStopModulesHasReturned races Go against StopModules
+// on a manager with zero live tasks (the fast path in waitForTasks that
+// recreates taskCtx via resetTaskCtx). It has caught two independent races
+// this way:
+//
+//  1. A prior version of Go checked the manager's state and taskCtx
+//     liveness in two separate, non-atomic critical sections, leaving a
+//     window where StopModules could run to completion between them —
+//     including installing a fresh, uncancelled taskCtx — and let Go
+//     register and spawn a task the caller believed was rejected.
+//  2. Independently of (1): the completion defer that runs when a
+//     supervised task's function returns used to delete the task from
+//     m.tasks, release taskMu, and only then call handle.finish. A
+//     concurrent waitForTasks snapshot could observe the task already gone
+//     from m.tasks (correctly, via taskMu) and take its zero-tasks fast
+//     path — letting StopModules return — before that goroutine reached
+//     handle.finish, so handle.Done() could still read false for a brief
+//     window after StopModules had already returned. This one only showed
+//     up empirically in CI (go test -race -coverprofile=...), not in a
+//     plain local -race run: the coverage instrumentation widens the gap
+//     between the map delete and handle.finish enough to be observable at
+//     a reachable iteration count. See modulex.go's completion defer for
+//     the fix (handle.finish moved before the taskMu unlock).
+//
+// If either regresses, this test either observes manager.State() !=
+// StateStopped right after a successful StopModules (impossible by
+// construction) or, more tellingly, observes a Go call that reports success
+// yet whose task was never cancelled/awaited by the StopModules call racing
+// it — so run with -race and enough iterations to make the window land.
+func TestGoNeverSpawnsAfterStopModulesHasReturned(t *testing.T) {
+	tests := []struct {
+		name       string
+		iterations int
+	}{
+		{name: "fresh manager, zero live tasks, Go racing StopModules", iterations: 20000},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for i := 0; i < tt.iterations; i++ {
+				manager := newTestManager(nil)
+				require.NoError(t, manager.InitModules(context.Background()))
+				require.NoError(t, manager.StartModules(context.Background()))
+
+				var wg sync.WaitGroup
+				wg.Add(2)
+				stopErrCh := make(chan error, 1)
+				go func() {
+					defer wg.Done()
+					stopErrCh <- manager.StopModules(context.Background())
+				}()
+
+				var handle *modulex.TaskHandle
+				var goErr error
+				go func() {
+					defer wg.Done()
+					handle, goErr = manager.Go(context.Background(), "racer", func(ctx context.Context) error {
+						<-ctx.Done()
+						return nil
+					})
+				}()
+				wg.Wait()
+				require.NoError(t, <-stopErrCh)
+
+				// Whichever side won the race, the invariant must hold: the
+				// manager reports fully stopped, and if Go did manage to
+				// register a task, StopModules must already have cancelled
+				// and awaited it before returning — handle.Done() must be
+				// true immediately, with no further wait, since a StopModules
+				// call that has already returned must never leave behind a
+				// task it didn't know to cancel.
+				require.Equal(t, modulex.StateStopped, manager.State())
+				if goErr == nil {
+					require.NotNil(t, handle)
+					require.True(t, handle.Done(), "task registered by a racing Go call was not cancelled/awaited before StopModules returned")
+				} else {
+					require.ErrorIs(t, goErr, modulex.ErrRegistryLocked)
+				}
+			}
+		})
+	}
+}
+
 // spawnNeverReturningTask starts a supervised task that ignores cancellation,
 // used by the StopModules timeout tests below to force StopModules' wait to
 // run out the clock regardless of how quickly the other task under test

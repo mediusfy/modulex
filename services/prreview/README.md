@@ -64,19 +64,30 @@ implementation, so the full pipeline is table-tested without GCP:
 
 ## Per-installation AI keys
 
-Enable AI commentary for an installation by creating its key secret and
-granting the worker access (the worker's Secret Manager access is
-per-secret, so each new key needs its own grant):
+Enable AI commentary for an installation by creating its secret
+(`infra/prreview` grants the worker a prefix-conditioned accessor on every
+`prreview-ai-*` secret, so no per-secret IAM step is needed — creating the
+secret is enough):
 
 ```sh
-printf '%s' '{"api_key": "sk-ant-...", "model": "claude-opus-5"}' | \
+printf '%s' '{"provider": "anthropic", "api_key": "sk-ant-api03-...", "model": "claude-opus-5"}' | \
   gcloud secrets create prreview-ai-<installation-id> --data-file=-
-gcloud secrets add-iam-policy-binding prreview-ai-<installation-id> \
-  --member serviceAccount:prreview-worker@<project>.iam.gserviceaccount.com \
-  --role roles/secretmanager.secretAccessor
 ```
 
-Without a key (or its grant) the installation's reviews post engine-only.
+`provider` selects the backend (`ai.Dispatch` in `services/prreview/ai`):
+
+| Provider | Required fields | Notes |
+|---|---|---|
+| `anthropic` (default) | `api_key` | `model` optional, defaults to `claude-opus-5`. Must be a Console API key (`sk-ant-api03-...`), **not** a `claude auth login` OAuth session token (`sk-ant-oat01-...`) — those are short-lived and meant for personal interactive use, not a caller-keyed automated backend. |
+| `openai` | `api_key`, `model` | Calls `<base_url or api.openai.com/v1>/chat/completions`. |
+| `deepseek` | `api_key`, `model` | Calls `<base_url or api.deepseek.com>/chat/completions`. |
+| `ollama` | `base_url`, `model` | Calls `<base_url>/v1/chat/completions`. `api_key` is optional (only needed if the installation's Ollama server sits behind an authenticating proxy). **The installation supplies and owns this server** — modulex never runs or pays for it, and the server must be reachable over HTTP(S) from Cloud Run, not just from the installation's own network. |
+
+Omitting `provider` (or using a bare, unquoted key with no JSON wrapper —
+the format from before multi-provider support) defaults to `anthropic`.
+
+Without an enabled config, the installation's reviews post engine-only —
+never an error, and never a dropped review.
 
 ## Deploy
 

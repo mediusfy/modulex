@@ -8,6 +8,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os/signal"
+	"syscall"
 
 	gochi "github.com/go-chi/chi/v5"
 
@@ -40,7 +42,9 @@ func main() {
 		return
 	}
 
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
 	if err := mgr.InitModules(ctx); err != nil {
 		logger.Error("failed to init modules", slog.Any("error", err))
 		return
@@ -50,12 +54,24 @@ func main() {
 		return
 	}
 
-	logger.Info("starting monolith server on :8080")
-	if err := http.ListenAndServe(":8080", router); err != nil && err != http.ErrServerClosed {
-		logger.Error("server exited", slog.Any("error", err))
-	}
+	server := &http.Server{Addr: ":8080", Handler: router}
+	go func() {
+		logger.Info("starting monolith server on :8080")
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("server exited", slog.Any("error", err))
+		}
+	}()
 
-	if err := mgr.StopModules(context.Background()); err != nil {
+	<-ctx.Done()
+	logger.Info("shutdown signal received, stopping server and modules")
+
+	// Detach from the (now-canceled) signal context so the shutdown below
+	// runs to completion instead of being cancelled by the same signal.
+	shutdownCtx := context.WithoutCancel(ctx)
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		logger.Error("failed to shut down server", slog.Any("error", err))
+	}
+	if err := mgr.StopModules(shutdownCtx); err != nil {
 		logger.Error("failed to stop modules", slog.Any("error", err))
 	}
 }

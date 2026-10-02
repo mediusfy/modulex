@@ -16,6 +16,16 @@
   "categories": [
     "Other"
   ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Modulex spawns a local process from the workspace root (an auto-detected `go run ./tools/mcpserver/cmd/mcpserver` in a modulex checkout, or the configured modulex.server.command). Every command refuses to start that process until the workspace is trusted.",
+      "restrictedConfigurations": [
+        "modulex.server.command"
+      ]
+    },
+    "virtualWorkspaces": false
+  },
   "main": "./out/src/extension.js",
   "contributes": {
     "commands": [

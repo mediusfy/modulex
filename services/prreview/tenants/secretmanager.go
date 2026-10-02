@@ -13,12 +13,15 @@ import (
 )
 
 // SecretManager resolves installation AI keys from Secret Manager
-// (MOD-86): one secret per installation named
-// prreview-ai-<installationID>, payload either a bare API key or JSON
-// {"api_key": "...", "model": "..."}. A missing secret simply means the
-// installation has not enabled AI commentary — engine-only reviews, no
-// error. The worker's service account holds accessor permission only on
-// the prreview-ai-* name pattern, nothing else in the project.
+// (MOD-86): one secret per installation named prreview-ai-<installationID>,
+// payload either a bare API key (legacy: implies provider "anthropic") or
+// JSON {"provider": "...", "api_key": "...", "model": "...", "base_url":
+// "..."}. Omitting "provider" defaults to "anthropic" for backward
+// compatibility with secrets created before multi-provider support. A
+// missing secret simply means the installation has not enabled AI
+// commentary — engine-only reviews, no error. The worker's service
+// account holds accessor permission only on the prreview-ai-* name
+// pattern, nothing else in the project.
 type SecretManager struct {
 	Client *secretmanager.Client
 	// ProjectID hosts the per-installation secrets.
@@ -34,13 +37,55 @@ func (s *SecretManager) AIConfig(ctx context.Context, installationID int64) (AIC
 	if err != nil {
 		return AIConfig{}, fmt.Errorf("resolving AI key for installation %d: %w", installationID, err)
 	}
-	payload := resp.GetPayload().GetData()
+	return parseAIConfigPayload(resp.GetPayload().GetData()), nil
+}
+
+// parseAIConfigPayload is the pure parsing logic behind AIConfig, factored
+// out from the live Secret Manager call so its format-compatibility rules
+// (JSON with/without "provider", bare-string legacy) are table-testable
+// without a GCP client.
+func parseAIConfigPayload(payload []byte) AIConfig {
 	var cfg struct {
-		APIKey string `json:"api_key"`
-		Model  string `json:"model"`
+		Provider string `json:"provider"`
+		APIKey   string `json:"api_key"`
+		Model    string `json:"model"`
+		BaseURL  string `json:"base_url"`
 	}
-	if json.Unmarshal(payload, &cfg) == nil && cfg.APIKey != "" {
-		return AIConfig{APIKey: cfg.APIKey, Model: cfg.Model}, nil
+	if json.Unmarshal(payload, &cfg) == nil {
+		// Valid JSON: trust its fields as they are, even if that leaves
+		// the config disabled (e.g. {"model": "..."} with no key is a
+		// malformed installation config, never a bare-string secret —
+		// falling through here would treat the whole JSON blob as a
+		// literal API key).
+		if cfg.APIKey == "" && cfg.BaseURL == "" {
+			return AIConfig{}
+		}
+		if cfg.Provider == "" && cfg.BaseURL == "" {
+			// Only the exact legacy shape (a key, no base_url) predates
+			// multi-provider support. anthropic never reads BaseURL, so a
+			// base_url with no provider is an openai/deepseek/ollama secret
+			// missing its provider field, never a legacy anthropic one —
+			// defaulting that case to anthropic would silently disable AI
+			// commentary instead of surfacing the misconfiguration.
+			cfg.Provider = "anthropic"
+		}
+		return AIConfig{Provider: cfg.Provider, APIKey: cfg.APIKey, Model: cfg.Model, BaseURL: cfg.BaseURL}
 	}
-	return AIConfig{APIKey: strings.TrimSpace(string(payload))}, nil
+	// A JSON-quoted string (the secret was created as "sk-ant-..." instead
+	// of the bare token) unwraps to the same legacy bare-key path, rather
+	// than being treated as a literal payload with the quotes included.
+	var quoted string
+	if json.Unmarshal(payload, &quoted) == nil {
+		if raw := strings.TrimSpace(quoted); raw != "" {
+			return AIConfig{Provider: "anthropic", APIKey: raw}
+		}
+		return AIConfig{}
+	}
+	// Not valid JSON at all: a bare-key legacy secret, from before this
+	// format existed. Always anthropic, since that predates
+	// multi-provider support entirely.
+	if raw := strings.TrimSpace(string(payload)); raw != "" {
+		return AIConfig{Provider: "anthropic", APIKey: raw}
+	}
+	return AIConfig{}
 }

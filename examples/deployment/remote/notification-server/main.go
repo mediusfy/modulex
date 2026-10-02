@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 
 	gochi "github.com/go-chi/chi/v5"
 
@@ -34,7 +36,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
 	if err := mgr.InitModules(ctx); err != nil {
 		logger.Error("failed to init modules", slog.Any("error", err))
 		os.Exit(1)
@@ -49,12 +53,24 @@ func main() {
 		port = "8080"
 	}
 
-	logger.Info("starting notification server", slog.String("port", port))
-	if err := http.ListenAndServe(":"+port, router); err != nil && err != http.ErrServerClosed {
-		logger.Error("server exited", slog.Any("error", err))
-	}
+	server := &http.Server{Addr: ":" + port, Handler: router}
+	go func() {
+		logger.Info("starting notification server", slog.String("port", port))
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("server exited", slog.Any("error", err))
+		}
+	}()
 
-	if err := mgr.StopModules(context.Background()); err != nil {
+	<-ctx.Done()
+	logger.Info("shutdown signal received, stopping server and modules")
+
+	// Detach from the (now-canceled) signal context so the shutdown below
+	// runs to completion instead of being cancelled by the same signal.
+	shutdownCtx := context.WithoutCancel(ctx)
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		logger.Error("failed to shut down server", slog.Any("error", err))
+	}
+	if err := mgr.StopModules(shutdownCtx); err != nil {
 		logger.Error("failed to stop modules", slog.Any("error", err))
 	}
 }

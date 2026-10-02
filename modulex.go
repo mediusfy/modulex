@@ -1030,20 +1030,28 @@ func (m *Manager) closeEventBus(ctx context.Context) error {
 // preserving trace ancestry when a Tracer is configured, and returns a handle
 // for awaiting completion.
 func (m *Manager) Go(ctx context.Context, taskName string, fn func(ctx context.Context) error) (*TaskHandle, error) {
-	m.stateMu.Lock()
-	state := m.state
-	if state == StateStopping || state == StateStopped {
-		m.stateMu.Unlock()
-		return nil, fmt.Errorf("%w: cannot start task %q while in %q state", ErrRegistryLocked, taskName, state)
-	}
-	m.stateMu.Unlock()
-
 	taskName = strings.TrimSpace(taskName)
 	if taskName == "" {
 		return nil, fmt.Errorf("%w", ErrInvalidTaskName)
 	}
 	if fn == nil {
 		return nil, fmt.Errorf("task function must not be nil")
+	}
+
+	// stateMu is held for the state check AND the taskCtx/registration check
+	// below, in the same stateMu-then-taskMu order StopModules uses. Checking
+	// them in two separate critical sections (as a prior version of this
+	// function did) left a window where StopModules could run to completion
+	// — including resetTaskCtx installing a fresh, uncancelled taskCtx —
+	// between the two checks, letting a task be registered and spawned after
+	// shutdown had already finished. Holding stateMu throughout blocks
+	// StopModules's own stateMu.Lock() (where it transitions to
+	// StateStopping and cancels taskCtx) until this function returns.
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	state := m.state
+	if state == StateStopping || state == StateStopped {
+		return nil, fmt.Errorf("%w: cannot start task %q while in %q state", ErrRegistryLocked, taskName, state)
 	}
 
 	m.taskMu.Lock()
@@ -1078,9 +1086,22 @@ func (m *Manager) Go(ctx context.Context, taskName string, fn func(ctx context.C
 				m.taskErrs = append(m.taskErrs, fmt.Errorf("task %q failed: %w", taskName, taskErr))
 			}
 			delete(m.tasks, taskName)
+			// handle.finish must happen before taskMu is released, while
+			// this task's removal from m.tasks is still part of the same
+			// critical section. Calling it after Unlock (as a prior version
+			// of this code did) left a window where a concurrent
+			// waitForTasks snapshot could observe the task already gone
+			// from m.tasks — and so correctly take its zero-tasks fast path
+			// and let StopModules return — before this goroutine reached
+			// handle.finish, so the handle could still report Done() ==
+			// false for a brief window after StopModules had already
+			// returned. Finishing the handle here, before the map write's
+			// visibility is released, closes that window: any observer
+			// that sees the task gone from m.tasks (via taskMu) is
+			// guaranteed to also see handle.Done() == true.
+			handle.finish(taskErr)
 			m.taskMu.Unlock()
 			taskCancel()
-			handle.finish(taskErr)
 		}()
 
 		execCtx, span := m.startSpan(bgCtx, taskName, nil)

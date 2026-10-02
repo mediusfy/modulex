@@ -343,6 +343,28 @@ func TestRun_PreStopAndPostStopHooksRunOnInitFailure(t *testing.T) {
 	assert.Equal(t, []string{"pre", "post"}, order)
 }
 
+// TestRun_CleanupHookErrorJoinedOnEarlyExit locks in WithPreStop/WithPostStop's
+// documented contract that "all errors are joined into Run's return value,"
+// including on the early-exit cleanup path triggered by an InitModules
+// failure. A prior version of Run only logged the cleanup-path error from its
+// deferred runStop() call and never incorporated it into the already-fixed
+// return value, so a caller gating exit codes or alerting on Run's return
+// value never saw a failed cleanup hook (e.g. a tracer-provider shutdown
+// failure) on that path.
+func TestRun_CleanupHookErrorJoinedOnEarlyExit(t *testing.T) {
+	initErr := errors.New("init boom")
+	preStopErr := errors.New("pre-stop cleanup boom")
+	mod := &recordingModule{name: "failing-init", initErr: initErr}
+
+	err := app.Run(newTestLogger(), nil, []modulex.Module{mod},
+		app.WithPreStop(func(context.Context) error { return preStopErr }),
+	)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, initErr)
+	assert.ErrorIs(t, err, preStopErr)
+}
+
 func TestRun_ShutdownTimeout(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

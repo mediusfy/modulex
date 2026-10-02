@@ -99,9 +99,15 @@ func TestParsePullRequestEvent(t *testing.T) {
 			wantErr:   "missing repository identity",
 		},
 		{
+			name:      "missing clone_url is an error, not a guess at the remote",
+			eventType: "pull_request",
+			body:      `{"action":"opened","installation":{"id":1},"repository":{"name":"r","owner":{"login":"o"}},"pull_request":{"number":1,"head":{"sha":"a"},"base":{"ref":"main"}}}`,
+			wantErr:   "missing repository identity",
+		},
+		{
 			name:      "missing PR identity is an error",
 			eventType: "pull_request",
-			body:      `{"action":"opened","installation":{"id":1},"repository":{"name":"r","owner":{"login":"o"}},"pull_request":{"number":0}}`,
+			body:      `{"action":"opened","installation":{"id":1},"repository":{"name":"r","clone_url":"https://github.com/o/r.git","owner":{"login":"o"}},"pull_request":{"number":0}}`,
 			wantErr:   "missing PR identity",
 		},
 		{

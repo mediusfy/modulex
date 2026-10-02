@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mediusfy/modulex/provenance"
+	"github.com/mediusfy/modulex/services/prreview/ai"
 	"github.com/mediusfy/modulex/services/prreview/queue"
 	"github.com/mediusfy/modulex/services/prreview/store"
 	"github.com/mediusfy/modulex/services/prreview/tenants"
@@ -53,14 +54,16 @@ func (f *fakeReviewer) Review(context.Context, string, string, string) ([]proven
 }
 
 type fakeCommentary struct {
-	text   string
-	tokens int64
-	err    error
-	calls  int
+	text      string
+	tokens    int64
+	err       error
+	calls     int
+	gotConfig ai.Config
 }
 
-func (f *fakeCommentary) Comment(context.Context, string, string, []provenance.VerificationResult, string) (string, int64, error) {
+func (f *fakeCommentary) Comment(_ context.Context, cfg ai.Config, _ []provenance.VerificationResult, _ string) (string, int64, error) {
 	f.calls++
+	f.gotConfig = cfg
 	return f.text, f.tokens, f.err
 }
 
@@ -164,6 +167,10 @@ func TestHandle(t *testing.T) {
 				usage, _ := f.mem.Total(ctx, 42)
 				if usage.Reviews != 1 || usage.Tokens != 250 {
 					t.Fatalf("usage %+v, want 1 review / 250 tokens", usage)
+				}
+				want := ai.Config{APIKey: "key-42", Model: "claude-opus-5"}
+				if f.comm.gotConfig != want {
+					t.Fatalf("commentary got config %+v, want %+v", f.comm.gotConfig, want)
 				}
 			},
 		},
