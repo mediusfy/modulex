@@ -1,6 +1,6 @@
 module github.com/mediusfy/modulex/tools/agentcli
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/mediusfy/modulex v0.0.0
@@ -12,7 +12,7 @@ require (
 
 require (
 	golang.org/x/mod v0.38.0 // indirect
-	golang.org/x/sync v0.22.0 // indirect
+	golang.org/x/sync v0.23.0 // indirect
 )
 
 replace github.com/mediusfy/modulex => ../..
