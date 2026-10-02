@@ -335,8 +335,10 @@ func (c *Contract) Validate() error {
 		}
 	}
 
-	// review.CheckProtectedPaths silently skips a pattern that fails to
-	// compile, so a typo must be caught here or it goes unenforced.
+	// review.CheckProtectedPaths independently fails closed (reports a
+	// StatusFail naming the bad pattern) on a malformed protected_paths
+	// glob, but catching a typo here too lets contract validation reject it
+	// at authoring time rather than at the first affected diff review.
 	for i, p := range c.ProtectedPaths {
 		if _, err := path.Match(p, ""); err != nil {
 			errs = append(errs, fmt.Errorf("protected_paths[%d] (%q): invalid glob pattern: %w", i, p, err))

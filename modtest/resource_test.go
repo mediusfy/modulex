@@ -76,6 +76,38 @@ func TestAssertResourceOwnership_LazilyCreatedOwner(t *testing.T) {
 	}
 }
 
+// TestAssertResourceOwnership_DetectsNilOwnerAfterStart proves
+// AssertResourceOwnership catches a module that drops its resource
+// reference between Init and Start — owner() must keep reporting a non-nil
+// ResourceOwner through Start, exactly as the post-Init check already
+// requires, not silently pass when it goes back to nil.
+//
+// Stop reassigns res to a fresh, already-closed resource rather than
+// leaving it nil: this isolates the post-Start check specifically, since a
+// nil owner() left in place all the way to the end would instead be caught
+// by the post-Stop check regardless of whether the post-Start check works
+// at all — which is exactly how this gap stayed undetected.
+func TestAssertResourceOwnership_DetectsNilOwnerAfterStart(t *testing.T) {
+	res := &fakeResource{}
+	mod := fullFixture{
+		fixtureModule: &fixtureModule{name: "resource-dropped-before-start"},
+		startFn:       func(ctx context.Context) error { res = nil; return nil },
+		stopFn:        func(ctx context.Context) error { res = &fakeResource{closed: true}; return nil },
+	}
+
+	ft := runFake(func(t TB) {
+		AssertResourceOwnership(t, mod, func() ResourceOwner {
+			if res == nil {
+				return nil
+			}
+			return res
+		})
+	})
+	if !ft.failed {
+		t.Fatalf("AssertResourceOwnership did not detect that owner() returned nil after Start")
+	}
+}
+
 func TestAssertResourceOwnership_RequiresStopper(t *testing.T) {
 	res := &fakeResource{}
 	mod := &fixtureModule{name: "no-stopper"}

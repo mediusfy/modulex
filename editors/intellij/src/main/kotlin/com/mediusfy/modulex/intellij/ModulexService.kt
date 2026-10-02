@@ -1,5 +1,6 @@
 package com.mediusfy.modulex.intellij
 
+import com.intellij.ide.trustedProjects.TrustedProjects
 import com.intellij.ide.util.PropertiesComponent
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
@@ -68,6 +69,18 @@ class ModulexService(private val project: Project) : Disposable {
             it.dispose()
             client = null
         }
+        // Both the auto-detected `go run` command and a configured server
+        // command spawn a local process from the project root; neither
+        // must ever run against a project the user has not explicitly
+        // trusted, since an untrusted project could otherwise get this
+        // plugin to compile-and-run its own attacker-controlled
+        // tools/mcpserver, or set the server command to an arbitrary argv
+        // via project-local settings.
+        if (!TrustedProjects.isProjectTrusted(project)) {
+            throw IllegalStateException(
+                "Modulex needs a trusted project to start its local MCP server. Trust this project first (you'll be prompted, or use File > Trust Project).",
+            )
+        }
         val projectRoot = root ?: throw IllegalStateException("Modulex needs an open project directory.")
         val configured = splitCommand(serverCommand)
         val spec =
@@ -131,13 +144,19 @@ class ModulexService(private val project: Project) : Disposable {
 
     /** git status --porcelain, mapped to changed paths (rename → new path). */
     fun changedFiles(projectRoot: File): List<String> {
+        // redirectErrorStream merges stderr into the same stream this reads
+        // to completion before waitFor(): with two separate pipes, a
+        // thread blocked draining stdout to completion while stderr fills
+        // its own OS pipe buffer (e.g. verbose git hook/warning output)
+        // would deadlock the child against this call forever.
         val process =
             ProcessBuilder("git", "status", "--porcelain")
                 .directory(projectRoot)
+                .redirectErrorStream(true)
                 .start()
         val out = process.inputStream.bufferedReader().readText()
         if (process.waitFor() != 0) {
-            throw IllegalStateException("git status failed: ${process.errorStream.bufferedReader().readText()}")
+            throw IllegalStateException("git status failed: $out")
         }
         return out.lineSequence()
             .filter { it.isNotBlank() }

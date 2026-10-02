@@ -154,14 +154,19 @@ func (w *Worker) reviewOnce(ctx context.Context, key store.JobKey, req webhook.R
 	cfg, err := w.Tenants.AIConfig(ctx, req.InstallationID)
 	if err != nil {
 		w.Log.Warn("tenant config unavailable; engine-only review", "job", key.String(), "error", err)
-	} else if cfg.APIKey != "" {
+	} else if cfg.Enabled() {
 		diff, derr := w.Fetcher.Diff(ctx, dir, engine.BaseRefName, "HEAD")
 		if derr != nil {
 			w.Log.Warn("diff unavailable for commentary", "job", key.String(), "error", derr)
 		}
-		commentary, tokensUsed, err = w.Commentary.Comment(ctx, cfg.APIKey, cfg.Model, results, diff)
+		commentary, tokensUsed, err = w.Commentary.Comment(ctx, ai.Config{
+			Provider: cfg.Provider,
+			APIKey:   cfg.APIKey,
+			Model:    cfg.Model,
+			BaseURL:  cfg.BaseURL,
+		}, results, diff)
 		if err != nil {
-			w.Log.Warn("AI commentary failed; engine-only review", "job", key.String(), "error", err)
+			w.Log.Warn("AI commentary failed; engine-only review", "job", key.String(), "provider", cfg.Provider, "error", err)
 			commentary = ""
 		}
 	}

@@ -1,5 +1,6 @@
 package com.mediusfy.modulex.intellij
 
+import com.intellij.ide.trustedProjects.TrustedProjects
 import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 
@@ -38,5 +39,44 @@ class ActionsRegistrationTest : BasePlatformTestCase() {
     fun testToolSurfaceResourceIsBundled() {
         val resource = javaClass.classLoader.getResource("modulex/tool-surface.json")
         assertNotNull("shared tool-surface.json not bundled into plugin resources", resource)
+    }
+
+    /**
+     * An untrusted project must never let [ModulexService.client] spawn the
+     * local MCP server process — regardless of whether a server command is
+     * auto-detected or configured. See [ModulexService.client]'s trust
+     * check for why.
+     */
+    fun testClientRefusesUntrustedProject() {
+        val service = project.getService(ModulexService::class.java)
+        TrustedProjects.setProjectTrusted(project, false)
+        try {
+            service.client()
+            fail("client() must refuse to start against an untrusted project")
+        } catch (e: IllegalStateException) {
+            assertTrue(
+                "expected a trust-related message, got: ${e.message}",
+                e.message?.contains("trusted") == true,
+            )
+        }
+    }
+
+    /**
+     * Once trusted, client() must proceed past the trust gate — it may
+     * still fail for an unrelated reason (this lightweight test project has
+     * no real tools/mcpserver checkout under its root), but that failure
+     * must not be the trust-gate message.
+     */
+    fun testClientProceedsPastTrustGateOnceTrusted() {
+        val service = project.getService(ModulexService::class.java)
+        TrustedProjects.setProjectTrusted(project, true)
+        try {
+            service.client()
+        } catch (e: IllegalStateException) {
+            assertFalse(
+                "must not be blocked by the trust gate once trusted: ${e.message}",
+                e.message?.contains("trusted") == true,
+            )
+        }
     }
 }
