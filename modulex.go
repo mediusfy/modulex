@@ -1086,9 +1086,22 @@ func (m *Manager) Go(ctx context.Context, taskName string, fn func(ctx context.C
 				m.taskErrs = append(m.taskErrs, fmt.Errorf("task %q failed: %w", taskName, taskErr))
 			}
 			delete(m.tasks, taskName)
+			// handle.finish must happen before taskMu is released, while
+			// this task's removal from m.tasks is still part of the same
+			// critical section. Calling it after Unlock (as a prior version
+			// of this code did) left a window where a concurrent
+			// waitForTasks snapshot could observe the task already gone
+			// from m.tasks — and so correctly take its zero-tasks fast path
+			// and let StopModules return — before this goroutine reached
+			// handle.finish, so the handle could still report Done() ==
+			// false for a brief window after StopModules had already
+			// returned. Finishing the handle here, before the map write's
+			// visibility is released, closes that window: any observer
+			// that sees the task gone from m.tasks (via taskMu) is
+			// guaranteed to also see handle.Done() == true.
+			handle.finish(taskErr)
 			m.taskMu.Unlock()
 			taskCancel()
-			handle.finish(taskErr)
 		}()
 
 		execCtx, span := m.startSpan(bgCtx, taskName, nil)
