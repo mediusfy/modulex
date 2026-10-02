@@ -1,6 +1,6 @@
 module github.com/mediusfy/modulex
 
-go 1.25.0
+go 1.26.0
 
 // v0.4.0 was tagged on the wrong commit (a small CI-permissions change that
 // branched off an older main, missing the release's actual content) and
@@ -22,7 +22,7 @@ require (
 	go.opentelemetry.io/otel/sdk v1.46.0
 	go.opentelemetry.io/otel/trace v1.46.0
 	go.uber.org/goleak v1.3.0
-	golang.org/x/sync v0.22.0
+	golang.org/x/sync v0.23.0
 	google.golang.org/grpc v1.83.2
 	google.golang.org/protobuf v1.36.12
 	gopkg.in/yaml.v3 v3.0.1

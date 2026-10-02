@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Dependency bump: `golang.org/x/sync` v0.22.0 → v0.23.0 (Go toolchain to 1.26.0); nested modules re-tidied accordingly.
+
 ### Added
 
 - Hosted PR-review AI commentary now supports OpenAI, DeepSeek, and
