@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Dependency bump: `ThreeDotsLabs/watermill` v1.5.2 → v1.5.3; nested modules re-tidied accordingly.
+
 ### Added
 
 - Hosted PR-review AI commentary now supports OpenAI, DeepSeek, and
