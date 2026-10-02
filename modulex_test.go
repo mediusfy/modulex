@@ -1983,16 +1983,33 @@ func TestSupervisedTaskShutdown(t *testing.T) {
 
 // TestGoNeverSpawnsAfterStopModulesHasReturned races Go against StopModules
 // on a manager with zero live tasks (the fast path in waitForTasks that
-// recreates taskCtx via resetTaskCtx). A prior version of Go checked the
-// manager's state and taskCtx liveness in two separate, non-atomic critical
-// sections, leaving a window where StopModules could run to completion
-// between them — including installing a fresh, uncancelled taskCtx — and
-// let Go register and spawn a task the caller believed was rejected. If that
-// regresses, this test either observes manager.State() != StateStopped
-// right after a successful StopModules (impossible by construction) or,
-// more tellingly, observes a Go call that reports success yet whose task was
-// never cancelled/awaited by the StopModules call racing it — so run with
-// -race and enough iterations to make the formerly-real window land.
+// recreates taskCtx via resetTaskCtx). It has caught two independent races
+// this way:
+//
+//  1. A prior version of Go checked the manager's state and taskCtx
+//     liveness in two separate, non-atomic critical sections, leaving a
+//     window where StopModules could run to completion between them —
+//     including installing a fresh, uncancelled taskCtx — and let Go
+//     register and spawn a task the caller believed was rejected.
+//  2. Independently of (1): the completion defer that runs when a
+//     supervised task's function returns used to delete the task from
+//     m.tasks, release taskMu, and only then call handle.finish. A
+//     concurrent waitForTasks snapshot could observe the task already gone
+//     from m.tasks (correctly, via taskMu) and take its zero-tasks fast
+//     path — letting StopModules return — before that goroutine reached
+//     handle.finish, so handle.Done() could still read false for a brief
+//     window after StopModules had already returned. This one only showed
+//     up empirically in CI (go test -race -coverprofile=...), not in a
+//     plain local -race run: the coverage instrumentation widens the gap
+//     between the map delete and handle.finish enough to be observable at
+//     a reachable iteration count. See modulex.go's completion defer for
+//     the fix (handle.finish moved before the taskMu unlock).
+//
+// If either regresses, this test either observes manager.State() !=
+// StateStopped right after a successful StopModules (impossible by
+// construction) or, more tellingly, observes a Go call that reports success
+// yet whose task was never cancelled/awaited by the StopModules call racing
+// it — so run with -race and enough iterations to make the window land.
 func TestGoNeverSpawnsAfterStopModulesHasReturned(t *testing.T) {
 	tests := []struct {
 		name       string
