@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -266,6 +267,104 @@ func TestGitFetcher_MaterializesBlobsForOfflineDiff(t *testing.T) {
 				t.Fatalf("diff missing %q; got:\n%s", tc.wantInDiff, out)
 			}
 		})
+	}
+}
+
+// TestGitFetcher_MaterializesRenamedFileBlobs guards specifically against
+// the warm-up diff's choice of git invocation under-materializing a
+// renamed file's blobs. The original fix used `git diff --stat`, which a
+// code reviewer flagged as potentially version-dependent: some diff
+// variants can special-case renames, binaries, or large files to avoid
+// reading full blob content, which would silently under-warm relative to
+// what review.ScanSecrets/CheckProtectedPaths actually read later. The fix
+// now runs the exact same invocation those checks use (`git diff
+// --unified=0 --no-color`), so there is no variant gap to depend on. This
+// is the sharpest version of the bug the warm-up exists to prevent: a
+// rename needs BOTH the old path's base-side blob and the new path's
+// head-side blob, and `git checkout` only ever materializes the head side.
+func TestGitFetcher_MaterializesRenamedFileBlobs(t *testing.T) {
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not found in PATH")
+	}
+
+	// Built directly (not via gitRepo) so the large content lives on main
+	// itself: the three-dot diff below compares feature's tip against the
+	// merge-base (main's tip), so the rename's old and new content must be
+	// similar AT THAT COMPARISON, not merely similar to some intermediate
+	// commit on feature.
+	origin := t.TempDir()
+	runGit(t, origin, "init", "-q", "-b", "main")
+	runGit(t, origin, "config", "user.email", "t@t")
+	runGit(t, origin, "config", "user.name", "t")
+	var lines strings.Builder
+	for i := 0; i < 200; i++ {
+		fmt.Fprintf(&lines, "line %d\n", i)
+	}
+	if err := os.WriteFile(filepath.Join(origin, "README.md"), []byte(lines.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, origin, "add", ".")
+	runGit(t, origin, "commit", "-q", "-m", "base")
+	runGit(t, origin, "checkout", "-q", "-b", "feature")
+	// A small edit alongside the rename: similar enough (>50%) that git's
+	// default rename detection fires, so this exercises the rename
+	// codepath specifically, not a plain add+delete.
+	if err := os.Rename(filepath.Join(origin, "README.md"), filepath.Join(origin, "renamed.md")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(origin, "renamed.md"), []byte(lines.String()+"one more line\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, origin, "add", "-A")
+	runGit(t, origin, "commit", "-q", "-m", "rename with small edit")
+
+	runGit(t, origin, "config", "uploadpack.allowFilter", "true")
+	runGit(t, origin, "config", "uploadpack.allowAnySHA1InWant", "true")
+	headSHA := strings.TrimSpace(runGit(t, origin, "rev-parse", "feature"))
+
+	const token = "regression-fixture-token" // nosecret: test fixture, not a real credential
+	dir, cleanup, err := GitFetcher{}.Fetch(context.Background(), "file://"+origin, token, "main", headSHA)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	defer cleanup()
+
+	runGit(t, dir, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "severed"))
+
+	cmd := exec.Command(realGit, "-C", dir, "diff", "--unified=0", BaseRefName+"...HEAD")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("offline diff after Fetch failed — renamed file's blobs were not materialized:\n%v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "rename from README.md") {
+		t.Fatalf("diff did not detect the rename as expected (so this test didn't exercise the rename codepath); got:\n%s", out)
+	}
+	if !strings.Contains(string(out), "one more line") {
+		t.Fatalf("diff missing the renamed file's edit; got:\n%s", out)
+	}
+}
+
+// TestGitFetcher_WarmUpFailureIsDistinctlyLabeled proves a failure in the
+// warm-up diff step itself (as opposed to an earlier fetch/checkout step)
+// surfaces with an unambiguous "warming blobs for diff-time checks" prefix,
+// so a production log doesn't require mapping a bare git-command failure
+// back to which step of Fetch produced it.
+func TestGitFetcher_WarmUpFailureIsDistinctlyLabeled(t *testing.T) {
+	origin := gitRepo(t, map[string]string{"added.txt": "x\n"})
+	headSHA := strings.TrimSpace(runGit(t, origin, "rev-parse", "feature"))
+
+	const token = "regression-fixture-token" // nosecret: test fixture, not a real credential
+	// An invalid baseRef (neither a real branch nor a commit SHA) makes the
+	// base fetch step fail instead, which should NOT carry the warm-up
+	// label — confirming the label is specific to the warm-up step, not a
+	// blanket wrapper applied to every step.
+	_, _, err := GitFetcher{}.Fetch(context.Background(), "file://"+origin, token, "does-not-exist", headSHA)
+	if err == nil {
+		t.Fatal("expected Fetch to fail for a nonexistent base ref")
+	}
+	if strings.Contains(err.Error(), "warming blobs for diff-time checks") {
+		t.Fatalf("a base-fetch failure must not carry the warm-up step's label: %v", err)
 	}
 }
 
