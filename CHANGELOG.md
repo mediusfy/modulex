@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `review.CheckProtectedPaths`: protected-path glob patterns can now use
+  `**` to match across directory boundaries (e.g. `docs/**/*.md`) —
+  previously a single-segment pattern silently failed to match a file
+  nested one directory deeper, since `path.Match`'s `*` never crosses a
+  `/`.
+- `patchapply.resolvedPath`'s symlink-escape check now also inspects the
+  leaf target path itself, not just its parent directories — a symlink
+  planted exactly at a `FileChange`'s target path was previously never
+  detected before being followed.
+- `grpc.HealthServer`: each health/readiness check now runs under the
+  same 5-second per-check timeout `httpx`'s check runner already enforced
+  — previously a slow, context-aware check had no timeout here and could
+  hang a `Watch` stream indefinitely.
+- `scripts/check-consumer-boundary.sh`: the forbidden-import check now
+  also catches a core -> `httpx` dependency, closing a gap where the
+  adapter-boundary script omitted modulex's own `httpx` package from its
+  list of integration adapters.
+- `verify.Run`: a missing `make` binary is now reported as
+  `StatusUnavailable` instead of a false `StatusFail` — none of the
+  built-in make-based checks declare `RequiredTool: "make"`, so this case
+  previously fell through to a real (but misleading) command-not-found
+  failure.
+- `Manager.ExportDAG`: synthetic Mermaid node IDs no longer collide with
+  a module's own literal name when that name happens to look like a
+  synthetic ID (e.g. a module named `n0`).
+- Hosted PR-review engine: `ScanSecrets` and `CheckProtectedPaths` now
+  run concurrently instead of sequentially, since they are independent
+  checks over the same diff range.
+
+### Changed
+
+- Protected-path contract parsing (read `modulex.agent.yaml`, treat a
+  missing file as absent, fail closed on a parse error) is now shared via
+  `contract.Load` instead of being independently reimplemented across the
+  CLI, the MCP server, and the hosted PR-review engine.
+- `rabbitmq.EventBus.Close`, `watermill.EventBus.Close`, and
+  `nats.JetStreamEventBus.Close` now share one "wait for shutdown,
+  bounded by ctx" helper (`internal/busshutdown`) instead of each
+  hand-rolling the same pattern independently.
+
 ### Changed
 
 - Dependency bump: `nats-io/nats.go` v1.53.1 → v1.54.0 (Go toolchain to 1.26.0); nested modules re-tidied accordingly.
