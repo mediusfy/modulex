@@ -192,6 +192,83 @@ func TestGitFetcher_TokenNeverAppearsInArgv(t *testing.T) {
 	}
 }
 
+// TestGitFetcher_MaterializesBlobsForOfflineDiff guards the blobless-clone
+// auth gap: the hosted bot reported secret_scan "unavailable" with
+// "could not read Username ... from promisor remote". The secret and
+// protected-path checks — and the AI diff — run `git diff` from the review
+// package with NO token in their environment, so any blob Fetch left for a
+// lazy promisor fetch at diff time failed that unauthenticated fetch and
+// silently disabled the checks. Fetch now runs an authenticated warm-up diff
+// over prreview-base...HEAD so every changed blob is local before the checks,
+// which run from this same process environment, ever diff.
+//
+// Lazy blobs are reproduced the only way a local repo can: a file:// origin
+// with uploadpack.allowFilter actually honors --filter=blob:none, whereas a
+// bare local path silently ignores it. The test then severs the promisor
+// remote after Fetch and asserts a later unauthenticated diff still succeeds.
+// The modified-file row is the real guard — `git checkout` materializes only
+// the head side, so a file changed between base and head is exactly the case
+// whose base-side blob a lazy clone would still be missing at diff time.
+func TestGitFetcher_MaterializesBlobsForOfflineDiff(t *testing.T) {
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not found in PATH")
+	}
+
+	tests := []struct {
+		name       string
+		headFiles  map[string]string
+		wantInDiff string
+	}{
+		{
+			name:       "file modified between base and head needs the base-side blob",
+			headFiles:  map[string]string{"README.md": "changed in head\n"},
+			wantInDiff: "changed in head",
+		},
+		{
+			name:       "file added in head",
+			headFiles:  map[string]string{"added.txt": "brand new line\n"},
+			wantInDiff: "brand new line",
+		},
+	}
+
+	const token = "regression-fixture-token" // nosecret: test fixture, not a real credential
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			origin := gitRepo(t, tc.headFiles)
+			// file:// + allowFilter is what makes --filter=blob:none actually
+			// defer blobs; without it the local transport copies everything
+			// and the bug cannot be reproduced.
+			runGit(t, origin, "config", "uploadpack.allowFilter", "true")
+			runGit(t, origin, "config", "uploadpack.allowAnySHA1InWant", "true")
+			headSHA := strings.TrimSpace(runGit(t, origin, "rev-parse", "feature"))
+
+			dir, cleanup, err := GitFetcher{}.Fetch(context.Background(), "file://"+origin, token, "main", headSHA)
+			if err != nil {
+				t.Fatalf("Fetch: %v", err)
+			}
+			defer cleanup()
+
+			// Sever the promisor remote: any blob not already local now makes
+			// an on-demand diff-time fetch fail, exactly as the unauthenticated
+			// production fetch did.
+			runGit(t, dir, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "severed"))
+
+			// Emulate a review check: `git diff base...HEAD` with no auth env
+			// (cmd.Env defaults to this process's environment, which carries no
+			// token — the condition under which the bug fired).
+			cmd := exec.Command(realGit, "-C", dir, "diff", "--unified=0", BaseRefName+"...HEAD")
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("offline diff after Fetch failed — changed blobs were not materialized:\n%v\n%s", err, out)
+			}
+			if !strings.Contains(string(out), tc.wantInDiff) {
+				t.Fatalf("diff missing %q; got:\n%s", tc.wantInDiff, out)
+			}
+		})
+	}
+}
+
 // runGit runs git with args in dir and returns combined stdout+stderr,
 // failing the test on a non-zero exit.
 func runGit(t *testing.T, dir string, args ...string) string {
