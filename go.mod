@@ -12,8 +12,8 @@ retract v0.4.0
 require (
 	github.com/ThreeDotsLabs/watermill v1.5.2
 	github.com/go-chi/chi/v5 v5.3.2
-	github.com/nats-io/nats-server/v2 v2.14.5
-	github.com/nats-io/nats.go v1.54.0
+	github.com/nats-io/nats-server/v2 v2.15.0
+	github.com/nats-io/nats.go v1.53.1
 	github.com/rabbitmq/amqp091-go v1.15.0
 	github.com/stretchr/testify v1.12.1
 	go.opentelemetry.io/otel v1.46.0
@@ -23,13 +23,13 @@ require (
 	go.opentelemetry.io/otel/trace v1.46.0
 	go.uber.org/goleak v1.3.0
 	golang.org/x/sync v0.23.0
-	google.golang.org/grpc v1.83.2
+	google.golang.org/grpc v1.84.0
 	google.golang.org/protobuf v1.36.12
 	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
-	github.com/antithesishq/antithesis-sdk-go v0.7.2-default-no-op // indirect
+	github.com/antithesishq/antithesis-sdk-go v0.8.0-default-no-op // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
@@ -55,7 +55,7 @@ require (
 	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
-	golang.org/x/time v0.15.0 // indirect
+	golang.org/x/time v0.16.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260819154853-08b0e4226688 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260819154853-08b0e4226688 // indirect
 )

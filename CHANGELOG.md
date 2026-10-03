@@ -51,8 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Dependency bump: `nats-io/nats.go` v1.53.1 → v1.54.0 (Go toolchain to 1.26.0); nested modules re-tidied accordingly.
-
+- Dependency bump: `nats-io/nats-server/v2` v2.14.5 → v2.15.0 (Go toolchain to 1.26.0); nested modules re-tidied accordingly.
 ### Added
 
 - Hosted PR-review AI commentary now supports OpenAI, DeepSeek, and
