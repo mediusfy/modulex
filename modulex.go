@@ -1151,13 +1151,25 @@ var mermaidSafeIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 // synthetic IDs from each name's own, independently-scoped position (e.g.
 // a sorted-module-list index for registered names and a constant sentinel
 // for dangling ones), which would let two unsafe dangling names collide on
-// one shared ID. A module name is arbitrary, caller-supplied text —
-// RegisterModule only requires it to be non-empty — so a name containing
-// Mermaid syntax (e.g. "]", "-->", a newline, or an HTML-like sequence)
-// must never be used as a raw node ID: doing so can produce malformed or
-// misleading diagrams, or, if the resulting Mermaid source is ever
-// rendered in a context that permits inline HTML/script in labels, worse.
+// one shared ID. The synthetic counter also skips any "n<counter>" value
+// that coincides with another name's own literal safe ID (e.g. a module
+// actually named "n0"): without that check, a safe literal ID and a
+// synthetic ID could land on the same string and silently merge two
+// distinct nodes in the rendered diagram. A module name is arbitrary,
+// caller-supplied text — RegisterModule only requires it to be non-empty —
+// so a name containing Mermaid syntax (e.g. "]", "-->", a newline, or an
+// HTML-like sequence) must never be used as a raw node ID: doing so can
+// produce malformed or misleading diagrams, or, if the resulting Mermaid
+// source is ever rendered in a context that permits inline HTML/script in
+// labels, worse.
 func mermaidNodeIDs(names []string) map[string]string {
+	reservedSafeIDs := make(map[string]bool, len(names))
+	for _, name := range names {
+		if mermaidSafeIDPattern.MatchString(name) {
+			reservedSafeIDs[name] = true
+		}
+	}
+
 	ids := make(map[string]string, len(names))
 	counter := 0
 	for _, name := range names {
@@ -1168,7 +1180,12 @@ func mermaidNodeIDs(names []string) map[string]string {
 			ids[name] = name
 			continue
 		}
-		ids[name] = fmt.Sprintf("n%d", counter)
+		candidate := fmt.Sprintf("n%d", counter)
+		for reservedSafeIDs[candidate] {
+			counter++
+			candidate = fmt.Sprintf("n%d", counter)
+		}
+		ids[name] = candidate
 		counter++
 	}
 	return ids

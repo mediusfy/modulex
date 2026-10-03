@@ -83,9 +83,12 @@ func ChangedFiles(ctx context.Context, dir, baseRef, headRef string) ([]string, 
 // returning one provenance.VerificationResult with Category
 // VerificationProtectedPaths.
 //
-// Patterns are matched with path.Match against "/"-separated paths, giving
-// "*" single-segment glob semantics. CHANGELOG.md and go.mod get a
-// file-scoped exception matching docs/planning/agent-safety-policy.md:
+// Patterns are matched segment-by-segment against "/"-separated paths: each
+// non-"**" segment is matched with path.Match, giving "*" single-segment
+// glob semantics, while a "**" segment matches zero or more path segments —
+// so "docs/**/*.md" protects every Markdown file anywhere under docs/, not
+// just docs/*.md. CHANGELOG.md and go.mod get a file-scoped exception
+// matching docs/planning/agent-safety-policy.md:
 // adding to CHANGELOG.md's "## [Unreleased]" section is allowed, and only
 // go.mod's `retract` directives are protected — see
 // changelogEditIsWithinUnreleased and goModEditTouchesOnlyNonRetractLines.
@@ -136,7 +139,7 @@ func CheckProtectedPaths(ctx context.Context, dir, baseRef, headRef string, prot
 	var hits []string
 	for _, file := range changed {
 		for _, pattern := range validPatterns {
-			if matched, _ := path.Match(pattern, file); !matched {
+			if matched, _ := matchProtectedPath(pattern, file); !matched {
 				continue
 			}
 			if file == "CHANGELOG.md" && changelogEditIsWithinUnreleased(ctx, dir, baseRef, headRef) {
@@ -171,19 +174,68 @@ func CheckProtectedPaths(ctx context.Context, dir, baseRef, headRef string, prot
 	}
 }
 
-// partitionGlobs splits patterns into those that compile as path.Match
-// globs and those that don't (path.ErrBadPattern) — Match validates the
-// full pattern syntax even when the name doesn't match, so "" suffices as
-// the probe name.
+// partitionGlobs splits patterns into those that compile as matchProtectedPath
+// globs and those that don't (path.ErrBadPattern in some segment) — each
+// non-"**" segment is probed with path.Match against "", which validates the
+// full segment syntax even when it doesn't match.
 func partitionGlobs(patterns []string) (valid, invalid []string) {
 	for _, p := range patterns {
-		if _, err := path.Match(p, ""); err != nil {
-			invalid = append(invalid, p)
-		} else {
+		ok := true
+		for _, seg := range strings.Split(p, "/") {
+			if seg == "**" {
+				continue
+			}
+			if _, err := path.Match(seg, ""); err != nil {
+				ok = false
+				break
+			}
+		}
+		if ok {
 			valid = append(valid, p)
+		} else {
+			invalid = append(invalid, p)
 		}
 	}
 	return valid, invalid
+}
+
+// matchProtectedPath reports whether name matches pattern, both split into
+// "/"-separated segments. A "**" segment matches zero or more segments of
+// name (recursively, so it can also sit alongside further literal/glob
+// segments, e.g. "docs/**/*.md"); every other segment is matched with
+// path.Match, giving "*" single-segment glob semantics. Returns
+// path.ErrBadPattern if any non-"**" segment is malformed.
+func matchProtectedPath(pattern, name string) (bool, error) {
+	return matchPathSegments(strings.Split(pattern, "/"), strings.Split(name, "/"))
+}
+
+func matchPathSegments(pattern, name []string) (bool, error) {
+	if len(pattern) == 0 {
+		return len(name) == 0, nil
+	}
+	if pattern[0] == "**" {
+		if len(pattern) == 1 {
+			return true, nil
+		}
+		for i := 0; i <= len(name); i++ {
+			matched, err := matchPathSegments(pattern[1:], name[i:])
+			if err != nil {
+				return false, err
+			}
+			if matched {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+	if len(name) == 0 {
+		return false, nil
+	}
+	matched, err := path.Match(pattern[0], name[0])
+	if err != nil || !matched {
+		return false, err
+	}
+	return matchPathSegments(pattern[1:], name[1:])
 }
 
 // gitShow returns file's content as of ref.

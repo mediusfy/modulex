@@ -14,8 +14,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"gopkg.in/yaml.v3"
-
 	"github.com/mediusfy/modulex/agentdocs"
 	"github.com/mediusfy/modulex/agentreview"
 	"github.com/mediusfy/modulex/approval"
@@ -27,32 +25,29 @@ import (
 )
 
 // ContractFileName is the well-known repository contract file name, per
-// docs/planning/agent-repository-contract-guide.md. Mirrors
-// tools/mcpserver's unexported contractFileName constant of the same
-// value.
-const ContractFileName = "modulex.agent.yaml"
+// docs/planning/agent-repository-contract-guide.md. Alias of
+// contract.FileName, kept for existing callers and tests in this package.
+const ContractFileName = contract.FileName
 
-// LoadContract reads and unmarshals <root>/ContractFileName, then validates
-// it. Unlike tools/mcpserver's readContract, LoadContract has no
-// "not present" tri-state: `modulex agent generate` has nothing useful to
-// do without a contract, so a missing or invalid file is a plain error,
-// not a normal outcome for this CLI to model in its output.
+// LoadContract reads and unmarshals <root>/ContractFileName (via
+// contract.Load), then validates it. Unlike tools/mcpserver's readContract,
+// LoadContract has no "not present" tri-state: `modulex agent generate` has
+// nothing useful to do without a contract, so a missing or invalid file is
+// a plain error, not a normal outcome for this CLI to model in its output.
 func LoadContract(root string) (contract.Contract, error) {
-	path := filepath.Join(root, ContractFileName)
-
-	data, err := os.ReadFile(path)
+	c, present, err := contract.Load(root)
 	if err != nil {
-		return contract.Contract{}, fmt.Errorf("reading %s: %w", path, err)
+		return contract.Contract{}, err
 	}
-
-	var c contract.Contract
-	if err := yaml.Unmarshal(data, &c); err != nil {
-		return contract.Contract{}, fmt.Errorf("parsing %s: %w", path, err)
+	if !present {
+		path := filepath.Join(root, ContractFileName)
+		return contract.Contract{}, fmt.Errorf("reading %s: %w", path, os.ErrNotExist)
 	}
 	if err := c.Validate(); err != nil {
+		path := filepath.Join(root, ContractFileName)
 		return contract.Contract{}, fmt.Errorf("%s failed validation: %w", path, err)
 	}
-	return c, nil
+	return *c, nil
 }
 
 // Approve grants an approval for action (and, if non-empty, resource),
@@ -95,23 +90,19 @@ func Approve(root, action, resource, approvedBy string, ttl time.Duration) (appr
 // always uses discovery.Discover.
 var discoverRepo = discovery.Discover
 
-// loadProtectedPaths reads <root>/modulex.agent.yaml and returns its declared
-// ProtectedPaths, or nil if the file is absent. Unlike LoadContract it does
-// NOT validate the contract: a contract that fails validation for some
-// unrelated reason still declares protected paths that must be enforced,
-// matching tools/mcpserver's review_diff ("invalid isn't the same as
-// absent"). A present-but-unparseable file is a real error.
+// loadProtectedPaths reads <root>/modulex.agent.yaml (via contract.Load) and
+// returns its declared ProtectedPaths, or nil if the file is absent. Unlike
+// LoadContract it does NOT validate the contract: a contract that fails
+// validation for some unrelated reason still declares protected paths that
+// must be enforced, matching tools/mcpserver's review_diff ("invalid isn't
+// the same as absent"). A present-but-unparseable file is a real error.
 func loadProtectedPaths(root string) ([]string, error) {
-	data, err := os.ReadFile(filepath.Join(root, ContractFileName))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
+	c, present, err := contract.Load(root)
 	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", ContractFileName, err)
+		return nil, err
 	}
-	var c contract.Contract
-	if err := yaml.Unmarshal(data, &c); err != nil {
-		return nil, fmt.Errorf("parsing %s: %w", ContractFileName, err)
+	if !present {
+		return nil, nil
 	}
 	return c.ProtectedPaths, nil
 }
@@ -355,20 +346,19 @@ func Doctor(root string) (DoctorReport, error) {
 		Tools:     repo.Tools,
 	}
 
-	data, err := os.ReadFile(filepath.Join(root, ContractFileName))
-	if errors.Is(err, os.ErrNotExist) {
+	c, present, err := contract.Load(root)
+	if !present {
+		if err != nil {
+			return DoctorReport{}, err
+		}
 		return rep, nil
 	}
-	if err != nil {
-		return DoctorReport{}, fmt.Errorf("reading %s: %w", ContractFileName, err)
-	}
 	rep.ContractPresent = true
-
-	var c contract.Contract
-	if err := yaml.Unmarshal(data, &c); err != nil {
+	if err != nil {
 		rep.ContractError = fmt.Sprintf("parse: %v", err)
 		return rep, nil
 	}
+
 	rep.Projects = len(c.Projects)
 	rep.Commands = len(c.Commands)
 	rep.ProtectedPaths = len(c.ProtectedPaths)

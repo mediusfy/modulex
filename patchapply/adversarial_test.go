@@ -148,6 +148,48 @@ func TestApply_SymlinkEscapeRejected(t *testing.T) {
 	}
 }
 
+// TestApply_SymlinkEscapeAtLeafRejected proves a symlink planted AT the
+// target path itself (not just an ancestor directory) is caught: resolving
+// only full's parent would miss this, since the parent ("escape"'s own
+// directory, targetDir) is legitimately inside targetDir — it's full itself
+// that resolves outside.
+func TestApply_SymlinkEscapeAtLeafRejected(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation semantics differ on windows")
+	}
+
+	outside := t.TempDir()
+	secret := filepath.Join(outside, "secret.txt")
+	if err := os.WriteFile(secret, []byte("super secret"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	dir := t.TempDir()
+	// dir/escape -> outside/secret.txt (a symlink whose own path is the
+	// FileChange's target, pointing to a file entirely outside targetDir).
+	if err := os.Symlink(secret, filepath.Join(dir, "escape")); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	_, err := Apply(dir, []FileChange{
+		{Path: "escape", NewContent: []byte("pwned")},
+	}, ApplyOptions{})
+	if err == nil {
+		t.Fatal("expected Apply to reject a path whose own leaf is a symlink escaping targetDir")
+	}
+	if !errors.Is(err, ErrPathTraversal) {
+		t.Fatalf("expected ErrPathTraversal, got: %v", err)
+	}
+
+	got, readErr := os.ReadFile(secret)
+	if readErr != nil {
+		t.Fatalf("ReadFile: %v", readErr)
+	}
+	if string(got) != "super secret" {
+		t.Fatalf("file outside targetDir must never have been touched, got %q", got)
+	}
+}
+
 // TestApply_UnrelatedDirtyWorktreeChangeIsPreserved is the core
 // "preserves unrelated dirty-worktree changes" acceptance-criterion test:
 // a patch computed against a known baseline must not clobber a human's

@@ -44,11 +44,13 @@ var ErrPathTraversal = errors.New("patchapply: path escapes targetDir")
 //     itself or a path preceded by realTargetDir plus a separator (defense
 //     in depth in case some future change to this function's logic above
 //     ever let a traversal slip through uncaught);
-//   - a path whose nearest EXISTING ancestor directory resolves (via
-//     filepath.EvalSymlinks, which follows every symlink in that
-//     directory's own chain) outside realTargetDir — catching a symlink
-//     planted inside targetDir that points elsewhere on disk, even though
-//     the target file itself may not exist yet;
+//   - a path whose nearest EXISTING ancestor — full itself, if it already
+//     exists, otherwise the nearest existing parent directory — resolves
+//     (via filepath.EvalSymlinks, which follows every symlink in that
+//     ancestor's own chain) outside realTargetDir — catching a symlink
+//     planted inside targetDir that points elsewhere on disk, whether it
+//     sits at the target path itself or in one of its parent directories,
+//     even though the target file may not exist yet;
 //   - a path that cleans to "." — referring to targetDir itself, which is
 //     never a valid file target.
 func resolvedPath(realTargetDir, rel string) (string, error) {
@@ -88,17 +90,18 @@ func isWithin(base, target string) bool {
 	return strings.HasPrefix(target, base+string(filepath.Separator))
 }
 
-// verifyNoSymlinkEscape walks up from full's parent directory to the
-// nearest existing ancestor, resolves that ancestor's real path (following
-// every symlink along the way, exactly like filepath.EvalSymlinks does for
-// any existing path), and confirms the result is still within
-// realTargetDir. This catches a symlink placed anywhere in the existing
-// portion of full's directory chain that would otherwise let a write
-// escape targetDir, even though full itself may not exist yet — full's own
-// existence is never assumed, since this package's whole purpose is
-// writing files that often do not exist yet.
+// verifyNoSymlinkEscape walks up from full itself — not just its parent
+// directory — to the nearest existing ancestor, resolves that ancestor's
+// real path (following every symlink along the way, exactly like
+// filepath.EvalSymlinks does for any existing path), and confirms the
+// result is still within realTargetDir. This catches a symlink placed
+// anywhere in full's own path or its directory chain that would otherwise
+// let a write (or, via readCurrent, a read) escape targetDir, even though
+// full itself may not exist yet — full's own existence is never assumed,
+// since this package's whole purpose is writing files that often do not
+// exist yet.
 func verifyNoSymlinkEscape(realTargetDir, full string) error {
-	dir := filepath.Dir(full)
+	dir := full
 	for {
 		resolved, err := filepath.EvalSymlinks(dir)
 		if err == nil {

@@ -16,15 +16,12 @@ package engine
 import (
 	"context"
 	"encoding/base64"
-	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 
-	"gopkg.in/yaml.v3"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/mediusfy/modulex/contract"
 	"github.com/mediusfy/modulex/provenance"
@@ -45,25 +42,31 @@ func (Modulex) Review(ctx context.Context, dir, baseRef, headRef string) ([]prov
 	// The contract is read fail-CLOSED, matching the mcpserver and
 	// agentcli adapters: a present-but-broken modulex.agent.yaml must
 	// error, not silently disable protected-path enforcement.
+	c, _, err := contract.Load(dir)
+	if err != nil {
+		return nil, err
+	}
 	var protectedPaths []string
-	raw, err := os.ReadFile(filepath.Join(dir, "modulex.agent.yaml"))
-	switch {
-	case err == nil:
-		var c contract.Contract
-		if err := yaml.Unmarshal(raw, &c); err != nil {
-			return nil, fmt.Errorf("modulex.agent.yaml is present but unparseable: %w", err)
-		}
+	if c != nil {
 		protectedPaths = c.ProtectedPaths
-	case errors.Is(err, fs.ErrNotExist):
-		// No contract is a normal state: review without protected paths.
-	default:
-		return nil, fmt.Errorf("reading modulex.agent.yaml: %w", err)
 	}
 
-	return []provenance.VerificationResult{
-		review.ScanSecrets(ctx, dir, baseRef, headRef),
-		review.CheckProtectedPaths(ctx, dir, baseRef, headRef, protectedPaths),
-	}, nil
+	// ScanSecrets and CheckProtectedPaths are fully independent checks over
+	// the same diff range — run them concurrently instead of back-to-back,
+	// halving the wall-clock cost of this step on every hosted review.
+	results := make([]provenance.VerificationResult, 2)
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		results[0] = review.ScanSecrets(gctx, dir, baseRef, headRef)
+		return nil
+	})
+	g.Go(func() error {
+		results[1] = review.CheckProtectedPaths(gctx, dir, baseRef, headRef, protectedPaths)
+		return nil
+	})
+	_ = g.Wait() // both checks report their own StatusUnavailable/StatusFail; neither goroutine returns an error.
+
+	return results, nil
 }
 
 // Fetcher produces a local checkout of the PR to review and the diff text
