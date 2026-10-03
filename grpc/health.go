@@ -20,6 +20,19 @@ const ReadinessService = "readiness"
 // client is streaming.
 const defaultWatchInterval = 5 * time.Second
 
+// defaultCheckTimeout bounds how long any single registered check may run
+// before evaluateChecks treats it as failed, matching httpx.runChecks'
+// identically-named constant. Without it, a context-aware but slow check
+// is unbounded here: Check's ctx is the inbound RPC's own deadline (which a
+// caller may not set), and Watch's stream.Context() typically carries none
+// at all, so a hung check would otherwise block the Watch loop forever
+// instead of promptly reporting NOT_SERVING.
+//
+// A package var, not a const, purely so tests can shrink it instead of
+// blocking for the full 5 seconds to prove a never-returning check is
+// still bounded; production code never changes it.
+var defaultCheckTimeout = 5 * time.Second
+
 // HealthChecker is the subset of modulex.Registry (and modulex.Manager, which
 // implements the full Registry) that HealthServer needs to answer
 // health-check requests from real, currently-registered checks rather than a
@@ -133,19 +146,30 @@ func (h *HealthServer) checksFor(service string) (map[string]func(context.Contex
 	}
 }
 
-// evaluateChecks runs every check and reports whether all of them passed. A
-// nil check function or a non-nil error both count as a failure, mirroring
-// httpx.runChecks' treatment of nil checks.
+// evaluateChecks runs every check, each bounded by defaultCheckTimeout, and
+// reports whether all of them passed. A nil check function, a non-nil
+// error, or a check that outlives its timeout all count as a failure,
+// mirroring httpx.runChecks' treatment of nil checks and per-check
+// timeouts.
 func evaluateChecks(ctx context.Context, checks map[string]func(context.Context) error) bool {
 	for _, check := range checks {
 		if check == nil {
 			return false
 		}
-		if err := check(ctx); err != nil {
+		if !runCheckWithTimeout(ctx, check) {
 			return false
 		}
 	}
 	return true
+}
+
+// runCheckWithTimeout runs check under a context derived from ctx via
+// WithTimeout, which automatically enforces whichever deadline is shorter
+// (ctx's own deadline, if any, or defaultCheckTimeout).
+func runCheckWithTimeout(ctx context.Context, check func(context.Context) error) bool {
+	checkCtx, cancel := context.WithTimeout(ctx, defaultCheckTimeout)
+	defer cancel()
+	return check(checkCtx) == nil
 }
 
 func servingStatus(healthy bool) healthpb.HealthCheckResponse_ServingStatus {

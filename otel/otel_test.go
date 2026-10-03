@@ -163,19 +163,33 @@ func TestSpanAttributesConversion(t *testing.T) {
 }
 
 func TestNewTracerFallsBackToGlobalProvider(t *testing.T) {
-	sr := tracetest.NewSpanRecorder()
-	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
-	otel.SetTracerProvider(tp)
-	t.Cleanup(func() { otel.SetTracerProvider(nooptrace.NewTracerProvider()) })
+	tests := []struct {
+		name     string
+		spanName string
+	}{
+		{
+			name:     "a nil provider falls back to the global one",
+			spanName: "GlobalFallback",
+		},
+	}
 
-	tracer := modulexotel.NewTracer(nil)
-	ctx := context.Background()
-	_, span := tracer.Start(ctx, "GlobalFallback", nil)
-	span.End()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sr := tracetest.NewSpanRecorder()
+			tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+			otel.SetTracerProvider(tp)
+			t.Cleanup(func() { otel.SetTracerProvider(nooptrace.NewTracerProvider()) })
 
-	spans := sr.Ended()
-	require.Len(t, spans, 1)
-	assert.Equal(t, "GlobalFallback", spans[0].Name())
+			tracer := modulexotel.NewTracer(nil)
+			ctx := context.Background()
+			_, span := tracer.Start(ctx, tt.spanName, nil)
+			span.End()
+
+			spans := sr.Ended()
+			require.Len(t, spans, 1)
+			assert.Equal(t, tt.spanName, spans[0].Name())
+		})
+	}
 }
 
 func TestContextWithSpanContextIgnoresForeignImplementation(t *testing.T) {

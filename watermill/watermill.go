@@ -13,6 +13,7 @@ import (
 	"github.com/ThreeDotsLabs/watermill/pubsub/gochannel"
 
 	"github.com/mediusfy/modulex"
+	"github.com/mediusfy/modulex/internal/busshutdown"
 	"github.com/mediusfy/modulex/internal/handlerpanic"
 	"github.com/mediusfy/modulex/workerpool"
 )
@@ -230,18 +231,7 @@ func (w *EventBus) Close(ctx context.Context) error {
 	}
 
 	// Wait for background worker goroutines to finish with context timeout support
-	done := make(chan struct{})
-	go func() {
-		w.wg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		return fmt.Errorf("watermill eventbus close timed out: %w", ctx.Err())
-	}
+	return busshutdown.WaitGroup(ctx, &w.wg, "watermill eventbus")
 }
 
 var (

@@ -2,20 +2,18 @@ package mcpserver
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"gopkg.in/yaml.v3"
 
 	"github.com/mediusfy/modulex/contract"
 )
 
 // contractFileName is the well-known repository contract file name, per
-// docs/planning/agent-repository-contract-guide.md.
-const contractFileName = "modulex.agent.yaml"
+// docs/planning/agent-repository-contract-guide.md. Alias of
+// contract.FileName, kept for existing callers and tests in this package.
+const contractFileName = contract.FileName
 
 // ReadContractIn is read_contract's input.
 type ReadContractIn struct {
@@ -78,33 +76,31 @@ func readContract(root string) (ReadContractOut, error) {
 		return ReadContractOut{}, fmt.Errorf("read_contract: root %q is not a directory", root)
 	}
 
-	path := filepath.Join(resolvedRoot, contractFileName)
-
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
+	c, present, err := contract.Load(resolvedRoot)
+	if !present {
+		if err != nil {
+			return ReadContractOut{}, err
+		}
 		return ReadContractOut{Present: false}, nil
 	}
 	if err != nil {
-		return ReadContractOut{}, err
-	}
-
-	var c contract.Contract
-	if err := yaml.Unmarshal(data, &c); err != nil {
+		// Present but unparseable: contract.Load's error already names the
+		// file and wraps the underlying YAML error.
 		return ReadContractOut{
 			Present:          true,
-			ValidationErrors: []string{"parsing " + contractFileName + ": " + err.Error()},
+			ValidationErrors: []string{err.Error()},
 		}, nil
 	}
 
 	if err := c.Validate(); err != nil {
 		return ReadContractOut{
 			Present:          true,
-			Contract:         &c,
+			Contract:         c,
 			ValidationErrors: unwrapErrors(err),
 		}, nil
 	}
 
-	return ReadContractOut{Present: true, Contract: &c}, nil
+	return ReadContractOut{Present: true, Contract: c}, nil
 }
 
 func readContractHandler(_ context.Context, _ *mcp.CallToolRequest, in ReadContractIn) (*mcp.CallToolResult, ReadContractOut, error) {

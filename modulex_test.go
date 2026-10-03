@@ -2472,3 +2472,29 @@ func TestExportDAGEscapesMermaidSignificantModuleNames(t *testing.T) {
 	require.Contains(t, dag, "normal --> n0", "the edge to the Mermaid-significant dependency name must reference its synthetic ID")
 	require.NotContains(t, dag, `"`+evilName, "no raw double-quote from the module name should survive escaping")
 }
+
+// TestExportDAGSyntheticIDsNeverCollideWithALiteralSafeName is a regression
+// test for mermaidNodeIDs: a module literally named "n0" (itself a safe,
+// usable-verbatim ID) coexists with an unsafe dangling dependency name that
+// would otherwise be assigned synthetic ID "n0" too, since that's the
+// first counter value. Without skipping reserved literal IDs, both would
+// render as the same Mermaid node, silently merging two distinct entities
+// in the diagram.
+func TestExportDAGSyntheticIDsNeverCollideWithALiteralSafeName(t *testing.T) {
+	t.Parallel()
+
+	manager := newTestManager(NewInMemoryEventBus())
+
+	require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "n0"})))
+	require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "normal", deps: []string{"bad name"}})))
+
+	dag := manager.ExportDAG()
+
+	require.Contains(t, dag, "    n0[n0]\n", "the module literally named \"n0\" must keep its own name as its node ID/label")
+	require.NotContains(t, dag, "normal --> n0", "the dangling unsafe dependency must not collide with the \"n0\"-named module's ID")
+
+	edgePattern := regexp.MustCompile(`(?m)^    normal --> (n\d+)$`)
+	m := edgePattern.FindStringSubmatch(dag)
+	require.NotNil(t, m, "expected an edge from normal to a synthetic ID, got:\n%s", dag)
+	require.NotEqual(t, "n0", m[1], "the synthetic ID assigned to the unsafe dependency must not be \"n0\"")
+}

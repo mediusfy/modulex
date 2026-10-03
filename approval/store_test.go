@@ -10,14 +10,28 @@ import (
 )
 
 func TestFileStore_LoadMissingFileReturnsEmptyBroker(t *testing.T) {
-	store := NewFileStore(filepath.Join(t.TempDir(), "approvals.json"))
-
-	b, err := store.Load()
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
+	tests := []struct {
+		name  string
+		scope Scope
+	}{
+		{
+			name:  "a scope with no prior grant is still approval-required",
+			scope: Scope{Action: "push"},
+		},
 	}
-	if got := b.Check(Scope{Action: "push"}); got != provenance.StatusApprovalRequired {
-		t.Errorf("Check() on a store that was never written to = %v, want %v", got, provenance.StatusApprovalRequired)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := NewFileStore(filepath.Join(t.TempDir(), "approvals.json"))
+
+			b, err := store.Load()
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if got := b.Check(tt.scope); got != provenance.StatusApprovalRequired {
+				t.Errorf("Check() on a store that was never written to = %v, want %v", got, provenance.StatusApprovalRequired)
+			}
+		})
 	}
 }
 
