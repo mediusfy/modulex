@@ -7,9 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `github.com/nats-io/nats.go` restored to v1.54.0: PR #163 intentionally
+  bumped it from v1.53.1, but the subsequent `nats-server` v2.15.0 bump
+  (#161) silently re-resolved it back down to v1.53.1 in the same commit,
+  with no mention in that PR's own changelog entry. Also retidied
+  `examples/external-consumer` and `services/prreview` against the
+  `google.golang.org/grpc` v1.84.0 bump (#162), which `make
+  check-nested-modules` had been failing on since that PR merged.
+
 ### Changed
 
 - Dependency bump: `nats-io/nats-server/v2` v2.14.5 → v2.15.0 (Go toolchain to 1.26.0); nested modules re-tidied accordingly.
+
 ### Added
 
 - Hosted PR-review AI commentary now supports OpenAI, DeepSeek, and
