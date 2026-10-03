@@ -13,7 +13,7 @@ require (
 	github.com/ThreeDotsLabs/watermill v1.5.2
 	github.com/go-chi/chi/v5 v5.3.2
 	github.com/nats-io/nats-server/v2 v2.15.0
-	github.com/nats-io/nats.go v1.53.1
+	github.com/nats-io/nats.go v1.54.0
 	github.com/rabbitmq/amqp091-go v1.15.0
 	github.com/stretchr/testify v1.12.1
 	go.opentelemetry.io/otel v1.46.0
