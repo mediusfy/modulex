@@ -8,24 +8,58 @@ import (
 	"github.com/mediusfy/modulex/provenance"
 )
 
+// TestChangedFiles covers single- and multi-file diffs as rows of the same
+// setup-base/edit/diff shape.
 func TestChangedFiles(t *testing.T) {
-	root := newTestRepo(t)
-
-	writeFile(t, root, "a.go", "package a\n")
-	writeFile(t, root, "b.go", "package b\n")
-	runGit(t, root, "add", "a.go", "b.go")
-	runGit(t, root, "commit", "--quiet", "-m", "base")
-	runGit(t, root, "branch", "base")
-
-	writeFile(t, root, "a.go", "package a\n\nfunc F() {}\n")
-	runGit(t, root, "commit", "--quiet", "-am", "change a")
-
-	got, err := ChangedFiles(context.Background(), root, "base", "HEAD")
-	if err != nil {
-		t.Fatalf("ChangedFiles() error = %v", err)
+	tests := []struct {
+		name string
+		edit func(t *testing.T, root string)
+		want []string
+	}{
+		{
+			name: "single file changed",
+			edit: func(t *testing.T, root string) {
+				writeFile(t, root, "a.go", "package a\n\nfunc F() {}\n")
+				runGit(t, root, "commit", "--quiet", "-am", "change a")
+			},
+			want: []string{"a.go"},
+		},
+		{
+			name: "multiple files changed",
+			edit: func(t *testing.T, root string) {
+				writeFile(t, root, "a.go", "package a\n\nfunc F() {}\n")
+				writeFile(t, root, "b.go", "package b\n\nfunc G() {}\n")
+				runGit(t, root, "commit", "--quiet", "-am", "change a and b")
+			},
+			want: []string{"a.go", "b.go"},
+		},
 	}
-	if len(got) != 1 || got[0] != "a.go" {
-		t.Errorf("ChangedFiles() = %v, want [a.go]", got)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := newTestRepo(t)
+
+			writeFile(t, root, "a.go", "package a\n")
+			writeFile(t, root, "b.go", "package b\n")
+			runGit(t, root, "add", "a.go", "b.go")
+			runGit(t, root, "commit", "--quiet", "-m", "base")
+			runGit(t, root, "branch", "base")
+
+			tt.edit(t, root)
+
+			got, err := ChangedFiles(context.Background(), root, "base", "HEAD")
+			if err != nil {
+				t.Fatalf("ChangedFiles() error = %v", err)
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("ChangedFiles() = %v, want %v", got, tt.want)
+			}
+			for i, f := range tt.want {
+				if got[i] != f {
+					t.Errorf("ChangedFiles()[%d] = %q, want %q", i, got[i], f)
+				}
+			}
+		})
 	}
 }
 
@@ -88,6 +122,30 @@ func TestCheckProtectedPaths_SingleFileScenarios(t *testing.T) {
 			initial:        "name: ci\n",
 			updated:        "name: ci\non: push\n",
 			protectedPaths: []string{".github/workflows/*.yml"},
+			wantStatus:     provenance.StatusFail,
+		},
+		{
+			name:           "single-segment glob does not reach a nested file",
+			file:           ".github/workflows/sub/ci.yml",
+			initial:        "name: ci\n",
+			updated:        "name: ci\non: push\n",
+			protectedPaths: []string{".github/workflows/*.yml"},
+			wantStatus:     provenance.StatusPass,
+		},
+		{
+			name:           "** glob matches a file nested arbitrarily deep",
+			file:           "docs/a/b/notes.md",
+			initial:        "# notes\n",
+			updated:        "# notes\n\nmore\n",
+			protectedPaths: []string{"docs/**/*.md"},
+			wantStatus:     provenance.StatusFail,
+		},
+		{
+			name:           "** glob also matches directly under the root",
+			file:           "docs/notes.md",
+			initial:        "# notes\n",
+			updated:        "# notes\n\nmore\n",
+			protectedPaths: []string{"docs/**/*.md"},
 			wantStatus:     provenance.StatusFail,
 		},
 		{

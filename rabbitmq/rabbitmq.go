@@ -11,6 +11,7 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 
 	"github.com/mediusfy/modulex"
+	"github.com/mediusfy/modulex/internal/busshutdown"
 	"github.com/mediusfy/modulex/internal/handlerpanic"
 	"github.com/mediusfy/modulex/workerpool"
 	"go.opentelemetry.io/otel"
@@ -478,12 +479,7 @@ func (r *EventBus) Close(ctx context.Context) error {
 	if stopped == nil {
 		return nil
 	}
-	select {
-	case <-stopped:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	return busshutdown.Wait(ctx, stopped, "rabbitmq")
 }
 
 var (

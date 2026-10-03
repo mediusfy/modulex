@@ -299,6 +299,44 @@ func TestRun_DefinedMakeTargetStillRunsAndCanFail(t *testing.T) {
 	}
 }
 
+// TestRun_MakeTargetWithoutMakeBinaryIsUnavailable proves a host with a
+// valid Makefile and target, but no "make" binary on PATH, is reported
+// StatusUnavailable, not StatusFail — none of the built-in make-based
+// CheckSpecs declare RequiredTool "make" (they declare the underlying
+// tool, e.g. "go"), so RequiredTool gating alone would never catch this;
+// without the preflight's own LookPath check, the real run would shell out
+// to "make <target>", get "command not found" from the shell, and be
+// misreported as a real check failure.
+func TestRun_MakeTargetWithoutMakeBinaryIsUnavailable(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Makefile"), []byte("build:\n\t@true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// An empty PATH directory has no "make" (or anything else) on it, but
+	// missingMakeTarget's hasMakefile check uses os.Stat directly, so it
+	// still finds the Makefile above regardless of PATH.
+	t.Setenv("PATH", t.TempDir())
+
+	check := CheckSpec{
+		Name:         "build",
+		Command:      "make build",
+		Category:     provenance.VerificationFull,
+		Dir:          dir,
+		RequiredTool: "go",
+	}
+	tools := []discovery.ToolStatus{{Name: "go", Present: true}}
+
+	results := Run(context.Background(), []CheckSpec{check}, tools, false)
+	if results[0].Status != provenance.StatusUnavailable {
+		t.Fatalf("Status = %q, want %q; Reason: %s; Message: %s",
+			results[0].Status, provenance.StatusUnavailable, results[0].Reason, results[0].Message)
+	}
+	if !strings.Contains(results[0].Reason, "make") || !strings.Contains(results[0].Reason, "PATH") {
+		t.Errorf("Reason = %q, want it to say \"make\" is not on PATH", results[0].Reason)
+	}
+}
+
 func TestRun_NonMakeCommandsSkipTheMakePreflight(t *testing.T) {
 	// A non-"make <target>" command in a Makefile-less directory must run
 	// normally -- the preflight only reasons about the bare make shape.

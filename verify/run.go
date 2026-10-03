@@ -180,9 +180,16 @@ func missingMakeTarget(ctx context.Context, c CheckSpec) string {
 
 	makePath, err := exec.LookPath("make")
 	if err != nil {
-		// RequiredTool gating normally catches this first; without make the
-		// real run would fail to start anyway, so let it surface there.
-		return ""
+		// None of the built-in make-based CheckSpecs declare RequiredTool
+		// "make" (they declare the underlying tool the target itself needs,
+		// e.g. "go" or "golangci-lint"), so RequiredTool gating never
+		// catches a missing make binary — this is the only place that
+		// does. Without this, the real run below would shell out to
+		// "make <target>", get a shell-level "command not found", and
+		// report StatusFail: a false failure indistinguishable from the
+		// target actually failing, which is exactly what this whole
+		// preflight exists to prevent.
+		return fmt.Sprintf("make target %q cannot be verified: \"make\" is not present on PATH", target)
 	}
 	probe := exec.CommandContext(ctx, makePath, "-n", target)
 	probe.Dir = c.Dir
