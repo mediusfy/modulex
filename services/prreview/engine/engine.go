@@ -118,8 +118,9 @@ func (GitFetcher) Fetch(ctx context.Context, cloneURL, token, baseRef, headSHA s
 	// shallow fetch drops it whenever the branch point is older than the
 	// depth, silently disabling the secret and protected-path checks on
 	// exactly the large, stale PRs that most need them. Blobless keeps
-	// the full commit graph small; git fetches file contents on demand
-	// while diffing.
+	// the full commit graph small; the changed-file blobs are then
+	// materialized up front by an authenticated warm-up diff after checkout
+	// (see below) rather than left to fetch on demand while diffing.
 	baseFetch := []string{"fetch", "--quiet", "--filter=blob:none", "origin",
 		"+refs/heads/" + baseRef + ":refs/heads/" + BaseRefName}
 	baseBranch := []string(nil)
@@ -137,6 +138,18 @@ func (GitFetcher) Fetch(ctx context.Context, cloneURL, token, baseRef, headSHA s
 		steps = append(steps, baseBranch)
 	}
 	steps = append(steps, []string{"checkout", "--quiet", headSHA})
+	// Warm the local object store over the exact range the review diffs
+	// (prreview-base...HEAD). The blobless fetches above defer file-content
+	// fetches to diff time, but the secret and protected-path checks — and
+	// the AI diff — run `git diff` from the review package with no token in
+	// their environment (they are pure checks that take a dir, not a
+	// credential), so their on-demand promisor fetches would fail with
+	// "could not read Username" and report the checks as unavailable. Force
+	// the diff once here, while this process still carries the auth header,
+	// so every changed blob is already local and no later fetch is needed.
+	// --stat reads both sides of each changed file (materializing base- and
+	// head-side blobs) while keeping output to one line per file.
+	steps = append(steps, []string{"diff", "--stat", BaseRefName + "...HEAD"})
 	for _, step := range steps {
 		if err := run(step...); err != nil {
 			cleanup()
