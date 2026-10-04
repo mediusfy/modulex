@@ -3,7 +3,7 @@
 # from the repository root:
 #   docker build -f services/prreview/Dockerfile --target worker .
 
-FROM golang:1.25 AS build
+FROM golang:1.26 AS build
 WORKDIR /src
 COPY . .
 WORKDIR /src/services/prreview
@@ -21,7 +21,7 @@ ENTRYPOINT ["/receiver"]
 # image makes its checks report "unavailable" rather than fail (the
 # engine's existing contract), so the image's tool set only widens or
 # narrows coverage, never correctness.
-FROM golang:1.25 AS worker
+FROM golang:1.26 AS worker
 RUN apt-get update && apt-get install -y --no-install-recommends git make ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/worker /worker
