@@ -26,10 +26,16 @@ const FileName = "modulex.agent.yaml"
 // enforced).
 //
 // present is false only when the file does not exist at all — that is
-// always a normal, error-free outcome. Every other combination sets err:
+// always a normal, error-free outcome. This includes the case where root
+// itself doesn't exist: os.ReadFile reports the same ENOENT for a missing
+// parent directory as for a missing file, so Load cannot and does not
+// distinguish "root is valid but has no FileName" from "root itself
+// doesn't exist" — both report present=false, err=nil. A caller that must
+// tell them apart (e.g. mcpserver's readContract) stats root itself
+// before calling Load. Every other combination sets err:
 //
-//   - present=false, err!=nil: the file could not even be read (a
-//     permission error, or root itself missing/not-a-directory) — not the
+//   - present=false, err!=nil: the file could not even be read for a
+//     reason other than ENOENT (e.g. a permission error) — not the
 //     normal "no contract" state.
 //   - present=true, err!=nil: the file exists but failed to unmarshal as
 //     YAML into Contract's shape. c is nil.

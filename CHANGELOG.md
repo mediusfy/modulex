@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `contract.Load`'s doc comment claimed a missing `root` directory reports
+  `present=false, err!=nil`; the actual (and tested) behavior treats it the
+  same as a missing contract file, `present=false, err=nil` — the comment
+  now matches the code, per a hosted PR-review finding on #165.
 - `github.com/nats-io/nats.go` restored to v1.54.0: PR #163 intentionally
   bumped it from v1.53.1, but the subsequent `nats-server` v2.15.0 bump
   (#161) silently re-resolved it back down to v1.53.1 in the same commit,
