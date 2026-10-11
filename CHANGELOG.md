@@ -28,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `services/prreview`'s Docker build (`golang:1.25` base images) no
+  longer breaks against `go.mod`'s `go >= 1.26.0` + `GOTOOLCHAIN=local`
+  requirement; both build and worker stages bumped to `golang:1.26`.
+
 - `tenants.parseAIConfigPayload`: a JSON secret payload using the wrong
   field names (missing `api_key`/`base_url`) no longer falls through to
   being treated as a literal bare API key — previously the whole JSON
