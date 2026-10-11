@@ -302,3 +302,51 @@ func TestCheckProtectedPaths_BadRefStillReportsInvalidGlob(t *testing.T) {
 		t.Errorf("Reason = %q, want it to name the invalid glob pattern alongside the diff failure", result.Reason)
 	}
 }
+
+// TestMatchProtectedPath pins matchPathSegments' "**" recursion semantics
+// directly — CheckProtectedPaths' integration-level table exercises only a
+// few patterns per scenario, not the zero-segment, trailing, and malformed
+// "**" edge cases that are easy to get wrong in a recursive matcher.
+func TestMatchProtectedPath(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		path    string
+		want    bool
+		wantErr bool
+	}{
+		{name: "bare ** matches everything", pattern: "**", path: "a/b/c.go", want: true},
+		{name: "bare ** matches a single segment", pattern: "**", path: "a.go", want: true},
+		{name: "leading ** matches zero segments", pattern: "**/a.go", path: "a.go", want: true},
+		{name: "leading ** matches one segment", pattern: "**/a.go", path: "x/a.go", want: true},
+		{name: "leading ** matches multiple segments", pattern: "**/a.go", path: "x/y/a.go", want: true},
+		{name: "trailing ** matches zero segments", pattern: "docs/**", path: "docs", want: true},
+		{name: "trailing ** matches one segment", pattern: "docs/**", path: "docs/a.md", want: true},
+		{name: "trailing ** matches multiple segments", pattern: "docs/**", path: "docs/a/b.md", want: true},
+		{name: "mid ** matches zero segments between literals", pattern: "docs/**/a.md", path: "docs/a.md", want: true},
+		{name: "mid ** matches multiple segments between literals", pattern: "docs/**/a.md", path: "docs/x/y/a.md", want: true},
+		{name: "mid ** does not match a different leaf", pattern: "docs/**/a.md", path: "docs/x/b.md", want: false},
+		{name: "non-** segment still requires an exact path", pattern: "go.mod", path: "go.sum", want: false},
+		{name: "empty pattern only matches empty path", pattern: "", path: "", want: true},
+		{name: "empty pattern does not match a non-empty path", pattern: "", path: "a", want: false},
+		{name: "malformed segment mid-pattern reports path.ErrBadPattern", pattern: "docs/[/a.md", path: "docs/x/a.md", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := matchProtectedPath(tt.pattern, tt.path)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("matchProtectedPath(%q, %q) error = nil, want an error", tt.pattern, tt.path)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("matchProtectedPath(%q, %q) unexpected error: %v", tt.pattern, tt.path, err)
+			}
+			if got != tt.want {
+				t.Errorf("matchProtectedPath(%q, %q) = %v, want %v", tt.pattern, tt.path, got, tt.want)
+			}
+		})
+	}
+}
