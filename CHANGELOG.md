@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `.github/workflows/release.yml` pinned `go-version: '1.26'` (exact,
+  no patch wildcard), which resolved to a stale cached `go1.26.8` on
+  the runner and failed the release's `make vuln` gate on CVEs already
+  fixed in `go1.26.9`; `ci.yml`'s matching jobs use `'1.26.x'` and were
+  unaffected. This caused the v0.11.0 tag's own Release workflow run to
+  fail, so its GitHub Release had to be created manually afterward.
+  Aligned the version spec with `ci.yml`.
+
 ## [0.11.0] - 2026-10-11
 
 ### Added
