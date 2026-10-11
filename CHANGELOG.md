@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Dependency bump: `nats-io/nats-server/v2` v2.14.5 → v2.15.0 (Go toolchain to 1.26.0); nested modules re-tidied accordingly.
+- Dependency bump: the `go.opentelemetry.io/otel` family (`otel`,
+  `otel/sdk`, `otel/trace`, `otel/exporters/otlp/otlptrace/otlptracegrpc`,
+  `otel/exporters/otlp/otlptrace/otlptracehttp`) v1.46.0 → v1.47.0, kept
+  in lockstep across the family; `services/prreview`'s nested module
+  re-tidied accordingly.
 
 ### Security
 
