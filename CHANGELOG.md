@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Dependency bump: `nats-io/nats-server/v2` v2.14.5 → v2.15.0 (Go toolchain to 1.26.0); nested modules re-tidied accordingly.
+
+### Security
+
+- Dependency bump: `golang.org/x/net` v0.58.0 → v0.60.0, fixing
+  [GO-2026-6617](https://pkg.go.dev/vuln/GO-2026-6617) (HTTP/2 server
+  crash via an HPACK encoder race). `services/prreview`'s nested module
+  re-tidied accordingly.
+
 ### Added
 
 - Hosted PR-review AI commentary now supports OpenAI, DeepSeek, and
