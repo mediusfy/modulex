@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `otel/exporters/otlp/otlptrace/otlptracehttp`) v1.46.0 → v1.47.0, kept
   in lockstep across the family; `services/prreview`'s nested module
   re-tidied accordingly.
+- Dependency bump: `ThreeDotsLabs/watermill` v1.5.2 → v1.5.3.
 
 ### Security
 
