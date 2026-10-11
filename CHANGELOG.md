@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-11
+
+### Added
+
+- Hosted PR-review AI commentary now supports OpenAI, DeepSeek, and
+  Ollama in addition to Anthropic. Each installation selects its
+  backend via a `provider` field in its `prreview-ai-<id>` secret;
+  ADR-0035's caller-keyed model holds for every provider, including
+  Ollama, where the installation supplies and owns its own server.
+- Modulex editor plugins for VSCode (`editors/vscode`) and IntelliJ
+  (`editors/intellij`), clients of the local read-only MCP server
+  (`tools/mcpserver`) per ADR-0035 plan step 5: review a diff against a
+  base ref, run focused/full declared verification, discover the
+  repository, read the contract, and create a provenance handoff
+  envelope — offline, with no hosted backend. Both share one
+  editor-agnostic tool-surface description (`editors/tool-surface.json`)
+  and hand-rolled stdio JSON-RPC clients with no MCP SDK dependency.
+- Hosted PR-review GitHub App on GCP (`services/prreview` +
+  `infra/prreview`), the optional zero-setup delivery of the review
+  engine per ADR-0035 plan step 6: a scale-to-zero Cloud Run receiver
+  (HMAC-verified, delivery-ID-deduped via native Firestore TTL,
+  per-installation rate limits) and worker (Firestore per-PR lease
+  serialization, installation-scoped tokens, incremental reviews,
+  caller-keyed Anthropic commentary that degrades to engine-only,
+  single PR comment updated in place, per-installation usage ledger),
+  with Terraform for the full stack including a billing budget. No
+  always-on datastore; no compute cost while idle.
+
+### Changed
+
+- Protected-path contract parsing (read `modulex.agent.yaml`, treat a
+  missing file as absent, fail closed on a parse error) is now shared via
+  `contract.Load` instead of being independently reimplemented across the
+  CLI, the MCP server, and the hosted PR-review engine.
+- `rabbitmq.EventBus.Close`, `watermill.EventBus.Close`, and
+  `nats.JetStreamEventBus.Close` now share one "wait for shutdown,
+  bounded by ctx" helper (`internal/busshutdown`) instead of each
+  hand-rolling the same pattern independently.
+- Dependency bump: `nats-io/nats-server/v2` v2.14.5 → v2.15.0 (Go toolchain to 1.26.0); nested modules re-tidied accordingly.
+- Dependency bump: the `go.opentelemetry.io/otel` family (`otel`,
+  `otel/sdk`, `otel/trace`, `otel/exporters/otlp/otlptrace/otlptracegrpc`,
+  `otel/exporters/otlp/otlptrace/otlptracehttp`) v1.46.0 → v1.47.0, kept
+  in lockstep across the family; `services/prreview`'s nested module
+  re-tidied accordingly.
+- Dependency bump: `ThreeDotsLabs/watermill` v1.5.2 → v1.5.3.
+
 ### Fixed
 
 - `contract.Load`'s doc comment claimed a missing `root` directory reports
@@ -48,63 +94,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hosted PR-review engine: `ScanSecrets` and `CheckProtectedPaths` now
   run concurrently instead of sequentially, since they are independent
   checks over the same diff range.
-
-### Changed
-
-- Protected-path contract parsing (read `modulex.agent.yaml`, treat a
-  missing file as absent, fail closed on a parse error) is now shared via
-  `contract.Load` instead of being independently reimplemented across the
-  CLI, the MCP server, and the hosted PR-review engine.
-- `rabbitmq.EventBus.Close`, `watermill.EventBus.Close`, and
-  `nats.JetStreamEventBus.Close` now share one "wait for shutdown,
-  bounded by ctx" helper (`internal/busshutdown`) instead of each
-  hand-rolling the same pattern independently.
-- Dependency bump: `nats-io/nats-server/v2` v2.14.5 → v2.15.0 (Go toolchain to 1.26.0); nested modules re-tidied accordingly.
-- Dependency bump: the `go.opentelemetry.io/otel` family (`otel`,
-  `otel/sdk`, `otel/trace`, `otel/exporters/otlp/otlptrace/otlptracegrpc`,
-  `otel/exporters/otlp/otlptrace/otlptracehttp`) v1.46.0 → v1.47.0, kept
-  in lockstep across the family; `services/prreview`'s nested module
-  re-tidied accordingly.
-- Dependency bump: `ThreeDotsLabs/watermill` v1.5.2 → v1.5.3.
-
-### Security
-
-- Dependency bump: `golang.org/x/net` v0.58.0 → v0.60.0, fixing
-  [GO-2026-6617](https://pkg.go.dev/vuln/GO-2026-6617) (HTTP/2 server
-  crash via an HPACK encoder race). `services/prreview`'s nested module
-  re-tidied accordingly.
-
-### Added
-
-- Hosted PR-review AI commentary now supports OpenAI, DeepSeek, and
-  Ollama in addition to Anthropic. Each installation selects its
-  backend via a `provider` field in its `prreview-ai-<id>` secret;
-  ADR-0035's caller-keyed model holds for every provider, including
-  Ollama, where the installation supplies and owns its own server.
-
-### Fixed
-
 - `services/prreview`'s Docker build (`golang:1.25` base images) no
   longer breaks against `go.mod`'s `go >= 1.26.0` + `GOTOOLCHAIN=local`
   requirement; both build and worker stages bumped to `golang:1.26`.
-
 - `tenants.parseAIConfigPayload`: a JSON secret payload using the wrong
   field names (missing `api_key`/`base_url`) no longer falls through to
   being treated as a literal bare API key — previously the whole JSON
   blob would have been sent to the provider as "the key".
-
-### Security
-
-- Hosted PR-review worker: the engine now runs only the pure checks
-  (secret scan, protected paths) and never a tenant-declared command —
-  previously any PR author on an installed repo could execute arbitrary
-  code beside the App's credentials. Also: fail-closed contract parsing,
-  fence-escaped check output in PR comments, HTTP server timeouts on
-  both services, and the App key dropped from the worker env after
-  parsing.
-
-### Fixed
-
 - Hosted PR-review reliability: lease fencing tokens, re-anchoring on
   GitHub's authoritative PR head, immediate comment-ID persistence,
   dedup rollback on enqueue failure, a Cloud Tasks dispatch deadline
@@ -117,40 +113,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `make check-nested-modules` (and CI) now covers `services/prreview`,
   and CI gains editor-plugin test jobs — previously nothing built or
   tested those trees.
-
-### Added
-
-- Modulex editor plugins for VSCode (`editors/vscode`) and IntelliJ
-  (`editors/intellij`), clients of the local read-only MCP server
-  (`tools/mcpserver`) per ADR-0035 plan step 5: review a diff against a
-  base ref, run focused/full declared verification, discover the
-  repository, read the contract, and create a provenance handoff
-  envelope — offline, with no hosted backend. Both share one
-  editor-agnostic tool-surface description (`editors/tool-surface.json`)
-  and hand-rolled stdio JSON-RPC clients with no MCP SDK dependency.
-
-- Hosted PR-review GitHub App on GCP (`services/prreview` +
-  `infra/prreview`), the optional zero-setup delivery of the review
-  engine per ADR-0035 plan step 6: a scale-to-zero Cloud Run receiver
-  (HMAC-verified, delivery-ID-deduped via native Firestore TTL,
-  per-installation rate limits) and worker (Firestore per-PR lease
-  serialization, installation-scoped tokens, incremental reviews,
-  caller-keyed Anthropic commentary that degrades to engine-only,
-  single PR comment updated in place, per-installation usage ledger),
-  with Terraform for the full stack including a billing budget. No
-  always-on datastore; no compute cost while idle.
-
-### Fixed
-
 - prreview worker image: writable Go cache (HOME/GOCACHE/GOMODCACHE/
   GOPATH under /tmp) and 4Gi memory, so tenant checks that run go/make
   succeed under the nonroot uid; found by the first production review.
-
 - `verify.PlanFor` now maps files under `services/*` to module-local
   `go -C` checks, extending the nested-module convention beyond
   `tools/*` and `examples/external-consumer`; previously a new
   `services/` module planned root-module `./services/...` commands that
   matched no packages and always failed.
+
+### Security
+
+- Dependency bump: `golang.org/x/net` v0.58.0 → v0.60.0, fixing
+  [GO-2026-6617](https://pkg.go.dev/vuln/GO-2026-6617) (HTTP/2 server
+  crash via an HPACK encoder race). `services/prreview`'s nested module
+  re-tidied accordingly.
+- Hosted PR-review worker: the engine now runs only the pure checks
+  (secret scan, protected paths) and never a tenant-declared command —
+  previously any PR author on an installed repo could execute arbitrary
+  code beside the App's credentials. Also: fail-closed contract parsing,
+  fence-escaped check output in PR comments, HTTP server timeouts on
+  both services, and the App key dropped from the worker env after
+  parsing.
 
 ## [0.10.2] - 2026-09-08
 
