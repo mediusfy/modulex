@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mediusfy/modulex"
+	"github.com/mediusfy/modulex/internal/busshutdown"
 	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
@@ -488,18 +489,7 @@ func (j *JetStreamEventBus) Close(ctx context.Context) error {
 		_ = sub.Unsubscribe()
 	}
 
-	done := make(chan struct{})
-	go func() {
-		j.durableWG.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		return fmt.Errorf("jetstream durable consumer close timed out: %w", ctx.Err())
-	}
+	return busshutdown.WaitGroup(ctx, &j.durableWG, "jetstream durable consumer")
 }
 
 var (

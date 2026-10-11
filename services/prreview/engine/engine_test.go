@@ -79,7 +79,7 @@ func TestModulexReview(t *testing.T) {
 			headFiles: map[string]string{
 				"modulex.agent.yaml": ":\tthis is not yaml{{",
 			},
-			wantErr: "unparseable",
+			wantErr: "parsing",
 		},
 		{
 			name:      "no contract reviews without protected paths",

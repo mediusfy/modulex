@@ -70,16 +70,30 @@ func TestBroker_NewBrokerDeniesEverythingByDefault(t *testing.T) {
 // --- "Fail-closed on unknown scope" ---
 
 func TestBroker_UnknownScopeDenied(t *testing.T) {
-	clock := newFixedClock(time.Now())
-	b := newTestBroker(clock)
-
-	if _, err := b.Grant(Scope{Action: "push", Resource: "branch-a"}, "drew", time.Minute); err != nil {
-		t.Fatalf("Grant() error = %v", err)
+	tests := []struct {
+		name    string
+		unknown Scope
+	}{
+		{
+			name:    "action with no resource, unrelated to the granted scope",
+			unknown: Scope{Action: "totally-unrelated-action"},
+		},
 	}
 
-	got := b.Check(Scope{Action: "totally-unrelated-action"})
-	if got != provenance.StatusApprovalRequired {
-		t.Errorf("Check() for an unknown scope = %v, want %v", got, provenance.StatusApprovalRequired)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clock := newFixedClock(time.Now())
+			b := newTestBroker(clock)
+
+			if _, err := b.Grant(Scope{Action: "push", Resource: "branch-a"}, "drew", time.Minute); err != nil {
+				t.Fatalf("Grant() error = %v", err)
+			}
+
+			got := b.Check(tt.unknown)
+			if got != provenance.StatusApprovalRequired {
+				t.Errorf("Check() for an unknown scope = %v, want %v", got, provenance.StatusApprovalRequired)
+			}
+		})
 	}
 }
 
