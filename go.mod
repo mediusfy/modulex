@@ -10,7 +10,7 @@ go 1.26.0
 retract v0.4.0
 
 require (
-	github.com/ThreeDotsLabs/watermill v1.5.2
+	github.com/ThreeDotsLabs/watermill v1.5.3
 	github.com/go-chi/chi/v5 v5.3.2
 	github.com/nats-io/nats-server/v2 v2.15.0
 	github.com/nats-io/nats.go v1.54.0
