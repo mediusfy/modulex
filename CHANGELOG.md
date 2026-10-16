@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Agent guidance in `.ai/` (coding standards, testing, architecture,
+  security, and a full-repository review prompt), and a workflow that
+  copies each merged PR's "AI Context & Rules Update" section into
+  `.ai/recent_context.md`. The PR template gains that section and
+  pre-merge checklist items for CI, Sonar and coverage.
+
 ### Fixed
 
 - `.github/workflows/release.yml` pinned `go-version: '1.26'` (exact,
