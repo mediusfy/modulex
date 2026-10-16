@@ -1,0 +1,70 @@
+name: AI recent context
+
+# On each push to main, copies the merged PR's "AI Context & Rules Update"
+# section into .ai/recent_context.md (.github/scripts/ai_context.py). Only merged same-repo
+# PRs count, PR text reaches the script through env and the API, never `run:`.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-recent-context
+  cancel-in-progress: false
+
+jobs:
+  append:
+    # Our own push below uses GITHUB_TOKEN and so triggers no new run; the
+    # actor check also stops a loop if a different token is ever used.
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      # Credentials stay persisted because the last step pushes; this job
+      # uploads no artifacts and runs only code from main.
+      - name: Checkout main # zizmor: ignore[artipacked]
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          fetch-depth: 1
+
+      # Each attempt resets to the current main and regenerates the file, so a
+      # newer main never needs a merge; a rejected push with main unchanged means branch
+      # protection, and each case gets its own error.
+      - name: Record the merged PR and push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PUSH_SHA: ${{ github.sha }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for attempt in 1 2 3; do
+            git fetch -q origin main
+            git reset -q --hard origin/main
+            base=$(git rev-parse HEAD)
+            out=$(python3 .github/scripts/ai_context.py from-push \
+              --repo "$GITHUB_REPOSITORY" --sha "$PUSH_SHA" --file .ai/recent_context.md)
+            echo "$out"
+            if git diff --quiet; then
+              exit 0
+            fi
+            pr=$(printf '%s\n' "$out" | sed -n 's/^recorded PR #\([0-9][0-9]*\) .*/\1/p')
+            git commit -q -am "chore(ai): record PR #${pr} in .ai/recent_context.md"
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            git fetch -q origin main
+            if [ "$(git rev-parse origin/main)" = "$base" ]; then
+              echo "::error::Push to main was rejected and main had not moved, so branch protection blocks github-actions[bot]. Allow it to bypass, or use an App token."
+              exit 1
+            fi
+            echo "main moved during attempt ${attempt}; rebuilding from the new main"
+          done
+          echo "::error::main kept moving during 3 attempts; giving up. Re-run this job to record the PR."
+          exit 1
