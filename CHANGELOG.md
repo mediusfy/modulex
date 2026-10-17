@@ -24,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unaffected. This caused the v0.11.0 tag's own Release workflow run to
   fail, so its GitHub Release had to be created manually afterward.
   Aligned the version spec with `ci.yml`.
+- `tools/modboundary` now depends on `golang.org/x/tools` v0.52.0;
+  v0.48.0 could not read Go 1.27 export data, so `make check-module-boundary`
+  failed in the PR Review workflow (which builds with the `stable` Go).
 
 ## [0.11.0] - 2026-10-11
 
