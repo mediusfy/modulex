@@ -34,6 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   modules).
 - Bump `github.com/nats-io/nats-server/v2` from v2.15.0 to v2.15.1 (root and
   nested modules).
+- Bump `actions/upload-artifact` from v7.0.1 to v7.0.2 in the CI, PR Review
+  and Scorecard workflows.
 
 ## [0.11.0] - 2026-10-11
 
