@@ -28,6 +28,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   v0.48.0 could not read Go 1.27 export data, so `make check-module-boundary`
   failed in the PR Review workflow (which builds with the `stable` Go).
 
+### Changed
+
+- Bump `golang.org/x/sync` from v0.23.0 to v0.24.0 (root and nested
+  modules).
+- Bump `github.com/nats-io/nats-server/v2` from v2.15.0 to v2.15.1 (root and
+  nested modules).
+- Bump `actions/upload-artifact` from v7.0.1 to v7.0.2 in the CI, PR Review
+  and Scorecard workflows.
+- Bump `actions/setup-node` from v7.0.0 to v7.1.0 in the CI workflow.
+- Bump `actions/checkout` from v4.4.0 to v7.0.1 in the AI recent-context
+  workflow.
+- Bump `ossf/scorecard-action` from v2.4.4 to v2.5.0 in the Scorecard
+  workflow.
+
 ## [0.11.0] - 2026-10-11
 
 ### Added
