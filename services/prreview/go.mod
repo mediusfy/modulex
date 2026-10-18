@@ -10,7 +10,7 @@ require (
 	cloud.google.com/go/secretmanager v1.21.0
 	github.com/anthropics/anthropic-sdk-go v1.71.0
 	github.com/mediusfy/modulex v0.0.0-00010101000000-000000000000
-	golang.org/x/sync v0.23.0
+	golang.org/x/sync v0.24.0
 	google.golang.org/grpc v1.84.0
 	google.golang.org/protobuf v1.36.12
 )
