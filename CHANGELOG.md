@@ -39,6 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bump `actions/setup-node` from v7.0.0 to v7.1.0 in the CI workflow.
 - Bump `actions/checkout` from v4.4.0 to v7.0.1 in the AI recent-context
   workflow.
+- Bump `ossf/scorecard-action` from v2.4.4 to v2.5.0 in the Scorecard
+  workflow.
 
 ## [0.11.0] - 2026-10-11
 
