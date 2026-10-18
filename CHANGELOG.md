@@ -32,6 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Bump `golang.org/x/sync` from v0.23.0 to v0.24.0 (root and nested
   modules).
+- Bump `github.com/nats-io/nats-server/v2` from v2.15.0 to v2.15.1 (root and
+  nested modules).
 
 ## [0.11.0] - 2026-10-11
 
