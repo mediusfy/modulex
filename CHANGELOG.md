@@ -36,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nested modules).
 - Bump `actions/upload-artifact` from v7.0.1 to v7.0.2 in the CI, PR Review
   and Scorecard workflows.
+- Bump `actions/setup-node` from v7.0.0 to v7.1.0 in the CI workflow.
 
 ## [0.11.0] - 2026-10-11
 
