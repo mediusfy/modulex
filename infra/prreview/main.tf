@@ -265,6 +265,11 @@ resource "google_cloud_run_v2_service" "worker" {
       max_instance_count = 10
     }
     timeout = "900s" # a review may take minutes; the webhook was acked long ago
+    # Scale-to-zero means every quiet period pays a cold start before the
+    # git fetch and the engine run even begin. CPU boost gives the boot
+    # extra vCPU at no extra cost and cuts that cold-start leg, without
+    # keeping an instance warm (MOD-88's zero-idle-cost AC stands).
+    startup_cpu_boost = true
     containers {
       image = var.image_worker
       resources {
