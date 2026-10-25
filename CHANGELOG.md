@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `scripts/check-changelog.sh` now exempts `go.mod`/`go.sum` changes in
+  nested modules (not just the root) from requiring a CHANGELOG entry,
+  matching its stated dependency-bump exemption. Also tidied
+  `examples/external-consumer/go.sum` for the `go-chi/chi/v5` v5.5.0 bump.
 - `.github/workflows/release.yml` pinned `go-version: '1.26'` (exact,
   no patch wildcard), which resolved to a stale cached `go1.26.8` on
   the runner and failed the release's `make vuln` gate on CVEs already
