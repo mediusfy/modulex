@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-10-25
+
+No public API changes; this is a dependency, CI and tooling patch release.
+
 ### Added
 
 - Agent guidance in `.ai/` (coding standards, testing, architecture,
@@ -34,6 +38,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Bump `github.com/go-chi/chi/v5` from v5.3.2 to v5.5.0 (root and nested
+  modules).
+- Bump `github.com/rabbitmq/amqp091-go` from v1.15.0 to v1.16.0 (root and
+  nested modules).
+- Bump `actions/setup-java` from v6.0.1 to v6.1.0 in the CI workflow.
 - Bump `golang.org/x/sync` from v0.23.0 to v0.24.0 (root and nested
   modules).
 - Bump `github.com/nats-io/nats-server/v2` from v2.15.0 to v2.15.1 (root and
@@ -1486,7 +1495,9 @@ Initial v0 prerelease.
   service locator, and pluggable event-bus adapters (Chi, NATS, RabbitMQ,
   Watermill, OpenTelemetry).
 
-[Unreleased]: https://github.com/mediusfy/modulex/compare/v0.10.2...HEAD
+[Unreleased]: https://github.com/mediusfy/modulex/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/mediusfy/modulex/compare/v0.11.0...v0.11.1
+[0.11.0]: https://github.com/mediusfy/modulex/compare/v0.10.2...v0.11.0
 [0.10.2]: https://github.com/mediusfy/modulex/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/mediusfy/modulex/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/mediusfy/modulex/compare/v0.9.0...v0.10.0
