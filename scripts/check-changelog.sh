@@ -8,7 +8,7 @@
 # Exemptions (a change set entirely within these never requires a
 # CHANGELOG.md entry):
 #   - .github/** (workflows, dependabot config, issue/PR templates)
-#   - go.mod / go.sum on their own (a pure dependency version bump; the
+#   - go.mod / go.sum (root or nested module) on their own (a pure dependency version bump; the
 #     dependabot PRs this project already merges do not carry changelog
 #     entries, and this script should not start failing them)
 #
@@ -53,7 +53,7 @@ fi
 
 # Everything left after stripping exempt paths must be empty for this
 # change set to be exempt from the CHANGELOG.md requirement.
-non_exempt="$(echo "$changed_files" | grep -v -E '^\.github/' | grep -v -E '^go\.(mod|sum)$' || true)"
+non_exempt="$(echo "$changed_files" | grep -v -E '^\.github/' | grep -v -E '(^|/)go\.(mod|sum)$' || true)"
 
 if [[ -z "$non_exempt" ]]; then
     echo "ok: change set is limited to CI config / dependency bumps, no CHANGELOG.md entry required"
