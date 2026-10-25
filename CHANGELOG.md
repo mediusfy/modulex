@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-10-25
+
+No code or dependency changes; this release exercises the fixed release
+workflow.
+
+### Fixed
+
+- `.github/workflows/release.yml` now sets `check-latest: true` on its
+  `setup-go` step. The runner's cached `go1.26.9` failed the release's
+  `make vuln` gate on GO-2026-6809 (fixed in `go1.26.10`) for both v0.11.0
+  and v0.11.1, so neither tag's Release workflow run succeeded and their
+  GitHub Releases were created manually.
+
 ## [0.11.1] - 2026-10-25
 
 No public API changes; this is a dependency, CI and tooling patch release.
@@ -1495,7 +1508,8 @@ Initial v0 prerelease.
   service locator, and pluggable event-bus adapters (Chi, NATS, RabbitMQ,
   Watermill, OpenTelemetry).
 
-[Unreleased]: https://github.com/mediusfy/modulex/compare/v0.11.1...HEAD
+[Unreleased]: https://github.com/mediusfy/modulex/compare/v0.11.2...HEAD
+[0.11.2]: https://github.com/mediusfy/modulex/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/mediusfy/modulex/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/mediusfy/modulex/compare/v0.10.2...v0.11.0
 [0.10.2]: https://github.com/mediusfy/modulex/compare/v0.10.1...v0.10.2
