@@ -37,6 +37,18 @@ func TestNewProviderFromEnv(t *testing.T) {
 			},
 		},
 		{
+			// Regression for an endpoint with a URL path component (e.g.
+			// "http://host:4318/v1"): this previously caused the exporter's
+			// endpoint to be mis-parsed as "host:4318/v1" (path left attached
+			// to the host). Constructing the exporter must still succeed and
+			// not attempt a live network call.
+			name: "http protocol with a path-bearing endpoint constructs without a live collector",
+			opts: []modulexotel.ProviderOption{
+				modulexotel.WithExporterProtocol("http"),
+				modulexotel.WithExporterEndpoint("http://127.0.0.1:4318/v1"),
+			},
+		},
+		{
 			name: "unsupported protocol returns an error",
 			opts: []modulexotel.ProviderOption{
 				modulexotel.WithExporterProtocol("carrier-pigeon"),

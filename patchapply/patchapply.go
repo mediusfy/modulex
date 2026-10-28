@@ -148,10 +148,13 @@ package patchapply
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/mediusfy/modulex/approval"
@@ -239,13 +242,68 @@ type FileChange struct {
 // enforces, and [approval.Broker]'s own doc comment for what "approved"
 // means (a matching, unexpired, unused [approval.Grant]).
 type ApplyOptions struct {
-	// Broker, if non-nil, is consulted via [approval.Broker.Check] before
-	// any filesystem access. Required (non-nil, with an approved Scope)
-	// for any batch containing a Delete: true change; optional otherwise.
+	// Broker, if non-nil, is consulted via [approval.Broker.Check] or
+	// [approval.Broker.CheckToken] before any filesystem access. Required
+	// (non-nil, with an approved grant for the scope [Apply] derives from
+	// this batch — see [BatchScope]) for any batch containing a Delete:
+	// true change; optional otherwise.
 	Broker *approval.Broker
-	// Scope is the exact action/resource pair checked against Broker. Only
+	// Scope.Action is checked verbatim against Broker. Scope.Resource is
+	// NOT trusted as-is: Apply always overrides it with a value derived
+	// deterministically from the exact set of paths in this batch (via
+	// [BatchScope]), rather than whatever the caller independently
+	// supplied here. This closes the gap where a grant obtained for one
+	// resource string (e.g. "docs/old.md") could otherwise be presented to
+	// authorize an unrelated batch of changes that merely happens to set
+	// the same Scope.Resource — the grant a human actually approves must
+	// cover the exact batch, not a caller's independent claim about what
+	// that batch contains. A caller that wants to pre-obtain the exact
+	// grant Apply will check should compute it via
+	// [BatchScope](scope.Action, changes) before calling
+	// [approval.Broker.Grant], not invent a Resource string by hand. Only
 	// consulted if Broker is non-nil.
 	Scope approval.Scope
+	// Token, if non-empty, is checked via [approval.Broker.CheckToken]
+	// instead of [approval.Broker.Check]. Preferred (and strongly
+	// recommended) for any batch containing a Delete: true change: it
+	// consumes one specific, caller-identified grant deterministically,
+	// rather than relying on [approval.Broker.Check]'s own scope-matching
+	// search across every stored grant to decide which one to consume.
+	// Only consulted if Broker is non-nil.
+	Token string
+}
+
+// batchResource returns a stable, deterministic resource identifier
+// derived from the exact, sorted set of paths — a SHA-256 hex digest of
+// the sorted paths joined by a NUL byte (which cannot itself appear in any
+// of these paths, since they were already validated by [resolvedPath]).
+// This is the mechanism behind [BatchScope]: a batch's enforced scope is
+// computed FROM the batch itself, never trusted as an independent claim
+// from the caller.
+func batchResource(paths []string) string {
+	sorted := append([]string(nil), paths...)
+	sort.Strings(sorted)
+	sum := sha256.Sum256([]byte(strings.Join(sorted, "\x00")))
+	return hex.EncodeToString(sum[:])
+}
+
+// BatchScope returns the exact [approval.Scope] [Apply] and [Rollback]
+// enforce for action over paths: Resource is always derived
+// deterministically from the exact, sorted set of paths (see
+// batchResource), never supplied independently. A caller that wants to
+// obtain, ahead of time, the precise grant a human must approve for a
+// given batch (so that grant can be requested, displayed, or persisted
+// before the batch is attempted) should compute it with this function —
+// not by inventing a Resource string by hand — so that what gets approved
+// is guaranteed to match what [Apply]/[Rollback] will actually check.
+//
+// For [Apply], paths should be every [FileChange.Path] in the batch being
+// applied (in any order; BatchScope sorts them). For [Rollback], paths
+// should be every [JournalEntry.Path] whose ExistedBefore is false (the
+// paths Rollback will delete to undo [Apply]'s own writes) — see
+// [RollbackOptions].
+func BatchScope(action string, paths []string) approval.Scope {
+	return approval.Scope{Action: action, Resource: batchResource(paths)}
 }
 
 // EntryOutcome records what actually happened to one [JournalEntry] during
@@ -303,11 +361,31 @@ type JournalEntry struct {
 	OriginalContent []byte `json:"-"`
 	// Outcome records what Apply actually did to this path.
 	Outcome EntryOutcome `json:"outcome"`
-	// CreatedDir is the absolute path of a directory chain this entry's
-	// write created (via os.MkdirAll), or "" if the parent directory
-	// already existed. Rollback uses this to remove a directory chain
-	// this package itself created, rather than leaving stray empty
-	// directories behind after undoing a write to a brand-new path.
+	// OriginalMode is the file's permission mode (os.FileMode.Perm(), e.g.
+	// 0644 or 0755) before Apply touched it, or 0 if it did not exist.
+	// Apply chmods the temp file it writes to this mode before renaming it
+	// into place (falling back to a sensible default only for a genuinely
+	// new file — see defaultNewFileMode), and Rollback restores it for any
+	// entry whose ExistedBefore is true, so a patched or rolled-back file
+	// never silently collapses to os.CreateTemp's own default mode (0600)
+	// regardless of what it was before. Unlike OriginalContent, this is
+	// NOT excluded from JSON: a permission mode is not secret-shaped
+	// content, so it survives a Journal's JSON round-trip even though
+	// OriginalContent does not.
+	OriginalMode os.FileMode `json:"original_mode,omitempty"`
+	// CreatedDir is the absolute path of the topmost directory this
+	// entry's write newly created (via os.MkdirAll inside ensureDir), or
+	// "" if the parent directory already existed. Rollback uses this as
+	// the upper bound of the directory chain it may remove when undoing
+	// this entry: it walks bottom-up from the entry's own directory up to
+	// (and including) CreatedDir, removing each directory with os.Remove
+	// ONLY if it is already empty, and validates CreatedDir resolves
+	// (after following symlinks) to a path within the real target
+	// directory before touching it at all. This means a human-added file
+	// anywhere in that chain, or a CreatedDir that does not actually point
+	// inside the target directory (e.g. in a stale or maliciously
+	// constructed Journal), survives — Rollback never uses os.RemoveAll on
+	// this path.
 	CreatedDir string `json:"created_dir,omitempty"`
 }
 
@@ -439,34 +517,51 @@ func validateChangePaths(realTargetDir string, changes []FileChange) ([]string, 
 }
 
 // checkApproval enforces the package doc comment's "Deletion requires
-// approval" rule (steps 2-3 of the ordering guarantee).
+// approval" rule (steps 2-3 of the ordering guarantee). The scope actually
+// checked against opts.Broker is derived from the batch itself (via
+// [BatchScope]) rather than trusted directly from opts.Scope — see
+// [ApplyOptions.Scope]'s doc comment for why.
 func checkApproval(changes []FileChange, opts ApplyOptions) error {
 	hasDelete := false
-	for _, c := range changes {
+	paths := make([]string, len(changes))
+	for i, c := range changes {
+		paths[i] = c.Path
 		if c.Delete {
 			hasDelete = true
-			break
 		}
 	}
 	if hasDelete && opts.Broker == nil {
 		return fmt.Errorf("patchapply: %w: batch contains a Delete change but no approval.Broker was configured", ErrApprovalRequired)
 	}
 	if opts.Broker != nil {
-		if status := opts.Broker.Check(opts.Scope); status != provenance.StatusPass {
-			return fmt.Errorf("patchapply: %w: scope=%s status=%s", ErrApprovalRequired, opts.Scope, status)
+		scope := BatchScope(opts.Scope.Action, paths)
+		status := checkBrokerScope(opts.Broker, opts.Token, scope)
+		if status != provenance.StatusPass {
+			return fmt.Errorf("patchapply: %w: scope=%s status=%s", ErrApprovalRequired, scope, status)
 		}
 	}
 	return nil
 }
 
-// captureCurrentState reads every change's current on-disk content,
-// enforces ExpectedPriorContent, and returns the provisional journal
+// checkBrokerScope checks scope against broker, preferring
+// [approval.Broker.CheckToken] (a deterministic, caller-identified grant)
+// over [approval.Broker.Check] (a scope-matching search across every
+// stored grant) whenever token is non-empty.
+func checkBrokerScope(broker *approval.Broker, token string, scope approval.Scope) provenance.Status {
+	if token != "" {
+		return broker.CheckToken(token, scope)
+	}
+	return broker.Check(scope)
+}
+
+// captureCurrentState reads every change's current on-disk content and
+// mode, enforces ExpectedPriorContent, and returns the provisional journal
 // entries (pre-apply state) in change order. It returns an error, before
 // any write, on the first read failure or content mismatch.
 func captureCurrentState(changes []FileChange, fullPaths []string) ([]JournalEntry, error) {
 	entries := make([]JournalEntry, len(changes))
 	for i, c := range changes {
-		current, existed, err := readCurrent(fullPaths[i])
+		current, existed, mode, err := readCurrent(fullPaths[i])
 		if err != nil {
 			return nil, fmt.Errorf("patchapply: change %d (%q): reading current content: %w", i, c.Path, err)
 		}
@@ -478,6 +573,7 @@ func captureCurrentState(changes []FileChange, fullPaths []string) ([]JournalEnt
 			Path:            c.Path,
 			ExistedBefore:   existed,
 			OriginalContent: current,
+			OriginalMode:    mode,
 		}
 	}
 	return entries, nil
@@ -499,7 +595,15 @@ func applyAll(realTargetDir string, changes []FileChange, fullPaths []string, en
 			}
 			entry.Outcome = outcome
 		} else {
-			createdDir, err := applyWrite(fullPaths[i], c.NewContent)
+			mode := entry.OriginalMode
+			if !entry.ExistedBefore || mode == 0 {
+				// A genuinely new file (or, defensively, an existing file
+				// whose mode somehow came back as 0) gets a sensible
+				// default rather than silently landing at os.CreateTemp's
+				// own default (0600) regardless of what it should be.
+				mode = defaultNewFileMode
+			}
+			createdDir, err := applyWrite(fullPaths[i], c.NewContent, mode)
 			if err != nil {
 				// applyWrite can fail after it already created a new
 				// directory chain (ensureDir succeeded, the write/rename
@@ -532,23 +636,27 @@ func combineApplyRollbackErr(applyErr, rollbackErr error) error {
 	return applyErr
 }
 
-// readCurrent returns path's current content and whether it existed. A
-// nonexistent path is not an error (nil, false, nil); any other read
-// failure (including "is a directory" or a permission error) is returned
-// as an error, which — during Apply's step 4 — causes the whole batch to
-// be rejected before any write. This means a FileChange whose Path
-// currently refers to a directory (rather than a regular file or a
-// nonexistent path) is always caught here, before Apply attempts to touch
-// it.
-func readCurrent(path string) ([]byte, bool, error) {
+// readCurrent returns path's current content, whether it existed, and (if
+// it existed) its permission mode. A nonexistent path is not an error
+// (nil, false, 0, nil); any other read failure (including "is a
+// directory" or a permission error) is returned as an error, which —
+// during Apply's step 4 — causes the whole batch to be rejected before
+// any write. This means a FileChange whose Path currently refers to a
+// directory (rather than a regular file or a nonexistent path) is always
+// caught here, before Apply attempts to touch it.
+func readCurrent(path string) ([]byte, bool, os.FileMode, error) {
+	info, statErr := os.Stat(path)
+	if statErr != nil {
+		if os.IsNotExist(statErr) {
+			return nil, false, 0, nil
+		}
+		return nil, false, 0, statErr
+	}
 	b, err := os.ReadFile(path)
-	if err == nil {
-		return b, true, nil
+	if err != nil {
+		return nil, false, 0, err
 	}
-	if os.IsNotExist(err) {
-		return nil, false, nil
-	}
-	return nil, false, err
+	return b, true, info.Mode().Perm(), nil
 }
 
 // applyDelete removes path if it exists, reporting OutcomeNoop (not an
@@ -564,20 +672,42 @@ func applyDelete(path string, existed bool) (EntryOutcome, error) {
 	return OutcomeDeleted, nil
 }
 
+// defaultNewFileMode is the permission mode applied to a file that did not
+// exist before Apply wrote it. It is deliberately NOT os.CreateTemp's own
+// default (0600): a caller writing an ordinary new file within a target
+// directory expects the repository's usual umask-shaped default (0644),
+// not a mode that makes the file unreadable by anyone else on the system.
+// A file that DID exist before Apply touched it keeps its own original
+// mode instead (see applyAll and restoreEntry) — this default only ever
+// applies to a genuinely new path.
+const defaultNewFileMode = os.FileMode(0o644)
+
 // applyWrite writes content to path atomically: it creates a temp file in
 // path's directory (creating that directory first via ensureDir if
-// missing), writes content, closes the temp file, and renames it onto
-// path. Using the same directory for the temp file keeps the rename
-// same-filesystem, which is what makes os.Rename atomic. It returns the
-// directory this call created (via ensureDir), if any, so Rollback can
-// remove it again.
-func applyWrite(path string, content []byte) (string, error) {
+// missing), writes content, chmods the temp file to mode, closes it, and
+// renames it onto path. Using the same directory for the temp file keeps
+// the rename same-filesystem, which is what makes os.Rename atomic. It
+// returns the directory this call created (via ensureDir), if any, so
+// Rollback can remove it again.
+//
+// mode is chmod'd onto the temp file BEFORE the rename, not after: a
+// window between "file lands at its final path" and "file has its
+// intended mode" would mean something else could observe (or, for an
+// overly permissive mode, even use) the file in its wrong-mode state.
+// os.CreateTemp itself always creates the temp file at mode 0600
+// regardless of this parameter — chmod is what corrects that to whatever
+// the caller (applyAll) decided the final mode should be: the original
+// file's mode for an existing path, or defaultNewFileMode for a brand-new
+// one. Without this, every patched (or rolled-back) file would silently
+// collapse to 0600 no matter what it was before, which is exactly the bug
+// this parameter fixes.
+func applyWrite(path string, content []byte, mode os.FileMode) (string, error) {
 	dir := filepath.Dir(path)
 	createdDir, err := ensureDir(dir)
 	if err != nil {
 		return "", err
 	}
-	if err := writeViaRename(dir, path, content); err != nil {
+	if err := writeViaRename(dir, path, content, mode); err != nil {
 		return createdDir, err
 	}
 	return createdDir, nil
@@ -585,8 +715,9 @@ func applyWrite(path string, content []byte) (string, error) {
 
 // writeViaRename is the shared temp-file-then-rename primitive used by
 // both applyWrite (Apply's forward path) and restoreEntry (Rollback's
-// restore path), so both give the same atomicity guarantee.
-func writeViaRename(dir, path string, content []byte) error {
+// restore path), so both give the same atomicity guarantee AND the same
+// mode-preservation guarantee (see applyWrite's doc comment).
+func writeViaRename(dir, path string, content []byte, mode os.FileMode) error {
 	tmp, err := os.CreateTemp(dir, ".patchapply-tmp-*")
 	if err != nil {
 		return err
@@ -602,6 +733,10 @@ func writeViaRename(dir, path string, content []byte) error {
 		_ = os.Remove(tmpName)
 		return closeErr
 	}
+	if err := os.Chmod(tmpName, mode); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
 	if err := os.Rename(tmpName, path); err != nil {
 		_ = os.Remove(tmpName)
 		return err
@@ -614,9 +749,11 @@ func writeViaRename(dir, path string, content []byte) error {
 // returns ("", nil): nothing was created, so there is nothing for Rollback
 // to remove. If dir did not exist, it returns the topmost ancestor
 // directory that had to be created — the precise subtree this call
-// brought into existence, safe for Rollback to remove wholesale with
-// os.RemoveAll, since nothing but this call's own writes can exist under a
-// directory chain that did not exist a moment before.
+// brought into existence. Rollback (via removeCreatedDir) walks this
+// subtree bottom-up and removes only directories it finds empty at
+// rollback time — see removeCreatedDir's doc comment for why it never
+// uses os.RemoveAll even though, at the moment ensureDir creates this
+// chain, nothing but this call's own writes exists under it yet.
 func ensureDir(dir string) (string, error) {
 	info, err := os.Stat(dir)
 	if err == nil {
@@ -665,7 +802,39 @@ func ensureDir(dir string) (string, error) {
 // party having modified a file again after Apply and before Rollback —
 // Rollback unconditionally overwrites/removes to match j. Use [Verify]
 // afterward to confirm the result.
-func Rollback(targetDir string, j Journal) error {
+// RollbackOptions configures [Rollback]'s approval gating for the
+// DELETIONS it performs on j's behalf — specifically, removing a path and
+// any now-empty directory chain above it for every [JournalEntry] with
+// ExistedBefore false (a path [Apply] created, which Rollback must delete
+// to undo). Restoring an entry's ORIGINAL content when ExistedBefore is
+// true is a WRITE, not a deletion, and is never gated by RollbackOptions —
+// this exactly mirrors [ApplyOptions]'s own "deletion requires approval,
+// writes do not" rule, now applied to Rollback's own deletions, which
+// previously bypassed approval checking entirely even though they are
+// just as unrecoverable as an Apply-side Delete.
+type RollbackOptions struct {
+	// Broker, if non-nil, is consulted before Rollback removes anything.
+	// Required (non-nil, with an approved grant for the scope Rollback
+	// derives from the paths it must delete — see [BatchScope]) whenever j
+	// contains any entry with ExistedBefore false. A nil Broker in that
+	// situation is not "caller opted out of gating": Rollback rejects the
+	// entire call and deletes nothing, exactly like [ApplyOptions.Broker]
+	// for [Apply].
+	Broker *approval.Broker
+	// Scope.Action is checked verbatim; Scope.Resource is ignored and
+	// replaced with a value Rollback derives deterministically from the
+	// exact set of paths it is about to remove (via [BatchScope]) — see
+	// [ApplyOptions.Scope]'s doc comment for why a caller-supplied
+	// Resource is never trusted directly. Only consulted if Broker is
+	// non-nil.
+	Scope approval.Scope
+	// Token, if non-empty, is checked via [approval.Broker.CheckToken]
+	// instead of [approval.Broker.Check] — preferred for the same reason
+	// described in [ApplyOptions.Token].
+	Token string
+}
+
+func Rollback(targetDir string, j Journal, opts RollbackOptions) error {
 	realTargetDir, err := filepath.EvalSymlinks(targetDir)
 	if err != nil {
 		return fmt.Errorf("patchapply: resolving targetDir %q: %w", targetDir, err)
@@ -673,13 +842,65 @@ func Rollback(targetDir string, j Journal) error {
 	if j.TargetDir != "" && j.TargetDir != realTargetDir {
 		return fmt.Errorf("patchapply: journal was produced for targetDir %q, not %q", j.TargetDir, realTargetDir)
 	}
+
+	// Step 1 (mirroring Apply's own ordering guarantee): validate every
+	// entry's path before touching anything or consulting the approval
+	// broker, so a malicious or corrupted Journal is rejected outright —
+	// see TestRollback_RejectsMaliciousJournalPathTraversal — rather than
+	// having some entries acted on before a later one is caught.
+	for _, e := range j.Entries {
+		if _, err := resolvedPath(realTargetDir, e.Path); err != nil {
+			return fmt.Errorf("patchapply: rolling back %q: %w", e.Path, err)
+		}
+	}
+
+	// Step 2: approval gating for any deletions this rollback must
+	// perform. See checkRollbackApproval's doc comment for exactly which
+	// entries count as a deletion.
+	if err := checkRollbackApproval(j.Entries, opts); err != nil {
+		return err
+	}
+
 	return rollbackEntries(realTargetDir, j.Entries)
+}
+
+// checkRollbackApproval enforces [RollbackOptions]'s rule: every entry
+// with ExistedBefore false names a path Rollback is about to DELETE (undo
+// Apply's own write of a brand-new file), and that deletion requires the
+// same kind of approval [checkApproval] requires for an Apply-side
+// Delete. An entry with ExistedBefore true only ever causes a WRITE
+// (restoring original content) and is never counted here.
+func checkRollbackApproval(entries []JournalEntry, opts RollbackOptions) error {
+	var deletePaths []string
+	for _, e := range entries {
+		if !e.ExistedBefore {
+			deletePaths = append(deletePaths, e.Path)
+		}
+	}
+	if len(deletePaths) == 0 {
+		return nil
+	}
+	if opts.Broker == nil {
+		return fmt.Errorf("patchapply: %w: rollback must delete %d path(s) but no approval.Broker was configured",
+			ErrApprovalRequired, len(deletePaths))
+	}
+	scope := BatchScope(opts.Scope.Action, deletePaths)
+	status := checkBrokerScope(opts.Broker, opts.Token, scope)
+	if status != provenance.StatusPass {
+		return fmt.Errorf("patchapply: %w: scope=%s status=%s", ErrApprovalRequired, scope, status)
+	}
+	return nil
 }
 
 // rollbackEntries restores every entry in entries against realTargetDir,
 // in reverse application order, collecting (rather than stopping at) every
 // error encountered so a caller sees the full picture of anything that
-// could not be restored.
+// could not be restored. This is also Apply's own internal partial-failure
+// rollback path (called directly, bypassing Rollback's approval gate):
+// undoing a batch's own already-applied changes because THAT SAME batch
+// failed partway through is not a new destructive action requiring a
+// fresh human approval — the approval (if any) already required and
+// checked at the start of that same Apply call covers it.
 func rollbackEntries(realTargetDir string, entries []JournalEntry) error {
 	var errs []error
 	for i := len(entries) - 1; i >= 0; i-- {
@@ -689,23 +910,25 @@ func rollbackEntries(realTargetDir string, entries []JournalEntry) error {
 			errs = append(errs, fmt.Errorf("patchapply: rolling back %q: %w", e.Path, err))
 			continue
 		}
-		if err := restoreEntry(full, e); err != nil {
+		if err := restoreEntry(realTargetDir, full, e); err != nil {
 			errs = append(errs, fmt.Errorf("patchapply: rolling back %q: %w", e.Path, err))
 		}
 	}
 	return errors.Join(errs...)
 }
 
-// restoreEntry restores one file at full to the state recorded in e.
-func restoreEntry(full string, e JournalEntry) error {
+// restoreEntry restores one file at full (realTargetDir's resolved join of
+// e.Path) to the state recorded in e.
+func restoreEntry(realTargetDir, full string, e JournalEntry) error {
 	if !e.ExistedBefore {
 		// The path did not exist before Apply: remove whatever is there
-		// now, and remove any directory chain Apply created for it.
+		// now, and remove any directory chain Apply created for it (see
+		// removeCreatedDir — never os.RemoveAll).
 		if err := os.Remove(full); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 		if e.CreatedDir != "" {
-			if err := os.RemoveAll(e.CreatedDir); err != nil {
+			if err := removeCreatedDir(realTargetDir, filepath.Dir(full), e.CreatedDir); err != nil {
 				return err
 			}
 		}
@@ -719,22 +942,92 @@ func restoreEntry(full string, e JournalEntry) error {
 		// worse outcome than doing nothing.
 		return fmt.Errorf("%w: %q", ErrJournalNotRestorable, e.Path)
 	}
-	// The path existed before Apply: restore its exact original bytes,
-	// via the same temp-then-rename primitive Apply itself uses.
+	// The path existed before Apply: restore its exact original bytes AND
+	// mode, via the same temp-then-rename primitive Apply itself uses.
+	mode := e.OriginalMode
+	if mode == 0 {
+		// Should not happen for a genuine Apply-produced entry (an
+		// existing file always has a nonzero stat mode), but fall back to
+		// the same sensible default Apply itself uses for a new file
+		// rather than chmod-ing to 0.
+		mode = defaultNewFileMode
+	}
 	dir := filepath.Dir(full)
 	if _, err := ensureDir(dir); err != nil {
 		return err
 	}
-	return writeViaRename(dir, full, e.OriginalContent)
+	return writeViaRename(dir, full, e.OriginalContent, mode)
+}
+
+// removeCreatedDir removes the directory chain Apply created for one
+// entry (recorded as CreatedDir), starting from fileDir (the entry's own,
+// deepest directory) and walking upward to CreatedDir, inclusive. It is
+// deliberately conservative wherever the situation is ambiguous:
+//
+//   - CreatedDir is resolved via filepath.EvalSymlinks and confirmed to
+//     land within realTargetDir before anything is removed. A Journal's
+//     CreatedDir survives a JSON round-trip (unlike OriginalContent), so a
+//     stale or maliciously constructed Journal naming an unrelated
+//     absolute path (e.g. a home directory) here must never be acted on —
+//     this is rejected outright rather than silently skipped, so the
+//     caller learns about it instead of Rollback quietly doing nothing.
+//   - Each directory from fileDir up to CreatedDir is removed with
+//     os.Remove ONLY if it is already empty — NEVER os.RemoveAll. The
+//     first non-empty directory encountered (e.g. because a human added a
+//     file into it after Apply ran, or a sibling JournalEntry under the
+//     same chain has not been rolled back yet) stops the walk entirely:
+//     nothing further up the chain is touched either, since a directory
+//     that still contains something can never itself be "created by this
+//     call and now empty."
+func removeCreatedDir(realTargetDir, fileDir, createdDir string) error {
+	resolvedCreated, err := filepath.EvalSymlinks(createdDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Already removed, e.g. while cleaning up a sibling entry
+			// under the same chain earlier in this same Rollback call.
+			return nil
+		}
+		return fmt.Errorf("patchapply: resolving created dir %q: %w", createdDir, err)
+	}
+	if !isWithin(realTargetDir, resolvedCreated) {
+		return fmt.Errorf("%w: created_dir %q resolves outside targetDir, refusing to remove it",
+			ErrPathTraversal, createdDir)
+	}
+
+	dir := fileDir
+	for isWithin(resolvedCreated, dir) {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				// Already gone; nothing to do at this level, but keep
+				// walking upward in case an ancestor still needs removing.
+			} else {
+				return fmt.Errorf("patchapply: reading created dir %q: %w", dir, err)
+			}
+		} else if len(entries) > 0 {
+			// Not empty: something (a human's file, or a sibling entry's
+			// own path not yet rolled back) still lives here. Stop —
+			// never remove this directory, and never remove anything
+			// further up the chain either.
+			return nil
+		} else if err := os.Remove(dir); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("patchapply: removing created dir %q: %w", dir, err)
+		}
+		if dir == resolvedCreated {
+			return nil
+		}
+		dir = filepath.Dir(dir)
+	}
+	return nil
 }
 
 // Verify re-reads every file j references and confirms targetDir's
 // on-disk state exactly matches j's recorded pre-Apply state (Path,
-// ExistedBefore, OriginalContent for every entry). It is intended to be
-// called after [Rollback] to confirm restoration succeeded, satisfying the
-// "rollback and repeat-verification behavior are tested" acceptance
-// criterion — but it works equally well as a drift check at any other
-// time, since it only ever reads.
+// ExistedBefore, OriginalContent, and — for an entry that existed before —
+// OriginalMode). It is intended to be called after [Rollback] to confirm
+// restoration succeeded, satisfying the "rollback and repeat-verification
+// behavior are tested" acceptance criterion — but it works equally well as
+// a drift check at any other time, since it only ever reads.
 //
 // A non-nil error names every file that does not match, joined via
 // [errors.Join]; nil means targetDir exactly matches j's recorded state.
@@ -754,7 +1047,7 @@ func Verify(targetDir string, j Journal) error {
 			errs = append(errs, fmt.Errorf("patchapply: verifying %q: %w", e.Path, err))
 			continue
 		}
-		current, existed, err := readCurrent(full)
+		current, existed, mode, err := readCurrent(full)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("patchapply: verifying %q: reading: %w", e.Path, err))
 			continue
@@ -767,6 +1060,10 @@ func Verify(targetDir string, j Journal) error {
 		if !bytes.Equal(current, e.OriginalContent) {
 			errs = append(errs, fmt.Errorf("patchapply: verifying %q: content mismatch: expected %s, found %s",
 				e.Path, previewContent(e.OriginalContent), previewContent(current)))
+		}
+		if existed && e.OriginalMode != 0 && mode != e.OriginalMode {
+			errs = append(errs, fmt.Errorf("patchapply: verifying %q: mode mismatch: expected %#o, found %#o",
+				e.Path, e.OriginalMode, mode))
 		}
 	}
 	return errors.Join(errs...)

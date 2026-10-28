@@ -384,7 +384,7 @@ func TestVerify_ReportsDriftAfterReModificationPostRollback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	if err := Rollback(dir, journal); err != nil {
+	if err := Rollback(dir, journal, RollbackOptions{}); err != nil {
 		t.Fatalf("Rollback: %v", err)
 	}
 	if err := Verify(dir, journal); err != nil {
@@ -428,7 +428,7 @@ func TestRollback_RejectsMaliciousJournalPathTraversal(t *testing.T) {
 		},
 	}
 
-	err = Rollback(targetDir, malicious)
+	err = Rollback(targetDir, malicious, RollbackOptions{})
 	if err == nil {
 		t.Fatal("expected Rollback to reject a malicious journal entry that escapes targetDir")
 	}
@@ -442,6 +442,180 @@ func TestRollback_RejectsMaliciousJournalPathTraversal(t *testing.T) {
 	}
 	if string(b) != "should survive" {
 		t.Fatalf("victim file content was modified: %q", b)
+	}
+}
+
+// --- M11: Rollback's own deletions must be approval-gated and must never
+// escape targetDir via CreatedDir ---
+
+// TestRollback_RequiresApprovalToDeleteCreatedFile is a regression test
+// for a real bug found in review: Rollback used to delete a path Apply
+// had created (undoing a write) without ever consulting an approval
+// broker at all, even though Apply itself refuses to delete anything
+// without an approved grant. Rollback must now gate that exact class of
+// deletion (every JournalEntry with ExistedBefore false) through the same
+// kind of broker check.
+func TestRollback_RequiresApprovalToDeleteCreatedFile(t *testing.T) {
+	dir := t.TempDir()
+
+	journal, err := Apply(dir, []FileChange{
+		{Path: "brand-new.txt", NewContent: []byte("created by apply")},
+	}, ApplyOptions{})
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if _, ok := readFile(t, dir, "brand-new.txt"); !ok {
+		t.Fatal("brand-new.txt should exist after Apply")
+	}
+
+	// No broker at all: Rollback must refuse to delete it.
+	if err := Rollback(dir, journal, RollbackOptions{}); err == nil {
+		t.Fatal("Rollback with no broker deleted a created file, want rejection")
+	} else if !errors.Is(err, ErrApprovalRequired) {
+		t.Fatalf("expected ErrApprovalRequired, got: %v", err)
+	}
+	if _, ok := readFile(t, dir, "brand-new.txt"); !ok {
+		t.Fatal("brand-new.txt should still exist: Rollback must not have deleted anything without approval")
+	}
+
+	// Broker present but with no matching grant: still refused.
+	broker := approval.NewBroker()
+	if err := Rollback(dir, journal, RollbackOptions{
+		Broker: broker,
+		Scope:  approval.Scope{Action: "delete"},
+	}); err == nil {
+		t.Fatal("Rollback with an unapproved broker/scope deleted a created file, want rejection")
+	} else if !errors.Is(err, ErrApprovalRequired) {
+		t.Fatalf("expected ErrApprovalRequired, got: %v", err)
+	}
+	if _, ok := readFile(t, dir, "brand-new.txt"); !ok {
+		t.Fatal("brand-new.txt should still exist after an unapproved Rollback attempt")
+	}
+
+	// Grant the exact scope Rollback derives from the path it needs to
+	// delete; now it must succeed.
+	scope := BatchScope("delete", []string{"brand-new.txt"})
+	if _, err := broker.Grant(scope, "tester", time.Minute); err != nil {
+		t.Fatalf("Grant: %v", err)
+	}
+	if err := Rollback(dir, journal, RollbackOptions{
+		Broker: broker,
+		Scope:  approval.Scope{Action: "delete"},
+	}); err != nil {
+		t.Fatalf("Rollback with a correctly approved scope failed: %v", err)
+	}
+	if _, ok := readFile(t, dir, "brand-new.txt"); ok {
+		t.Fatal("brand-new.txt should have been removed by the approved rollback")
+	}
+}
+
+// TestRollback_WritesRestoringExistingContentAreNeverGated proves the
+// write/delete asymmetry RollbackOptions documents: restoring an existing
+// file's original content (ExistedBefore true) never requires a broker,
+// exactly mirroring Apply's own "writes don't need approval, deletes do"
+// rule.
+func TestRollback_WritesRestoringExistingContentAreNeverGated(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "existing.txt", []byte("original"))
+
+	journal, err := Apply(dir, []FileChange{
+		{Path: "existing.txt", NewContent: []byte("updated"), ExpectedPriorContent: []byte("original")},
+	}, ApplyOptions{})
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	// No broker at all: this must still succeed, since restoring content
+	// for a path that existed before is a write, not a deletion.
+	if err := Rollback(dir, journal, RollbackOptions{}); err != nil {
+		t.Fatalf("Rollback of a pure content restore (no deletion involved) should not require a broker: %v", err)
+	}
+	if b, ok := readFile(t, dir, "existing.txt"); !ok || string(b) != "original" {
+		t.Fatalf("existing.txt = %q, ok=%v; want %q, true", b, ok, "original")
+	}
+}
+
+// TestRollback_RejectsCreatedDirOutsideTargetDir is a regression test for
+// a real bug found in review: a JournalEntry.CreatedDir is an absolute
+// path that survives a JSON round-trip (unlike OriginalContent), and
+// Rollback used to remove it via os.RemoveAll with NO validation that it
+// actually lived inside the target directory at all — a stale or
+// maliciously constructed Journal naming e.g. a sibling directory as
+// CreatedDir would have had that entire directory tree deleted. Rollback
+// must now refuse to remove a CreatedDir that does not resolve inside the
+// real target directory.
+func TestRollback_RejectsCreatedDirOutsideTargetDir(t *testing.T) {
+	parent := t.TempDir()
+	targetDir := filepath.Join(parent, "target")
+	if err := os.Mkdir(targetDir, 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+
+	// A sibling directory, entirely outside targetDir, standing in for
+	// something a malicious/stale Journal might name as CreatedDir (e.g.
+	// a home directory).
+	victimDir := filepath.Join(parent, "victim-dir")
+	if err := os.Mkdir(victimDir, 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	victimFile := filepath.Join(victimDir, "do-not-delete.txt")
+	if err := os.WriteFile(victimFile, []byte("precious"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Apply a real, legitimate new file inside targetDir, so Rollback has
+	// something real to remove at e.Path, then hand-construct the journal
+	// entry's CreatedDir to point at victimDir instead of whatever
+	// ensureDir would actually have returned.
+	resolvedTargetDir, err := filepath.EvalSymlinks(targetDir)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(targetDir, "new.txt"), []byte("new"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	malicious := Journal{
+		TargetDir: resolvedTargetDir,
+		Entries: []JournalEntry{
+			{Path: "new.txt", ExistedBefore: false, CreatedDir: victimDir},
+		},
+	}
+
+	broker := approval.NewBroker()
+	scope := BatchScope("delete", []string{"new.txt"})
+	if _, err := broker.Grant(scope, "tester", time.Minute); err != nil {
+		t.Fatalf("Grant: %v", err)
+	}
+
+	err = Rollback(targetDir, malicious, RollbackOptions{
+		Broker: broker,
+		Scope:  approval.Scope{Action: "delete"},
+	})
+	if err == nil {
+		t.Fatal("expected Rollback to refuse removing a CreatedDir outside targetDir")
+	}
+	if !errors.Is(err, ErrPathTraversal) {
+		t.Fatalf("expected ErrPathTraversal, got: %v", err)
+	}
+
+	// The file itself (new.txt, legitimately inside targetDir) is still
+	// removed — only the bogus CreatedDir cleanup is refused.
+	if _, statErr := os.Stat(filepath.Join(targetDir, "new.txt")); !os.IsNotExist(statErr) {
+		t.Fatalf("new.txt should still have been removed, stat err = %v", statErr)
+	}
+
+	// The real point of this test: victimDir and everything in it must
+	// survive completely untouched.
+	if _, statErr := os.Stat(victimDir); statErr != nil {
+		t.Fatalf("victimDir must survive, stat err = %v", statErr)
+	}
+	got, err := os.ReadFile(victimFile)
+	if err != nil {
+		t.Fatalf("victim file should still exist: %v", err)
+	}
+	if string(got) != "precious" {
+		t.Fatalf("victim file content changed: %q", got)
 	}
 }
 

@@ -97,6 +97,11 @@ func TestHealthHandler(t *testing.T) {
 			wantChecks: map[string]string{"db": "ok", "cache": "ok"},
 		},
 		{
+			// The default (non-detailed) mode replaces the check's real
+			// error text with a generic message — see
+			// TestHealthHandlerDefaultHidesCheckErrorDetail and
+			// TestHealthHandlerWithDetailedErrorsExposesCheckErrorDetail for
+			// the dedicated coverage of that behavior (M9).
 			name: "one check fails",
 			setup: func(t *testing.T, manager *modulex.Manager) {
 				require.NoError(t, manager.RegisterHealthCheck("db", func(context.Context) error { return nil }))
@@ -106,7 +111,7 @@ func TestHealthHandler(t *testing.T) {
 			},
 			wantCode:   http.StatusServiceUnavailable,
 			wantStatus: "unhealthy",
-			wantChecks: map[string]string{"db": "ok", "cache": "connection refused"},
+			wantChecks: map[string]string{"db": "ok", "cache": "failed"},
 		},
 	})
 }
@@ -130,6 +135,9 @@ func TestReadinessHandler(t *testing.T) {
 			wantChecks: map[string]string{"db-pool-warm": "ok"},
 		},
 		{
+			// See the comment on TestHealthHandler's "one check fails" case:
+			// the default (non-detailed) mode reports a generic message,
+			// not the check's real error text (M9).
 			name: "one check fails",
 			setup: func(t *testing.T, manager *modulex.Manager) {
 				require.NoError(t, manager.RegisterReadinessCheck("db-pool-warm", func(context.Context) error {
@@ -138,9 +146,57 @@ func TestReadinessHandler(t *testing.T) {
 			},
 			wantCode:   http.StatusServiceUnavailable,
 			wantStatus: "not-ready",
-			wantChecks: map[string]string{"db-pool-warm": "pool not warm"},
+			wantChecks: map[string]string{"db-pool-warm": "failed"},
 		},
 	})
+}
+
+// TestHealthHandlerDefaultHidesCheckErrorDetail proves the fix for M9: by
+// default, a failing check's real error text (which may embed hostnames,
+// DSNs, file paths, or SQL fragments from a wrapped driver error) is not
+// written into the JSON response body reachable by an unauthenticated
+// caller. Before the fix, the raw err.Error() was always included.
+func TestHealthHandlerDefaultHidesCheckErrorDetail(t *testing.T) {
+	manager := newTestManager(t)
+	sensitive := "dial tcp 10.0.0.5:5432: connection refused (dsn=postgres://user:pw@10.0.0.5/db)"
+	require.NoError(t, manager.RegisterHealthCheck("db", func(context.Context) error {
+		return errors.New(sensitive)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+
+	httpx.HealthHandler(manager)(rec, req)
+
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	body := decodeBody(t, rec)
+	assert.Equal(t, "unhealthy", body["status"])
+	checks, ok := body["checks"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "failed", checks["db"])
+	assert.NotContains(t, rec.Body.String(), sensitive)
+}
+
+// TestHealthHandlerWithDetailedErrorsExposesCheckErrorDetail proves the
+// opt-in escape hatch added alongside the M9 fix: WithDetailedErrors
+// restores the previous behavior of including the check's real error text,
+// for callers who explicitly want it (e.g. an internal-only endpoint).
+func TestHealthHandlerWithDetailedErrorsExposesCheckErrorDetail(t *testing.T) {
+	manager := newTestManager(t)
+	require.NoError(t, manager.RegisterHealthCheck("db", func(context.Context) error {
+		return errors.New("connection refused")
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+
+	httpx.HealthHandler(manager, httpx.WithDetailedErrors())(rec, req)
+
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	body := decodeBody(t, rec)
+	checks, ok := body["checks"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "connection refused", checks["db"])
 }
 
 func TestHealthHandlerRespectsCallerDeadline(t *testing.T) {
@@ -179,10 +235,8 @@ func TestServe(t *testing.T) {
 	server := &http.Server{Addr: addr, Handler: mux}
 
 	manager := newTestManager(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
-	handle, err := httpx.Serve(ctx, manager, "http-server", server, 2*time.Second)
+	handle, err := httpx.Serve(context.Background(), manager, "http-server", server, 2*time.Second)
 	require.NoError(t, err)
 	require.Equal(t, "http-server", handle.Name())
 
@@ -202,10 +256,13 @@ func TestServe(t *testing.T) {
 	// the 2s shutdown window here. Empty the pool so shutdown is prompt.
 	client.CloseIdleConnections()
 
-	cancel()
-
 	waitErr := make(chan error, 1)
 	go func() { waitErr <- handle.Wait() }()
+
+	// Shutdown is driven by the task ctx the spawner owns, not by any ctx
+	// passed into Serve, so it is triggered here via StopModules (which
+	// cancels the manager's task ctx) rather than cancelling a local ctx.
+	require.NoError(t, manager.StopModules(context.Background()))
 
 	select {
 	case err := <-waitErr:
@@ -215,7 +272,13 @@ func TestServe(t *testing.T) {
 	}
 }
 
-func TestServePreservesCallerContextValues(t *testing.T) {
+// TestServeIgnoresCallerContextCancellation proves the fix for M8: the ctx
+// passed into Serve (typically a short, bounded context such as the
+// caller's Init/Start timeout) no longer controls the server's shutdown.
+// Only the long-lived task ctx the spawner owns (cancelled via
+// Manager.StopModules) does. Before the fix, cancelling ctx alone shut the
+// server down immediately.
+func TestServeIgnoresCallerContextCancellation(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	addr := ln.Addr().String()
@@ -224,24 +287,29 @@ func TestServePreservesCallerContextValues(t *testing.T) {
 	server := &http.Server{Addr: addr, Handler: http.NewServeMux()}
 
 	manager := newTestManager(t)
-	type ctxKey string
-	ctx := context.WithValue(context.Background(), ctxKey("caller-key"), "caller-value")
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	ctx, cancel := context.WithCancel(context.Background())
 
-	handle, err := httpx.Serve(ctx, manager, "http-server-values", server, 2*time.Second)
+	handle, err := httpx.Serve(ctx, manager, "http-server-ctx", server, 2*time.Second)
 	require.NoError(t, err)
-
-	cancel()
 
 	waitErr := make(chan error, 1)
 	go func() { waitErr <- handle.Wait() }()
+
+	cancel()
+
+	select {
+	case err := <-waitErr:
+		t.Fatalf("Serve shut down after the caller ctx alone was cancelled, err=%v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	require.NoError(t, manager.StopModules(context.Background()))
 
 	select {
 	case err := <-waitErr:
 		assert.NoError(t, err)
 	case <-time.After(3 * time.Second):
-		t.Fatal("Serve did not shut down within the expected time")
+		t.Fatal("Serve did not shut down after StopModules")
 	}
 }
 
@@ -253,20 +321,27 @@ func TestServeRejectsNilServer(t *testing.T) {
 	assert.Nil(t, handle)
 }
 
+// TestServeTreatsListenErrorAsFailure proves the fix for M8: a bind
+// failure (here, a second listener on an address already bound by ln)
+// must surface directly from the Serve call itself, not only later as a
+// task error collected once Manager.StopModules drains task errors. Before
+// the fix, this call returned (nil error, a non-nil handle) and the bind
+// failure only appeared once handle.Wait() was called, which let
+// Manager.StartModules report success while nothing was actually
+// listening.
 func TestServeTreatsListenErrorAsFailure(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	defer func() { _ = ln.Close() }()
 	addr := ln.Addr().String()
 
-	// Binding a second server to the same address forces ListenAndServe to
-	// fail immediately with something other than http.ErrServerClosed.
+	// Binding a second server to the same address forces net.Listen to
+	// fail immediately.
 	server := &http.Server{Addr: addr, Handler: http.NewServeMux()}
 
 	manager := newTestManager(t)
 	handle, err := httpx.Serve(context.Background(), manager, "conflicting-server", server, time.Second)
-	require.NoError(t, err)
 
-	err = handle.Wait()
-	assert.Error(t, err)
+	require.Error(t, err)
+	assert.Nil(t, handle)
 }

@@ -293,6 +293,47 @@ func TestAddedLines(t *testing.T) {
 			diff: "",
 			want: nil,
 		},
+		// L7 regression: an added line whose actual content begins with
+		// "++" (no space) renders, after the diff's own leading "+"
+		// marker, as "+++<rest>" — which the old prefix-sniffing code
+		// matched neither the file-header case ("+++ " requires a space)
+		// nor the added-line case (explicitly excluded any line starting
+		// with "+++"), so the line was silently dropped and the line
+		// counter never advanced for it, misattributing every subsequent
+		// added line in the hunk.
+		{
+			name: "added line content starting with ++ (no space) is still scanned and counted",
+			diff: "diff --git a/weird.go b/weird.go\n" +
+				"--- a/weird.go\n" +
+				"+++ b/weird.go\n" +
+				"@@ -0,0 +1,3 @@\n" +
+				"+line zero\n" +
+				"+++fakeheader content\n" +
+				"+line two\n",
+			want: []addedLine{
+				{file: "weird.go", line: 1, text: "line zero"},
+				{file: "weird.go", line: 2, text: "++fakeheader content"},
+				{file: "weird.go", line: 3, text: "line two"},
+			},
+		},
+		// L7 regression: an added line whose actual content begins with
+		// "++ " (with a space) renders as "+++ <rest>", which DOES match
+		// the "+++ " file-header prefix exactly — the old code misparsed
+		// it as a bogus file header, corrupting the tracked `file` for
+		// every subsequent line in the diff.
+		{
+			name: "added line content starting with ++ (with space) is not misparsed as a file header",
+			diff: "diff --git a/weird2.go b/weird2.go\n" +
+				"--- a/weird2.go\n" +
+				"+++ b/weird2.go\n" +
+				"@@ -0,0 +1,2 @@\n" +
+				"+++ sneaky header line\n" +
+				"+real added line\n",
+			want: []addedLine{
+				{file: "weird2.go", line: 1, text: "++ sneaky header line"},
+				{file: "weird2.go", line: 2, text: "real added line"},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -394,15 +435,55 @@ func TestHasNosecretMarker(t *testing.T) {
 		want bool
 	}{
 		{line: `token := "value" // nosecret: test fixture`, want: true},
-		{line: `token := "value" // NOSECRET`, want: true},
+		{line: `token := "value" // NOSECRET: uppercase marker, lowercase reason ok`, want: true},
+		{line: `token := "value" //nosecret:no space before reason`, want: true},
 		{line: `token := "value"`, want: false},
 		{line: "an ordinary line", want: false},
+		// L7 regression: a bare "// nosecret" with no reason after the
+		// colon must no longer suppress a finding — the marker now
+		// requires an audit-trail reason to be present.
+		{line: `token := "value" // NOSECRET`, want: false},
+		{line: `token := "value" // nosecret:`, want: false},
+		{line: `token := "value" // nosecret :   `, want: false},
+		// L7 regression: the word "nosecret" occurring anywhere in the
+		// line — e.g. as part of an unrelated identifier — must not
+		// suppress a finding; only the precise "// nosecret: <reason>"
+		// comment form does.
+		{line: `nosecretDBPassword := "supersecretvalue123"`, want: false},
+		{line: `password := "supersecretvalue123" // this is nosecret-shaped on purpose`, want: false},
 	}
 
 	for _, tt := range tests {
 		if got := hasNosecretMarker(tt.line); got != tt.want {
 			t.Errorf("hasNosecretMarker(%q) = %v, want %v", tt.line, got, tt.want)
 		}
+	}
+}
+
+// TestScanSecrets_BareNosecretSubstringNoLongerSuppresses is the L7
+// regression test proving the fix end to end: previously, the word
+// "nosecret" occurring anywhere in an added line — including inside an
+// unrelated identifier — suppressed the finding with no audit trail. A
+// secret-shaped value next to a variable name that merely contains
+// "nosecret" (not a well-formed "// nosecret: <reason>" comment) must now
+// still be flagged.
+func TestScanSecrets_BareNosecretSubstringNoLongerSuppresses(t *testing.T) {
+	root := newTestRepo(t)
+
+	writeFile(t, root, "config.go", "package config\n")
+	runGit(t, root, "add", "config.go")
+	runGit(t, root, "commit", "--quiet", "-m", "base")
+	runGit(t, root, "branch", "base")
+
+	writeFile(t, root, "config.go", "package config\n\n"+
+		`const nosecretAPIKey = "api_key=supersecretvalue123"`+"\n")
+	runGit(t, root, "commit", "--quiet", "-am", "identifier merely contains nosecret")
+
+	result := ScanSecrets(context.Background(), root, "base", "HEAD")
+
+	if result.Status != provenance.StatusFail {
+		t.Fatalf("Status = %q, want fail (an identifier merely containing \"nosecret\" must not suppress the finding); Message: %s",
+			result.Status, result.Message)
 	}
 }
 

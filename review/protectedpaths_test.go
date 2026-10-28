@@ -2,6 +2,7 @@ package review
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -349,4 +350,105 @@ func TestMatchProtectedPath(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestLoadProtectedPathsAtRef_H2Regression is the core regression test for
+// H2: the contract must be read from ref (baseRef, in every real caller),
+// never from the working tree/HEAD, so a change that edits or deletes
+// modulex.agent.yaml cannot disarm the very check meant to catch that
+// change.
+func TestLoadProtectedPathsAtRef_H2Regression(t *testing.T) {
+	root := newTestRepo(t)
+
+	writeFile(t, root, "modulex.agent.yaml", "protected_paths:\n  - SECURITY.md\n")
+	runGit(t, root, "add", "modulex.agent.yaml")
+	runGit(t, root, "commit", "--quiet", "-m", "declare SECURITY.md as protected")
+	runGit(t, root, "branch", "base")
+
+	// The working tree (and HEAD) now removes SECURITY.md from
+	// protected_paths entirely.
+	writeFile(t, root, "modulex.agent.yaml", "protected_paths: []\n")
+	runGit(t, root, "commit", "--quiet", "-am", "defang the contract")
+
+	got, err := LoadProtectedPathsAtRef(context.Background(), root, "base")
+	if err != nil {
+		t.Fatalf("LoadProtectedPathsAtRef() error = %v", err)
+	}
+	if !containsPath(got, "SECURITY.md") {
+		t.Fatalf("LoadProtectedPathsAtRef(base) = %v, want it to still include SECURITY.md (baseRef predates the defanging commit)", got)
+	}
+
+	// Loading at HEAD (the defanged state) must reflect that state, proving
+	// this isn't just always returning a fixed answer.
+	gotHead, err := LoadProtectedPathsAtRef(context.Background(), root, "HEAD")
+	if err != nil {
+		t.Fatalf("LoadProtectedPathsAtRef(HEAD) error = %v", err)
+	}
+	if containsPath(gotHead, "SECURITY.md") {
+		t.Fatalf("LoadProtectedPathsAtRef(HEAD) = %v, want SECURITY.md absent (it really was dropped at HEAD)", gotHead)
+	}
+}
+
+func TestLoadProtectedPathsAtRef(t *testing.T) {
+	t.Run("no contract at ref returns nil, not an error", func(t *testing.T) {
+		root := newTestRepo(t)
+		writeFile(t, root, "app.go", "package app\n")
+		runGit(t, root, "add", "app.go")
+		runGit(t, root, "commit", "--quiet", "-m", "base")
+
+		got, err := LoadProtectedPathsAtRef(context.Background(), root, "HEAD")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != nil {
+			t.Fatalf("got %v, want nil", got)
+		}
+	})
+
+	t.Run("contract file is always included alongside declared paths", func(t *testing.T) {
+		root := newTestRepo(t)
+		writeFile(t, root, "modulex.agent.yaml", "protected_paths:\n  - go.mod\n")
+		runGit(t, root, "add", "modulex.agent.yaml")
+		runGit(t, root, "commit", "--quiet", "-m", "add contract")
+
+		got, err := LoadProtectedPathsAtRef(context.Background(), root, "HEAD")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !containsPath(got, "go.mod") || !containsPath(got, "modulex.agent.yaml") {
+			t.Fatalf("got %v, want it to include both go.mod and modulex.agent.yaml", got)
+		}
+	})
+
+	t.Run("unparseable contract at ref is a wrapped ErrContractUnparseable error", func(t *testing.T) {
+		root := newTestRepo(t)
+		writeFile(t, root, "modulex.agent.yaml", "protected_paths: [oops\n")
+		runGit(t, root, "add", "modulex.agent.yaml")
+		runGit(t, root, "commit", "--quiet", "-m", "add broken contract")
+
+		_, err := LoadProtectedPathsAtRef(context.Background(), root, "HEAD")
+		if !errors.Is(err, ErrContractUnparseable) {
+			t.Fatalf("error = %v, want it to wrap ErrContractUnparseable", err)
+		}
+	})
+
+	t.Run("a ref that does not resolve is a plain (non-ErrContractUnparseable) error", func(t *testing.T) {
+		root := newTestRepo(t)
+		_, err := LoadProtectedPathsAtRef(context.Background(), root, "this-ref-does-not-exist")
+		if err == nil {
+			t.Fatal("expected an error for a nonexistent ref")
+		}
+		if errors.Is(err, ErrContractUnparseable) {
+			t.Fatalf("error = %v, want it NOT to wrap ErrContractUnparseable (ref resolution, not parsing, failed)", err)
+		}
+	})
+}
+
+func containsPath(paths []string, p string) bool {
+	for _, got := range paths {
+		if got == p {
+			return true
+		}
+	}
+	return false
 }

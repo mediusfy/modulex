@@ -103,6 +103,55 @@ func TestProcessorRecoversPanicsAndRejectsAfterClose(t *testing.T) {
 	}
 }
 
+// TestHandleWaitIsIdempotent asserts that calling Wait more than once on the
+// same Handle after the task has completed returns the same result every
+// time instead of blocking forever. Previously the result was delivered
+// once over a 1-buffered channel, so any Wait call after the first (or a
+// Wait racing a ctx-timeout against a concurrent Wait that already drained
+// the channel) would hang indefinitely.
+func TestHandleWaitIsIdempotent(t *testing.T) {
+	p, err := New(Options{Workers: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = p.Close(context.Background()) }()
+
+	wantErr := errors.New("boom")
+	h, err := p.Submit(context.Background(), func(context.Context) error { return wantErr })
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.Wait(context.Background()); !errors.Is(err, wantErr) {
+		t.Fatalf("first Wait error = %v, want %v", err, wantErr)
+	}
+
+	// A second call must not block, and must return the exact same result.
+	done := make(chan error, 1)
+	go func() { done <- h.Wait(context.Background()) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("second Wait error = %v, want %v", err, wantErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("second Wait call blocked forever")
+	}
+
+	// Many concurrent Wait calls must all observe the same result.
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := h.Wait(context.Background()); !errors.Is(err, wantErr) {
+				t.Errorf("concurrent Wait error = %v, want %v", err, wantErr)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
 func TestProcessorCloseDrainsAcceptedTasks(t *testing.T) {
 	p, err := New(Options{Workers: 2, QueueCapacity: 2})
 	if err != nil {

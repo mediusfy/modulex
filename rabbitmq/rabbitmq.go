@@ -4,6 +4,7 @@ package rabbitmq
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -58,6 +59,34 @@ type EventBus struct {
 	tags    []string
 	cancels []context.CancelFunc // tracks consumer cancellation contexts
 
+	// handlerCtx is the base context passed to every delivered message's
+	// handler invocation, instead of deriving the handler's context from
+	// that subscription's own (Subscribe-call-supplied) context. The
+	// subscription context is frequently the caller's own long-lived
+	// shutdown/signal context (e.g. cancelled on SIGTERM, before
+	// Manager.StopModules/EventBus.Close ever runs) rather than something
+	// scoped to this one call; deriving the handler's context from it would
+	// make a well-behaved handler that checks ctx.Err() see cancellation
+	// before Close has even started, return a context-cancellation error,
+	// and get nacked without requeue -- losing the message with no DLX
+	// configured. handlerCancel is instead only ever invoked from Close,
+	// bounded by Close's own ctx (see Close), so in-flight handlers are
+	// only cut off once this EventBus's own shutdown is actually underway
+	// and out of patience, not whenever an unrelated subscription-scoped
+	// context happens to cancel.
+	handlerCtx    context.Context
+	handlerCancel context.CancelFunc
+
+	// publisherConfirms records whether WithPublisherConfirms was supplied:
+	// Publish then enables RabbitMQ publisher-confirm mode (lazily, via
+	// confirmOnce) and waits for the broker's per-message ack/nack instead
+	// of returning as soon as the message is written to the socket. See
+	// WithPublisherConfirms's doc comment for the at-most-once behavior
+	// this changes.
+	publisherConfirms bool
+	confirmOnce       sync.Once
+	confirmErr        error
+
 	// consumeMu serializes each consumer's Qos+Consume pair on the shared
 	// channel, so a SubscribeWithOptions call's pooled prefetch can never be
 	// interleaved with (and leak onto) a concurrent plain Subscribe call's
@@ -91,6 +120,28 @@ func WithLogger(logger *slog.Logger) Option {
 	}
 }
 
+// WithPublisherConfirms enables RabbitMQ publisher-confirm mode for this
+// EventBus's Publish calls. The underlying channel is switched into confirm
+// mode (via (*amqp.Channel).Confirm) lazily, just before the first Publish,
+// and every Publish thereafter waits for the broker's ack/nack of that
+// specific message (via PublishWithDeferredConfirmWithContext) before
+// returning, rather than returning as soon as the message has been written
+// to the TCP connection.
+//
+// Without this option (the default), Publish is at-most-once from the
+// caller's point of view even though published messages are marked
+// persistent and queues are declared durable: a successful return only
+// means the message was handed to the client library, not that the broker
+// actually persisted it, so a broker crash or connection loss between that
+// write and the broker's disk fsync can silently lose the message. Set
+// WithPublisherConfirms when a caller needs Publish's successful return to
+// mean the broker has confirmed the message.
+func WithPublisherConfirms() Option {
+	return func(r *EventBus) {
+		r.publisherConfirms = true
+	}
+}
+
 // NewEventBus instantiates the RabbitMQ event bus driver.
 //
 // The EventBus does not take ownership of ch: the caller creates and closes
@@ -101,7 +152,15 @@ func WithLogger(logger *slog.Logger) Option {
 func NewEventBus(ch *amqp.Channel, opts ...Option) *EventBus {
 	stopped := make(chan struct{})
 	close(stopped)
-	r := &EventBus{ch: ch, logger: slog.Default(), stopped: stopped, consumeMu: make(chan struct{}, 1)}
+	handlerCtx, handlerCancel := context.WithCancel(context.Background())
+	r := &EventBus{
+		ch:            ch,
+		logger:        slog.Default(),
+		stopped:       stopped,
+		consumeMu:     make(chan struct{}, 1),
+		handlerCtx:    handlerCtx,
+		handlerCancel: handlerCancel,
+	}
 	for _, opt := range opts {
 		opt(r)
 	}
@@ -117,24 +176,64 @@ func NewEventBus(ch *amqp.Channel, opts ...Option) *EventBus {
 // interpreted as the target queue name. Therefore the topic parameter is the
 // queue to which the message is delivered. For routed exchanges, use a
 // broker-specific publisher instead of this adapter.
+//
+// Published messages set DeliveryMode to amqp.Persistent so they survive a
+// broker restart, matching the durable queues Subscribe/SubscribeWithOptions
+// declare (amqp.Transient, the AMQP default, is dropped from memory on
+// restart regardless of the queue's own durability). This alone does not
+// guarantee the broker has actually persisted a given message before
+// Publish returns -- see WithPublisherConfirms for that guarantee.
 func (r *EventBus) Publish(ctx context.Context, topic string, payload []byte) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
+	if r.publisherConfirms {
+		r.confirmOnce.Do(func() {
+			r.confirmErr = r.ch.Confirm(false)
+		})
+		if r.confirmErr != nil {
+			return fmt.Errorf("failed to enable publisher confirms for queue %q: %w", topic, r.confirmErr)
+		}
+	}
+
 	headers := make(amqp.Table)
 	otel.GetTextMapPropagator().Inject(ctx, amqpHeadersCarrier(headers))
-	return r.ch.PublishWithContext(ctx,
+	publishing := amqp.Publishing{
+		ContentType:  "application/octet-stream",
+		DeliveryMode: amqp.Persistent,
+		Headers:      headers,
+		Body:         payload,
+	}
+
+	if !r.publisherConfirms {
+		return r.ch.PublishWithContext(ctx,
+			"",    // default exchange
+			topic, // routing key == queue name on the default exchange
+			false, // mandatory
+			false, // immediate
+			publishing,
+		)
+	}
+
+	confirmation, err := r.ch.PublishWithDeferredConfirmWithContext(ctx,
 		"",    // default exchange
 		topic, // routing key == queue name on the default exchange
 		false, // mandatory
 		false, // immediate
-		amqp.Publishing{
-			ContentType: "application/octet-stream",
-			Headers:     headers,
-			Body:        payload,
-		},
+		publishing,
 	)
+	if err != nil {
+		return fmt.Errorf("failed to publish to queue %q: %w", topic, err)
+	}
+	ok, err := confirmation.WaitContext(ctx)
+	if err != nil {
+		return fmt.Errorf("failed waiting for publisher confirm on queue %q: %w", topic, err)
+	}
+	if !ok {
+		return fmt.Errorf("broker nacked publish to queue %q", topic)
+	}
+	return nil
 }
 
 // Subscribe implements modulex.EventBus. It declares the target queue and then
@@ -143,11 +242,16 @@ func (r *EventBus) Publish(ctx context.Context, topic string, payload []byte) er
 // cancels the supplied context, the consumer goroutine exits.
 //
 // Messages are acknowledged manually: a successful handler call acks the
-// message, and a failing handler call nacks it without requeue and logs the
-// error. Requeuing is deliberately not attempted here since a persistently
-// failing handler would otherwise redeliver the same message forever; this
-// matches the acknowledge-and-log policy used by the other EventBus adapters
-// in this module (see watermill.EventBus.Subscribe).
+// message, and a failing handler call nacks it and logs the error. The nack
+// does not request requeue unless the handler's error is (or wraps)
+// context.Canceled or context.DeadlineExceeded -- in that case the handler
+// did not actually fail to process the message, it aborted because its
+// context ended, so the message is requeued for a future attempt instead of
+// being treated as a poison message. Requeuing is otherwise deliberately
+// not attempted since a persistently failing handler would otherwise
+// redeliver the same message forever; this matches the acknowledge-and-log
+// policy used by the other EventBus adapters in this module (see
+// watermill.EventBus.Subscribe).
 //
 // Subscribe fails if SubscribeWithOptions has already been called on this
 // EventBus: RabbitMQ's per-consumer Qos default is scoped to the whole
@@ -236,7 +340,7 @@ func (r *EventBus) subscribe(ctx context.Context, topic string, handler modulex.
 		return fmt.Errorf("failed to subscribe to queue %q: %w", topic, err)
 	}
 
-	go r.consumeLoop(subCtx, topic, handler, msgs, cancel, stopped, processor)
+	go r.consumeLoop(subCtx, tag, topic, handler, msgs, cancel, stopped, processor)
 	return nil
 }
 
@@ -251,7 +355,15 @@ func (r *EventBus) checkClosed() error {
 
 func (r *EventBus) startConsumer(ctx context.Context, topic string, prefetch int) (string, <-chan amqp.Delivery, error) {
 	r.mu.Lock()
-	tag := fmt.Sprintf("modulex-consumer-%d", r.nextTag)
+	// The tag includes this *EventBus's own pointer address, not just a
+	// per-instance counter: a documented supported pattern is multiple
+	// EventBus instances sharing one *amqp.Channel, and a bare
+	// "modulex-consumer-N" tag would then collide across instances (every
+	// instance's own nextTag starts at 0). A duplicate consumer tag is a
+	// channel-level AMQP protocol error that closes the entire shared
+	// channel -- not just rejects the one Consume call -- so this must be
+	// unique per instance, not merely per call on one instance.
+	tag := fmt.Sprintf("modulex-consumer-%p-%d", r, r.nextTag)
 	r.nextTag++
 	r.mu.Unlock()
 
@@ -319,10 +431,25 @@ func (r *EventBus) registerConsumer(tag string, cancel context.CancelFunc) (chan
 	return r.stopped, nil
 }
 
-func (r *EventBus) consumeLoop(ctx context.Context, topic string, handler modulex.EventHandler, msgs <-chan amqp.Delivery,
+func (r *EventBus) consumeLoop(ctx context.Context, tag, topic string, handler modulex.EventHandler, msgs <-chan amqp.Delivery,
 	cancel context.CancelFunc, stopped chan struct{}, processor *workerpool.Processor) {
 	defer func() {
 		cancel()
+		// Cancel this consumer at the broker whenever this loop exits, for
+		// any reason: ctx cancellation (including Close's own cancel, or an
+		// unrelated subscription-scoped context such as the caller's
+		// SIGTERM ctx being cancelled before Close ever runs), or msgs
+		// being closed because the channel/connection died. Without this,
+		// the broker keeps the consumer (and its prefetched, unacked
+		// messages) registered and pinned indefinitely after this goroutine
+		// has already stopped reading from msgs. This is the only place
+		// that cancels tag -- Close no longer does it directly -- so a tag
+		// is never cancelled twice (RabbitMQ returns a channel-level error
+		// for cancelling an already-cancelled/unknown consumer tag, which
+		// -- like the duplicate-tag problem this adapter's unique tags
+		// already guard against -- would take down the whole shared
+		// channel).
+		_ = r.ch.Cancel(tag, false)
 		if processor != nil {
 			_ = processor.Close(context.Background())
 		}
@@ -342,7 +469,7 @@ func (r *EventBus) consumeLoop(ctx context.Context, topic string, handler module
 				return
 			}
 			if processor == nil {
-				r.handleDelivery(ctx, topic, handler, d)
+				r.handleDelivery(topic, handler, d)
 			} else {
 				r.submitDelivery(ctx, topic, handler, d, processor)
 			}
@@ -350,11 +477,27 @@ func (r *EventBus) consumeLoop(ctx context.Context, topic string, handler module
 	}
 }
 
+// isContextDoneErr reports whether err is (or wraps) context.Canceled or
+// context.DeadlineExceeded. handleDelivery and submitDelivery use this to
+// requeue a message whose handler failed because its context ended, rather
+// than nacking it without requeue: a well-behaved handler that aborts and
+// returns ctx.Err() when its context ends did not actually fail to process
+// the message, and without requeuing (and with no dead-letter exchange
+// configured) the message would otherwise be lost rather than redelivered
+// once a consumer is available to actually run it to completion.
+func isContextDoneErr(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
 func (r *EventBus) submitDelivery(ctx context.Context, topic string, handler modulex.EventHandler, d amqp.Delivery, processor *workerpool.Processor) {
-	// ctx (the consume loop's subscription-scoped context), not a context
-	// derived from d's headers, is submitted here: header extraction is
-	// deferred to the worker goroutine below so it runs in parallel across
-	// workers instead of serializing on this single consume-loop goroutine.
+	// ctx (the consume loop's subscription-scoped context) is submitted to
+	// the pool only to schedule/bound the Submit call itself; the handler
+	// invocation below instead uses r.handlerCtx as its base (see
+	// handlerCtx's doc comment) so that cancelling the subscription's own
+	// context does not, by itself, cancel a handler that is already
+	// running. Header extraction is deferred to the worker goroutine below
+	// so it runs in parallel across workers instead of serializing on this
+	// single consume-loop goroutine.
 	_, err := processor.Submit(ctx, func(taskCtx context.Context) (herr error) {
 		var headers amqp.Table
 		if d.Headers != nil {
@@ -362,7 +505,7 @@ func (r *EventBus) submitDelivery(ctx context.Context, topic string, handler mod
 		} else {
 			headers = make(amqp.Table)
 		}
-		msgCtx := otel.GetTextMapPropagator().Extract(taskCtx, amqpHeadersCarrier(headers))
+		msgCtx := otel.GetTextMapPropagator().Extract(r.handlerCtx, amqpHeadersCarrier(headers))
 
 		// This defer guarantees the delivery is always resolved (acked or
 		// nacked) exactly once, even if handler panics: workerpool.runTask's
@@ -381,11 +524,13 @@ func (r *EventBus) submitDelivery(ctx context.Context, topic string, handler mod
 				panic(p)
 			}
 			if herr != nil {
-				r.logger.ErrorContext(msgCtx, "handler error, message nacked without requeue",
+				requeue := isContextDoneErr(herr)
+				r.logger.ErrorContext(msgCtx, "handler error, message nacked",
 					slog.String(logKeyQueue, topic),
 					slog.Any(logKeyError, herr),
+					slog.Bool("requeue", requeue),
 				)
-				if nackErr := d.Nack(false, false); nackErr != nil {
+				if nackErr := d.Nack(false, requeue); nackErr != nil {
 					r.logger.ErrorContext(msgCtx, "failed to nack message",
 						slog.String(logKeyQueue, topic),
 						slog.Any(logKeyError, nackErr),
@@ -420,23 +565,29 @@ func (r *EventBus) submitDelivery(ctx context.Context, topic string, handler mod
 	}
 }
 
-func (r *EventBus) handleDelivery(ctx context.Context, topic string, handler modulex.EventHandler, d amqp.Delivery) {
+func (r *EventBus) handleDelivery(topic string, handler modulex.EventHandler, d amqp.Delivery) {
 	var headers amqp.Table
 	if d.Headers != nil {
 		headers = d.Headers
 	} else {
 		headers = make(amqp.Table)
 	}
-	msgCtx := otel.GetTextMapPropagator().Extract(ctx, amqpHeadersCarrier(headers))
+	// r.handlerCtx (not the consume loop's subscription-scoped context) is
+	// the base here, so cancelling the subscription's own context does not
+	// cancel this handler invocation out from under it; see handlerCtx's
+	// doc comment.
+	msgCtx := otel.GetTextMapPropagator().Extract(r.handlerCtx, amqpHeadersCarrier(headers))
 
 	err := handlerpanic.Recover(func() error { return handler(msgCtx, d.Body) })
 
 	if err != nil {
-		r.logger.ErrorContext(msgCtx, "handler error, message nacked without requeue",
+		requeue := isContextDoneErr(err)
+		r.logger.ErrorContext(msgCtx, "handler error, message nacked",
 			slog.String(logKeyQueue, topic),
 			slog.Any(logKeyError, err),
+			slog.Bool("requeue", requeue),
 		)
-		if nackErr := d.Nack(false, false); nackErr != nil {
+		if nackErr := d.Nack(false, requeue); nackErr != nil {
 			r.logger.ErrorContext(msgCtx, "failed to nack message",
 				slog.String(logKeyQueue, topic),
 				slog.Any(logKeyError, nackErr),
@@ -452,9 +603,18 @@ func (r *EventBus) handleDelivery(ctx context.Context, topic string, handler mod
 	}
 }
 
-// Close implements modulex.EventBus. It cancels all active queue consumers,
-// waits for their goroutines to exit, and does not close the underlying
-// *amqp.Channel or its connection, which the caller owns.
+// Close implements modulex.EventBus. It cancels all active queue consumers
+// (each consumeLoop goroutine cancels its own consumer tag at the broker as
+// it exits; see consumeLoop) and waits for their goroutines to exit, bounded
+// by ctx, before returning. It does not close the underlying *amqp.Channel
+// or its connection, which the caller owns.
+//
+// In-flight handler invocations are given a separate context (see
+// handlerCtx) that is not tied to any individual subscription's own
+// context, so they are not cancelled merely because Close has started;
+// instead, if ctx itself is done before those handlers finish, handlerCtx
+// is cancelled too, bounding how long a stuck handler can keep Close
+// waiting.
 func (r *EventBus) Close(ctx context.Context) error {
 	r.mu.Lock()
 	if r.closed {
@@ -462,18 +622,24 @@ func (r *EventBus) Close(ctx context.Context) error {
 		return nil
 	}
 	r.closed = true
-	tags := append([]string(nil), r.tags...)
 	cancels := append([]context.CancelFunc(nil), r.cancels...)
 	stopped := r.stopped
 	r.tags = nil
 	r.cancels = nil
 	r.mu.Unlock()
 
-	for _, tag := range tags {
-		_ = r.ch.Cancel(tag, false)
-	}
 	for _, cancel := range cancels {
 		cancel()
+	}
+
+	if r.handlerCancel != nil {
+		// Cancel handlerCtx (and so any in-flight handler invocation using
+		// it) once ctx itself is done, without tying it to any individual
+		// subscription's context. context.AfterFunc runs the function
+		// immediately if ctx is already done, and the returned stop is
+		// safe to call even after that has already happened.
+		stop := context.AfterFunc(ctx, r.handlerCancel)
+		defer stop()
 	}
 
 	if stopped == nil {

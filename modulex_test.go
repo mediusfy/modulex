@@ -1358,6 +1358,7 @@ func TestStartFailureReverseStop(t *testing.T) {
 		deps:     []string{"module-a"},
 		startErr: errors.New("module-b start failed"),
 		onStart:  func() { startCalls = append(startCalls, "module-b") },
+		onStop:   func() { stopCalls = append(stopCalls, "module-b") },
 	})
 	modC := newMockModule(t, mockModuleConfig{
 		name:    "module-c",
@@ -1376,9 +1377,50 @@ func TestStartFailureReverseStop(t *testing.T) {
 
 	// module-a started successfully and should be stopped during rollback.
 	assert.Equal(t, []string{"module-a", "module-b"}, startCalls)
-	assert.Equal(t, []string{"module-a"}, stopCalls)
+
+	// module-b's own Start call is the one that failed, but it may have
+	// partially acquired a resource (a goroutine, a listener) before
+	// returning its error, so it must be stopped too -- in reverse order,
+	// so module-b (the failing module) is stopped before module-a.
+	assert.Equal(t, []string{"module-b", "module-a"}, stopCalls)
 
 	// Manager should be in stopped state.
+	assert.Equal(t, modulex.StateStopped, manager.State())
+}
+
+// TestStartFailureDoesNotStopUnattemptedModule is a regression test for a
+// bug where the module whose Start actually failed was excluded from
+// rollback, while this test locks in the companion invariant: a module the
+// phase never reached at all (because an earlier sibling's Start already
+// failed) must never have Stop called on it, since its Start was never
+// attempted and it never acquired anything to release.
+func TestStartFailureDoesNotStopUnattemptedModule(t *testing.T) {
+	manager := newTestManager(nil)
+
+	var stopCalls []string
+	modA := newMockModule(t, mockModuleConfig{
+		name:     "module-a",
+		startErr: errors.New("module-a start failed"),
+		onStop:   func() { stopCalls = append(stopCalls, "module-a") },
+	})
+	modB := newMockModule(t, mockModuleConfig{
+		name:   "module-b",
+		deps:   []string{"module-a"},
+		onStop: func() { stopCalls = append(stopCalls, "module-b") },
+	})
+
+	require.NoError(t, manager.RegisterModule(modA))
+	require.NoError(t, manager.RegisterModule(modB))
+	require.NoError(t, manager.InitModules(context.Background()))
+
+	err := manager.StartModules(context.Background())
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "module-a start failed")
+
+	// module-a's own Start failed, so it is stopped (it may have partially
+	// acquired something); module-b's Start was never reached and must not
+	// be stopped.
+	assert.Equal(t, []string{"module-a"}, stopCalls)
 	assert.Equal(t, modulex.StateStopped, manager.State())
 }
 
@@ -1697,6 +1739,82 @@ func TestStopModulesContextCancellation(t *testing.T) {
 	err := manager.StopModules(ctx)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, modulex.StateStopped, manager.State())
+}
+
+// TestStopModulesFromInitializedStopsInitializedModules is a regression test
+// for a bug where StopModules only called Stop on modules that had reached
+// StateRunning. Shutting down directly from StateInitialized (StartModules
+// was never called, e.g. because the application decided not to start after
+// a successful Init) never stopped any module at all, leaking resources
+// acquired during Init (DB pools, listeners, etc). StopModules must stop
+// every module that reached at least StateInitialized, in reverse order,
+// regardless of whether StartModules ever ran.
+func TestStopModulesFromInitializedStopsInitializedModules(t *testing.T) {
+	manager := newTestManager(nil)
+
+	var stopCalls []string
+	modA := newMockModule(t, mockModuleConfig{
+		name:   "module-a",
+		onStop: func() { stopCalls = append(stopCalls, "module-a") },
+	})
+	modB := newMockModule(t, mockModuleConfig{
+		name:   "module-b",
+		deps:   []string{"module-a"},
+		onStop: func() { stopCalls = append(stopCalls, "module-b") },
+	})
+
+	require.NoError(t, manager.RegisterModule(modA))
+	require.NoError(t, manager.RegisterModule(modB))
+	require.NoError(t, manager.InitModules(context.Background()))
+	require.Equal(t, modulex.StateInitialized, manager.State())
+
+	require.NoError(t, manager.StopModules(context.Background()))
+
+	// Both initialized modules must be stopped, in reverse dependency order,
+	// even though StartModules was never called.
+	assert.Equal(t, []string{"module-b", "module-a"}, stopCalls)
+	assert.Equal(t, modulex.StateStopped, manager.State())
+}
+
+// TestStopModulesContinuesStoppingAfterCancelledContext is a regression test
+// for a bug where StopModules broke out of its reverse-order stop loop
+// entirely as soon as ctx.Err() was non-nil, so an already-expired context
+// (or a slow early module) meant every later module in the stop order never
+// got a Stop call at all, skipping buffer flushes and connection closes it
+// could otherwise have performed quickly. StopModules must keep calling Stop
+// on every remaining module even once ctx is done, passing the expired ctx
+// through so each Stop implementation can fast-path/no-op on it if it
+// chooses.
+func TestStopModulesContinuesStoppingAfterCancelledContext(t *testing.T) {
+	manager := newTestManager(nil)
+
+	var stopCalls []string
+	modA := newMockModule(t, mockModuleConfig{
+		name:   "module-a",
+		onStop: func() { stopCalls = append(stopCalls, "module-a") },
+	})
+	modB := newMockModule(t, mockModuleConfig{
+		name:   "module-b",
+		deps:   []string{"module-a"},
+		onStop: func() { stopCalls = append(stopCalls, "module-b") },
+	})
+
+	require.NoError(t, manager.RegisterModule(modA))
+	require.NoError(t, manager.RegisterModule(modB))
+	require.NoError(t, manager.InitModules(context.Background()))
+	require.NoError(t, manager.StartModules(context.Background()))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := manager.StopModules(ctx)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+
+	// Both modules must still be stopped, in reverse order, despite the
+	// context already being cancelled before the stop loop started.
+	assert.Equal(t, []string{"module-b", "module-a"}, stopCalls)
 	assert.Equal(t, modulex.StateStopped, manager.State())
 }
 
@@ -2200,19 +2318,55 @@ func TestTaskHandleErrAndDoneAreConsistent(t *testing.T) {
 	assert.ErrorIs(t, handle.Wait(), sentinelErr)
 }
 
-func TestStopModulesTimeoutClearsTaskSnapshot(t *testing.T) {
+// TestTaskHandleZeroValueWaitDoesNotBlockForever is a regression test for a
+// bug where a zero-value TaskHandle -- one constructed directly by a caller
+// (e.g. &modulex.TaskHandle{}) rather than returned by Manager.Go -- had no
+// underlying done channel, so calling Wait on it blocked forever on a nil
+// channel receive instead of reporting there was never a backing task to
+// wait for.
+func TestTaskHandleZeroValueWaitDoesNotBlockForever(t *testing.T) {
+	handle := &modulex.TaskHandle{}
+
+	// Done and Err must report the obvious zero-value answers without
+	// blocking.
+	assert.False(t, handle.Done())
+	assert.NoError(t, handle.Err())
+
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- handle.Wait() }()
+
+	select {
+	case err := <-waitDone:
+		assert.ErrorIs(t, err, modulex.ErrTaskHandleNotStarted)
+	case <-time.After(time.Second):
+		t.Fatal("Wait blocked forever on a zero-value TaskHandle")
+	}
+}
+
+// TestStopModulesTimeoutRetainsUnfinishedTaskForDiagnostics is a regression
+// test for a bug where waitForTasks replaced m.tasks with a brand-new empty
+// map on a timed-out wait, even though the goroutines behind any still-
+// running task handles were, in fact, still running. That silently made
+// Diagnostics report zero tasks during exactly the incident where an
+// operator most needs visibility into what is stuck. The fix keeps the
+// unfinished task's handle in m.tasks (it is removed, as always, by the
+// task's own completion goroutine once it actually finishes) and names it
+// in the timeout error instead of discarding it.
+func TestStopModulesTimeoutRetainsUnfinishedTaskForDiagnostics(t *testing.T) {
 	manager := newTestManager(nil)
 	taskUnblocked := make(chan struct{})
+	var handle *modulex.TaskHandle
 
 	mod := newMockModule(t, mockModuleConfig{
 		name: "mod-a",
 		onStart: func() {
-			_, err := manager.Go(context.Background(), "blocking-task", func(ctx context.Context) error {
+			h, err := manager.Go(context.Background(), "blocking-task", func(ctx context.Context) error {
 				// Deliberately ignore ctx.Done() to force StopModules to time out.
 				<-taskUnblocked
 				return nil
 			})
 			require.NoError(t, err)
+			handle = h
 		},
 	})
 
@@ -2225,15 +2379,17 @@ func TestStopModulesTimeoutClearsTaskSnapshot(t *testing.T) {
 	err := manager.StopModules(ctx)
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "timed out")
+	assert.ErrorContains(t, err, "blocking-task", "the timeout error should name the still-running task")
 
-	// The internal task map must be cleared even when StopModules times out,
-	// so the manager does not retain handles for tasks that have already been
-	// orphaned by the shutdown deadline.
+	// The internal task map must still contain the still-running task's
+	// handle after the timeout, not an empty map, so Diagnostics keeps
+	// reporting it.
 	tasks := reflect.ValueOf(manager).Elem().FieldByName("tasks")
 	require.True(t, tasks.IsValid())
-	assert.Equal(t, 0, tasks.Len(), "task map should be cleared after timeout")
+	require.Equal(t, 1, tasks.Len(), "task map should retain the still-running task's handle after a timeout")
 
 	close(taskUnblocked)
+	require.NoError(t, handle.Wait())
 }
 
 func TestSupervisedTasksConcurrentGo(t *testing.T) {

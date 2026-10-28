@@ -49,6 +49,28 @@ func (b *Broker) now() time.Time {
 	return b.nowFunc()
 }
 
+// pruneLocked removes every already-expired or already-used grant from
+// b.grants. Callers must hold b.mu.
+//
+// Without this, a long-running Broker (e.g. inside an MCP server process
+// that never restarts) accumulates one map entry per Grant call for the
+// entire lifetime of the process: an expired or consumed grant can never
+// again affect any Check/CheckToken/DryRunCheck/DryRunCheckToken decision
+// (findMatch only ever returns an unexpired, unused grant), so keeping it
+// around forever serves no purpose other than growing the map without
+// bound. Pruning runs opportunistically on ordinary Broker activity (every
+// Grant call, and every findMatch call — i.e. every Check, CheckToken,
+// DryRunCheck, and DryRunCheckToken call) rather than on a background
+// goroutine or timer, since Broker owns no goroutine of its own and
+// nothing in this package schedules one.
+func (b *Broker) pruneLocked(now time.Time) {
+	for token, g := range b.grants {
+		if g.Used || g.expired(now) {
+			delete(b.grants, token)
+		}
+	}
+}
+
 // Grant creates and stores a new approval for scope, attributed to
 // approvedBy, valid for ttl from now. ttl must be strictly positive and
 // approvedBy must be non-empty; scope.Action must be non-empty. Any
@@ -86,6 +108,11 @@ func (b *Broker) Grant(scope Scope, approvedBy string, ttl time.Duration) (Grant
 	}
 
 	b.mu.Lock()
+	// Prune before inserting, not after: this is the one call site every
+	// long-running caller is guaranteed to hit periodically (a process that
+	// never grants anything new also never needs pruning, since its grants
+	// map can only shrink via Check/CheckToken consumption and never grow).
+	b.pruneLocked(now)
 	b.grants[token] = g
 	// Copy g's fields into result while still holding the lock: g is now
 	// reachable from Check/CheckToken (via b.grants), which mutate
@@ -174,33 +201,46 @@ func (b *Broker) DryRunCheckToken(token string, scope Scope) provenance.Status {
 }
 
 // findMatch returns the stored grant matching scope (and, if token is
-// non-empty, also matching that exact token) that is neither expired nor
-// already used, or nil if none exists. Callers must hold b.mu.
+// non-empty, also matching that exact token), or nil if none exists.
+// Callers must hold b.mu.
 //
-// When token is empty, findMatch searches every stored grant; Go map
-// iteration order is randomized per run, but at most one unused grant is
-// ever expected to match a given scope in ordinary use (Broker.Grant does
-// not deduplicate by scope, so a caller that grants the same scope twice
-// will have findMatch return an arbitrary one of them — both remain
-// individually subject to their own expiry and single-use consumption).
+// findMatch first prunes every expired or already-used grant from
+// b.grants (see pruneLocked), so every grant remaining in the map at this
+// point is, by construction, unexpired and unused — the search below no
+// longer needs to re-check g.Used or g.expired(now) itself.
+//
+// When token is empty, findMatch considers every remaining grant that
+// matches scope and deterministically picks the one with the earliest
+// ApprovedAt (ties broken by TokenHash), never an arbitrary one decided by
+// Go's randomized map iteration order. Broker.Grant does not deduplicate
+// by scope, so a caller that grants the same scope twice still has exactly
+// one of the two picked by findMatch, but always the same one for a given
+// pair of grants — not whichever the runtime's map iteration happens to
+// visit first on a given call.
 func (b *Broker) findMatch(token string, scope Scope) *Grant {
 	now := b.now()
+	b.pruneLocked(now)
 
 	if token != "" {
 		g, ok := b.grants[token]
-		if !ok || g.Used || g.expired(now) || !g.matchesScope(scope) {
+		if !ok || !g.matchesScope(scope) {
 			return nil
 		}
 		return g
 	}
 
+	var best *Grant
 	for _, g := range b.grants {
-		if g.Used || g.expired(now) || !g.matchesScope(scope) {
+		if !g.matchesScope(scope) {
 			continue
 		}
-		return g
+		if best == nil ||
+			g.ApprovedAt.Before(best.ApprovedAt) ||
+			(g.ApprovedAt.Equal(best.ApprovedAt) && g.TokenHash < best.TokenHash) {
+			best = g
+		}
 	}
-	return nil
+	return best
 }
 
 // ActiveGrants returns every currently active grant — unexpired and unused
@@ -216,12 +256,9 @@ func (b *Broker) ActiveGrants() []Grant {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	now := b.now()
+	b.pruneLocked(b.now())
 	out := make([]Grant, 0, len(b.grants))
 	for _, g := range b.grants {
-		if g.Used || g.expired(now) {
-			continue
-		}
 		out = append(out, *g)
 	}
 	sort.Slice(out, func(i, j int) bool {

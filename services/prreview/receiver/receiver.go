@@ -6,6 +6,8 @@
 package receiver
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"log/slog"
@@ -65,14 +67,23 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// GitHub redelivers on non-2xx and on its own schedule; the delivery ID
-	// makes that idempotent. Dedup records self-expire via TTL. The check
-	// runs BEFORE enqueue but the same call also records the ID — and
-	// that record must not outlive a failed enqueue, or the 500-triggered
-	// redelivery would be swallowed as a duplicate and the review dropped
-	// forever; on enqueue failure the record is best-effort forgotten so
-	// the redelivery goes through.
-	seen, err := h.Dedup.Seen(r.Context(), deliveryID, h.DedupTTL)
+	// GitHub redelivers on non-2xx and on its own schedule; that is made
+	// idempotent below. Dedup keys on a hash of the raw, HMAC-verified
+	// body rather than the X-GitHub-Delivery header: that header is NOT
+	// covered by the signature, so an attacker who captures one signed
+	// webhook body could otherwise replay it under a freshly chosen
+	// delivery ID and bypass delivery-ID-keyed dedup entirely (the
+	// signature check above only proves the body is authentic, not that
+	// this particular delivery ID is). Keying on the body's own hash means
+	// replaying identical signed bytes always collides, regardless of
+	// which delivery ID header the replay carries. Dedup records
+	// self-expire via TTL. The check runs BEFORE enqueue but the same call
+	// also records the key — and that record must not outlive a failed
+	// enqueue, or the 500-triggered redelivery would be swallowed as a
+	// duplicate and the review dropped forever; on enqueue failure the
+	// record is best-effort forgotten so the redelivery goes through.
+	dedupKey := bodyDedupKey(body)
+	seen, err := h.Dedup.Seen(r.Context(), dedupKey, h.DedupTTL)
 	if err != nil {
 		// Failing open would double-review; failing closed (non-2xx) makes
 		// GitHub retry into the same error. 500 is honest: the retry will
@@ -97,7 +108,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.Queue.Enqueue(r.Context(), req); err != nil {
 		h.Log.Error("enqueue", "error", err, "delivery", deliveryID)
-		if ferr := h.Dedup.Forget(r.Context(), deliveryID); ferr != nil {
+		if ferr := h.Dedup.Forget(r.Context(), dedupKey); ferr != nil {
 			// Worst case the review waits out the dedup TTL; log loudly.
 			h.Log.Error("dedup forget failed; redelivery will be swallowed until TTL",
 				"error", ferr, "delivery", deliveryID)
@@ -109,4 +120,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"installation", req.InstallationID, "repo", req.Owner+"/"+req.Repo,
 		"pr", req.PRNumber, "sha", req.HeadSHA, "delivery", deliveryID)
 	w.WriteHeader(http.StatusAccepted)
+}
+
+// bodyDedupKey derives the dedup store's key from the raw webhook body —
+// already verified against the HMAC signature by the time this is called —
+// rather than from the unsigned X-GitHub-Delivery header, so replay
+// protection cannot be bypassed simply by resending the same signed body
+// under a different, attacker-chosen delivery ID.
+func bodyDedupKey(body []byte) string {
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
 }

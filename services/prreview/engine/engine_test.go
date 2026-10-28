@@ -12,8 +12,13 @@ import (
 )
 
 // gitRepo builds a minimal two-ref repository: base branch "main" with an
-// initial commit, and HEAD on a feature branch with extra files committed.
-func gitRepo(t *testing.T, headFiles map[string]string) string {
+// initial commit containing baseFiles (always including README.md), and
+// HEAD on a feature branch with headFiles additionally written/overwritten
+// and committed. Protected-paths enforcement (review.LoadProtectedPathsAtRef)
+// reads modulex.agent.yaml from "main", not "feature"/HEAD — see the H2
+// regression test below — so a subtest that needs protection enforced must
+// declare its contract in baseFiles, not just headFiles.
+func gitRepo(t *testing.T, baseFiles, headFiles map[string]string) string {
 	t.Helper()
 	dir := t.TempDir()
 	run := func(args ...string) {
@@ -27,22 +32,27 @@ func gitRepo(t *testing.T, headFiles map[string]string) string {
 			t.Fatalf("git %v: %v: %s", args, err, out)
 		}
 	}
+	writeAll := func(files map[string]string) {
+		for name, content := range files {
+			path := filepath.Join(dir, name)
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
 	run("init", "-q", "-b", "main")
 	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("base\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	writeAll(baseFiles)
 	run("add", ".")
 	run("commit", "-q", "-m", "base")
 	run("checkout", "-q", "-b", "feature")
-	for name, content := range headFiles {
-		path := filepath.Join(dir, name)
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
+	writeAll(headFiles)
 	run("add", ".")
 	run("commit", "-q", "-m", "feature")
 	return dir
@@ -52,6 +62,7 @@ func TestModulexReview(t *testing.T) {
 	ctx := context.Background()
 	tests := []struct {
 		name          string
+		baseFiles     map[string]string
 		headFiles     map[string]string
 		wantErr       string
 		wantFailCheck string
@@ -67,28 +78,55 @@ func TestModulexReview(t *testing.T) {
 		},
 		{
 			name: "protected path hit is reported",
-			headFiles: map[string]string{
-				"CODEOWNERS": "* @nobody\n",
+			// The contract must already exist at baseRef for its
+			// protected_paths to be enforced (see the H2 regression test
+			// below): a contract only introduced by the change under
+			// review protects nothing yet.
+			baseFiles: map[string]string{
+				"CODEOWNERS": "* @somebody\n",
 				"modulex.agent.yaml": "schema_version: \"1.0.0\"\n" +
 					"protected_paths:\n  - CODEOWNERS\n",
+			},
+			headFiles: map[string]string{
+				"CODEOWNERS": "* @nobody\n",
 			},
 			wantFailCheck: "protected",
 		},
 		{
 			name: "malformed contract fails closed",
-			headFiles: map[string]string{
+			// The contract is loaded from baseRef, so it must be malformed
+			// there to exercise the fail-closed path.
+			baseFiles: map[string]string{
 				"modulex.agent.yaml": ":\tthis is not yaml{{",
 			},
-			wantErr: "parsing",
+			headFiles: map[string]string{"pkg.go": "package x\n"},
+			wantErr:   "parsing",
 		},
 		{
 			name:      "no contract reviews without protected paths",
 			headFiles: map[string]string{"pkg.go": "package x\n"},
 		},
+		{
+			name: "H2 regression: a PR cannot disarm its own protected-paths check",
+			baseFiles: map[string]string{
+				"CODEOWNERS": "* @somebody\n",
+				"modulex.agent.yaml": "schema_version: \"1.0.0\"\n" +
+					"protected_paths:\n  - CODEOWNERS\n",
+			},
+			headFiles: map[string]string{
+				// The PR both violates the protected path AND tries to
+				// remove the contract that protects it. If protectedPaths
+				// were (re)loaded from headRef/HEAD instead of baseRef,
+				// this would silently pass.
+				"CODEOWNERS":         "* @nobody\n",
+				"modulex.agent.yaml": "schema_version: \"1.0.0\"\n",
+			},
+			wantFailCheck: "protected",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			dir := gitRepo(t, tt.headFiles)
+			dir := gitRepo(t, tt.baseFiles, tt.headFiles)
 			results, err := Modulex{}.Review(ctx, dir, "main", "HEAD")
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
@@ -143,7 +181,7 @@ func TestGitFetcher_TokenNeverAppearsInArgv(t *testing.T) {
 		t.Skip("git not found in PATH")
 	}
 
-	repo := gitRepo(t, map[string]string{"new.txt": "x"})
+	repo := gitRepo(t, nil, map[string]string{"new.txt": "x"})
 	headSHA := strings.TrimSpace(runGit(t, repo, "rev-parse", "feature"))
 
 	argvLog := filepath.Join(t.TempDir(), "argv.log")
@@ -236,7 +274,7 @@ func TestGitFetcher_MaterializesBlobsForOfflineDiff(t *testing.T) {
 	const token = "regression-fixture-token" // nosecret: test fixture, not a real credential
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			origin := gitRepo(t, tc.headFiles)
+			origin := gitRepo(t, nil, tc.headFiles)
 			// file:// + allowFilter is what makes --filter=blob:none actually
 			// defer blobs; without it the local transport copies everything
 			// and the bug cannot be reproduced.
@@ -351,7 +389,7 @@ func TestGitFetcher_MaterializesRenamedFileBlobs(t *testing.T) {
 // so a production log doesn't require mapping a bare git-command failure
 // back to which step of Fetch produced it.
 func TestGitFetcher_WarmUpFailureIsDistinctlyLabeled(t *testing.T) {
-	origin := gitRepo(t, map[string]string{"added.txt": "x\n"})
+	origin := gitRepo(t, nil, map[string]string{"added.txt": "x\n"})
 	headSHA := strings.TrimSpace(runGit(t, origin, "rev-parse", "feature"))
 
 	const token = "regression-fixture-token" // nosecret: test fixture, not a real credential

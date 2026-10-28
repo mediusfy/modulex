@@ -127,7 +127,7 @@ func NewProviderFromEnv(serviceName string, opts ...ProviderOption) (*sdktrace.T
 
 func newExporter(cfg providerConfig) (sdktrace.SpanExporter, error) {
 	ctx := context.Background()
-	endpoint, isHTTP := sanitizeEndpoint(cfg.endpoint)
+	endpoint, path, isHTTP := sanitizeEndpoint(cfg.endpoint)
 
 	// Determine insecure status:
 	// 1. Explicit config choice (WithInsecure option or OTEL_EXPORTER_OTLP_INSECURE)
@@ -148,6 +148,9 @@ func newExporter(cfg providerConfig) (sdktrace.SpanExporter, error) {
 		httpOpts := []otlptracehttp.Option{}
 		if endpoint != "" {
 			httpOpts = append(httpOpts, otlptracehttp.WithEndpoint(endpoint))
+		}
+		if path != "" {
+			httpOpts = append(httpOpts, otlptracehttp.WithURLPath(path))
 		}
 		if isInsecure {
 			httpOpts = append(httpOpts, otlptracehttp.WithInsecure())
@@ -177,20 +180,38 @@ func newExporter(cfg providerConfig) (sdktrace.SpanExporter, error) {
 	}
 }
 
-func sanitizeEndpoint(endpoint string) (hostPort string, isHTTP bool) {
+// sanitizeEndpoint splits a configured OTLP endpoint into the bare
+// host[:port] (hostPort) the gRPC/HTTP exporters expect for
+// WithEndpoint, and any URL path component (path), so that an endpoint
+// like "http://host:4318/v1" does not end up passed whole as the host
+// (which otlptracehttp would otherwise try to resolve literally,
+// including the "/v1" suffix, and fail). isHTTP reports whether the
+// endpoint explicitly used the "http://" scheme.
+func sanitizeEndpoint(endpoint string) (hostPort string, path string, isHTTP bool) {
 	if endpoint == "" {
-		return "", false
+		return "", "", false
 	}
 	if after, ok := strings.CutPrefix(endpoint, "http://"); ok {
-		return after, true
+		host, p := splitHostPath(after)
+		return host, p, true
 	}
 	if after, ok := strings.CutPrefix(endpoint, "https://"); ok {
-		return after, false
+		host, p := splitHostPath(after)
+		return host, p, false
 	}
 	if u, err := url.Parse(endpoint); err == nil && u.Host != "" {
-		return u.Host, u.Scheme == "http"
+		return u.Host, u.Path, u.Scheme == "http"
 	}
-	return endpoint, false
+	return endpoint, "", false
+}
+
+// splitHostPath splits a "host[:port][/path...]" string (with no scheme) into
+// its host[:port] and path components; path is empty if s has no "/".
+func splitHostPath(s string) (host string, path string) {
+	if i := strings.IndexByte(s, '/'); i >= 0 {
+		return s[:i], s[i:]
+	}
+	return s, ""
 }
 
 func isLoopbackHost(endpoint string) bool {

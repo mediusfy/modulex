@@ -22,7 +22,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -134,6 +136,17 @@ func (Dispatch) Comment(ctx context.Context, cfg Config, results []provenance.Ve
 			return "", 0, fmt.Errorf("%s requires base_url (the installation's own Ollama server address)", provider)
 		}
 		base = spec.defaultBaseURL
+	} else if err := validateBaseURLHook(ctx, base); err != nil {
+		// base is only reached here when the installation (tenant) itself
+		// supplied it — either required for ollama or an override for
+		// openai/deepseek — never for spec.defaultBaseURL, which is this
+		// package's own hardcoded, operator-controlled constant. Cloud Run
+		// makes the actual outbound request on the service's behalf, so an
+		// unvalidated tenant-supplied base_url is a direct SSRF vector
+		// (e.g. pointing it at an internal service or a cloud metadata
+		// endpoint); see validateBaseURL's doc comment for exactly what is
+		// rejected.
+		return "", 0, fmt.Errorf("%s base_url rejected: %w", provider, err)
 	}
 	return openAICompatibleComment(ctx, provider, strings.TrimRight(base, "/")+spec.pathSuffix, cfg, results, diff)
 }
@@ -275,6 +288,76 @@ func openAICompatibleComment(ctx context.Context, provider, url string, cfg Conf
 		text = out.Choices[0].Message.Content
 	}
 	return text, tokens, nil
+}
+
+// validateBaseURLHook performs the SSRF check below on a tenant-supplied
+// base_url before it is used for any outbound call. Overridden in ai_test.go
+// (see its TestMain) so the existing provider tests can keep pointing
+// cfg.BaseURL at a local httptest server to simulate a provider endpoint;
+// never overridden in production.
+var validateBaseURLHook = validateBaseURL
+
+// validateBaseURL guards against SSRF via a tenant-supplied base_url: this
+// value comes straight from the installation's own Secret Manager secret
+// (see tenants.AIConfig/SecretManager), and the hosted worker — not the
+// tenant's own network — is what dials it from inside Cloud Run. Without
+// this check, a malicious or compromised installation could point the
+// service at an internal service or a cloud metadata endpoint
+// (169.254.169.254) and read back whatever that endpoint returns.
+//
+// Only an explicit http(s) URL with a host that resolves exclusively to
+// ordinary public addresses is allowed: loopback, link-local (which
+// includes the cloud metadata address), unspecified, private (RFC 1918/
+// RFC 4193), and multicast ranges are all rejected, as is the
+// "metadata.google.internal" hostname explicitly (defense in depth should
+// its resolution ever change).
+func validateBaseURL(ctx context.Context, raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("invalid base_url %q: %w", raw, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("base_url %q must use http or https", raw)
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("base_url %q has no host", raw)
+	}
+	if strings.EqualFold(host, "metadata.google.internal") {
+		return fmt.Errorf("base_url %q targets the cloud metadata hostname", raw)
+	}
+
+	var ips []net.IP
+	if ip := net.ParseIP(host); ip != nil {
+		ips = []net.IP{ip}
+	} else {
+		addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+		if err != nil {
+			return fmt.Errorf("resolving base_url host %q: %w", host, err)
+		}
+		for _, a := range addrs {
+			ips = append(ips, a.IP)
+		}
+	}
+	for _, ip := range ips {
+		if isDisallowedSSRFTarget(ip) {
+			return fmt.Errorf("base_url %q resolves to disallowed address %s (loopback/link-local/private/metadata ranges are blocked)", raw, ip)
+		}
+	}
+	return nil
+}
+
+// isDisallowedSSRFTarget reports whether ip falls in a range validateBaseURL
+// must never let a tenant-supplied base_url reach: loopback (127.0.0.0/8,
+// ::1), link-local (169.254.0.0/16 — including the 169.254.169.254 cloud
+// metadata address — and fe80::/10), unspecified (0.0.0.0, ::), RFC 1918/
+// RFC 4193 private ranges, and multicast.
+func isDisallowedSSRFTarget(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	return ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsUnspecified() || ip.IsPrivate() || ip.IsMulticast()
 }
 
 // None is a Commentary that always declines; used when an installation has

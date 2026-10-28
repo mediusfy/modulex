@@ -3,7 +3,9 @@ package grpc_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -82,6 +84,46 @@ func TestHealthServerCheckReportsReadiness(t *testing.T) {
 			assert.Equal(t, tt.wantStatus, resp.GetStatus())
 		})
 	}
+}
+
+// TestHealthServerCheckRunsChecksConcurrently proves the fix for L5:
+// multiple registered checks are evaluated concurrently, not serially. A
+// serial loop over numChecks checks, each taking checkDelay, would take at
+// least numChecks*checkDelay; this asserts Check returns in well under
+// that, close to a single checkDelay.
+func TestHealthServerCheckRunsChecksConcurrently(t *testing.T) {
+	const (
+		numChecks  = 5
+		checkDelay = 150 * time.Millisecond
+	)
+
+	checks := make(map[string]func(context.Context) error, numChecks)
+	for i := 0; i < numChecks; i++ {
+		checks[fmt.Sprintf("check-%d", i)] = func(ctx context.Context) error {
+			select {
+			case <-time.After(checkDelay):
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	}
+	checker := &staticChecker{health: checks}
+	server := grpcadapter.NewHealthServer(checker)
+
+	start := time.Now()
+	resp, err := server.Check(context.Background(), &healthpb.HealthCheckRequest{})
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	assert.Equal(t, healthpb.HealthCheckResponse_SERVING, resp.GetStatus())
+	// Serial evaluation of numChecks checks would take at least
+	// numChecks*checkDelay (750ms). Concurrent evaluation takes roughly one
+	// checkDelay; allow generous headroom for scheduling jitter while still
+	// catching a regression to serial evaluation.
+	assert.Less(t, elapsed, 3*checkDelay,
+		"Check took %s for %d checks of %s each -- checks appear to run serially, not concurrently",
+		elapsed, numChecks, checkDelay)
 }
 
 func TestHealthServerCheckUnknownServiceReturnsNotFound(t *testing.T) {

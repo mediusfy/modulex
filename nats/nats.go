@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/mediusfy/modulex"
+	"github.com/mediusfy/modulex/internal/busshutdown"
 	"github.com/mediusfy/modulex/internal/handlerpanic"
 	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel"
@@ -26,8 +27,18 @@ type EventBus struct {
 	conn    *nats.Conn
 	logger  *slog.Logger
 	subsMu  sync.Mutex
+	closed  bool
 	subs    []*nats.Subscription
 	cancels []context.CancelFunc
+
+	// handlersWG tracks in-flight invocations of Subscribe handlers (one Add
+	// per delivered message, for the duration of that message's handler
+	// call) so Close can wait for them to finish instead of returning while
+	// a handler is still running — matching the pattern the JetStream and
+	// RabbitMQ EventBus adapters in this module already use (see
+	// JetStreamEventBus.durableWG and rabbitmq.EventBus's active/stopped
+	// bookkeeping).
+	handlersWG sync.WaitGroup
 }
 
 // Option configures an EventBus during construction.
@@ -87,6 +98,12 @@ func (n *EventBus) Publish(ctx context.Context, topic string, payload []byte) er
 // visible instead of silently discarded; this mirrors the acknowledge-and-log
 // policy used by the other EventBus adapters in this module (see
 // rabbitmq.EventBus.Subscribe and watermill.EventBus.Subscribe).
+//
+// Subscribe fails once Close has been called on this EventBus: registering a
+// new subscription on an already-closed bus (for example one whose
+// underlying *nats.Conn the caller has since torn down) would otherwise
+// create a consumer Close has no further opportunity to wait for or clean
+// up.
 func (n *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.EventHandler) error {
 	if handler == nil {
 		return fmt.Errorf("failed to subscribe to %s: handler must not be nil", topic)
@@ -97,9 +114,29 @@ func (n *EventBus) Subscribe(ctx context.Context, topic string, handler modulex.
 
 	n.subsMu.Lock()
 	defer n.subsMu.Unlock()
+	if n.closed {
+		return fmt.Errorf("failed to subscribe to %s: event bus is closed", topic)
+	}
 
 	subCtx, cancel := context.WithCancel(ctx)
 	sub, err := n.conn.Subscribe(topic, func(msg *nats.Msg) {
+		// Every invocation of the handler is tracked via handlersWG,
+		// guarded by the same subsMu that Close takes before setting
+		// closed and starting its wait, so that: (1) a message delivered
+		// after Close has already set closed is dropped instead of
+		// invoking the handler on what may be a torn-down subscription,
+		// and (2) any Add that does happen is guaranteed to happen before
+		// Close observes closed and calls handlersWG.Wait, satisfying
+		// sync.WaitGroup's "Add before the relevant Wait" requirement.
+		n.subsMu.Lock()
+		if n.closed {
+			n.subsMu.Unlock()
+			return
+		}
+		n.handlersWG.Add(1)
+		n.subsMu.Unlock()
+		defer n.handlersWG.Done()
+
 		msgCtx := messageContext(subCtx, msg)
 		// handlerpanic.Recover converts a panicking handler into an error so
 		// it is reported through the same "handler error" log line as any
@@ -132,22 +169,32 @@ func messageContext(base context.Context, msg *nats.Msg) context.Context {
 	return otel.GetTextMapPropagator().Extract(base, propagation.HeaderCarrier(msg.Header))
 }
 
-// Close implements modulex.EventBus. It unsubscribes all registered NATS
-// subscriptions but does not close the underlying *nats.Conn, which the
+// Close implements modulex.EventBus. It rejects any subsequent Subscribe
+// call, unsubscribes all registered NATS subscriptions, and waits
+// (bounded by ctx) for any handler invocations already in flight to finish
+// before returning. It does not close the underlying *nats.Conn, which the
 // caller owns.
 func (n *EventBus) Close(ctx context.Context) error {
 	n.subsMu.Lock()
-	defer n.subsMu.Unlock()
-
-	for _, sub := range n.subs {
-		_ = sub.Unsubscribe()
+	if n.closed {
+		n.subsMu.Unlock()
+		return nil
 	}
-	for _, cancel := range n.cancels {
-		cancel()
-	}
+	n.closed = true
+	subs := append([]*nats.Subscription(nil), n.subs...)
+	cancels := append([]context.CancelFunc(nil), n.cancels...)
 	n.subs = nil
 	n.cancels = nil
-	return nil
+	n.subsMu.Unlock()
+
+	for _, sub := range subs {
+		_ = sub.Unsubscribe()
+	}
+	for _, cancel := range cancels {
+		cancel()
+	}
+
+	return busshutdown.WaitGroup(ctx, &n.handlersWG, "nats")
 }
 
 var (

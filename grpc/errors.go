@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	googlegrpc "google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -59,6 +60,60 @@ var codeSentinels = map[codes.Code]error{
 // falling back to DefaultErrorMapping for everything else).
 type ErrorMapping func(err error) codes.Code
 
+// genericInternalErrorMessage is the status message
+// UnaryServerErrorInterceptor sends for codes.Internal and codes.Unknown
+// by default, instead of the handler error's real text. Those two codes
+// are DefaultErrorMapping's (and most custom ErrorMappings') catch-all
+// fallback for errors the service doesn't specifically recognize, which is
+// exactly where a wrapped driver/library error (a DSN, a hostname, a file
+// path, a SQL fragment) most often ends up — and this interceptor's
+// callers are frequently unauthenticated RPC clients.
+const genericInternalErrorMessage = "internal error"
+
+// clientSafeStatusCodes are status codes whose associated error message is
+// safe to send back to an RPC caller verbatim, because they correspond to
+// expected, caller-actionable domain conditions that a service's
+// ErrorMapping deliberately classified (not merely a fallback for
+// "anything else"). codes.Internal and codes.Unknown are intentionally
+// excluded — see genericInternalErrorMessage.
+var clientSafeStatusCodes = map[codes.Code]bool{
+	codes.InvalidArgument:  true,
+	codes.NotFound:         true,
+	codes.AlreadyExists:    true,
+	codes.PermissionDenied: true,
+	codes.Unauthenticated:  true,
+	codes.Unavailable:      true,
+	codes.DeadlineExceeded: true,
+	codes.Canceled:         true,
+}
+
+// serverErrorInterceptorConfig holds UnaryServerErrorInterceptor's options.
+type serverErrorInterceptorConfig struct {
+	exposeInternal bool
+	logger         *slog.Logger
+}
+
+// ServerErrorInterceptorOption configures UnaryServerErrorInterceptor.
+type ServerErrorInterceptorOption func(*serverErrorInterceptorConfig)
+
+// WithExposeInternalErrors makes UnaryServerErrorInterceptor send the
+// handler error's real message to the RPC caller even when it maps to
+// codes.Internal or codes.Unknown, instead of genericInternalErrorMessage.
+// Do not enable this for a service exposed to untrusted or unauthenticated
+// callers: those two codes are exactly where a wrapped driver/library
+// error (DSNs, hostnames, file paths, SQL fragments) most often ends up.
+func WithExposeInternalErrors() ServerErrorInterceptorOption {
+	return func(c *serverErrorInterceptorConfig) { c.exposeInternal = true }
+}
+
+// WithServerErrorLogger sets the logger UnaryServerErrorInterceptor uses to
+// record a handler error's real text when it maps to codes.Internal or
+// codes.Unknown and is therefore not sent to the caller. If not provided,
+// or nil, slog.Default() is used.
+func WithServerErrorLogger(logger *slog.Logger) ServerErrorInterceptorOption {
+	return func(c *serverErrorInterceptorConfig) { c.logger = logger }
+}
+
 // DefaultErrorMapping is a conservative, domain-agnostic fallback: it maps
 // context cancellation and deadline errors to their gRPC equivalents, and
 // everything else to codes.Internal. This package cannot see a specific
@@ -86,9 +141,26 @@ func DefaultErrorMapping(err error) codes.Code {
 // An error that already carries a gRPC status (for example, one returned by
 // a nested gRPC client call the handler made and passed straight through) is
 // left unchanged rather than re-wrapped, so its original code is preserved.
-func UnaryServerErrorInterceptor(mapping ErrorMapping) googlegrpc.UnaryServerInterceptor {
+//
+// By default, the status message sent to the caller is the handler error's
+// real text only for status codes in clientSafeStatusCodes. For
+// codes.Internal and codes.Unknown — the usual fallback for an error the
+// mapping doesn't specifically recognize, and so the place a wrapped
+// driver/library error (a DSN, a hostname, a file path, a SQL fragment)
+// most often ends up — the real error is logged server-side instead, and
+// the caller gets genericInternalErrorMessage. Pass
+// WithExposeInternalErrors to restore the previous behavior of always
+// sending the real message.
+func UnaryServerErrorInterceptor(mapping ErrorMapping, opts ...ServerErrorInterceptorOption) googlegrpc.UnaryServerInterceptor {
 	if mapping == nil {
 		mapping = DefaultErrorMapping
+	}
+	cfg := &serverErrorInterceptorConfig{logger: slog.Default()}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+	if cfg.logger == nil {
+		cfg.logger = slog.Default()
 	}
 	return func(ctx context.Context, req any, info *googlegrpc.UnaryServerInfo, handler googlegrpc.UnaryHandler) (any, error) {
 		resp, err := handler(ctx, req)
@@ -98,14 +170,58 @@ func UnaryServerErrorInterceptor(mapping ErrorMapping) googlegrpc.UnaryServerInt
 		if _, ok := status.FromError(err); ok {
 			return resp, err
 		}
-		return resp, status.Error(mapping(err), err.Error())
+
+		code := mapping(err)
+		msg := err.Error()
+		if !cfg.exposeInternal && !clientSafeStatusCodes[code] {
+			cfg.logger.ErrorContext(ctx, "grpc: unary handler returned an internal error",
+				slog.String("method", info.FullMethod),
+				slog.String("code", code.String()),
+				slog.Any("error", err))
+			msg = genericInternalErrorMessage
+		}
+		return resp, status.Error(code, msg)
 	}
+}
+
+// translatedError is TranslateError's return type for a status-carrying
+// input error. It wraps the matched sentinel so errors.Is/errors.As keep
+// working on the translated error (via Unwrap), and it also implements
+// GRPCStatus so status.Code and status.FromError keep reporting the
+// original status — not codes.Unknown — on the translated error too.
+// Before this type existed, TranslateError's result was a plain
+// fmt.Errorf("%w")-wrapped error with no GRPCStatus method, so
+// status.Code(TranslateError(err)) always reported codes.Unknown and any
+// status Details on the original error were unreachable from the result.
+type translatedError struct {
+	st       *status.Status
+	sentinel error
+}
+
+func (e *translatedError) Error() string {
+	return fmt.Sprintf("%s: %s", e.st.Message(), e.sentinel)
+}
+
+// GRPCStatus implements the interface status.FromError (and so
+// status.Code) checks for, returning the original, unmodified status.
+func (e *translatedError) GRPCStatus() *status.Status {
+	return e.st
+}
+
+// Unwrap exposes the matched sentinel error so errors.Is(err,
+// grpc.ErrNotFound) (etc.) and errors.As keep working on the translated
+// error, matching this package's documented contract.
+func (e *translatedError) Unwrap() error {
+	return e.sentinel
 }
 
 // TranslateError converts an error returned by a gRPC client call into one of
 // this package's sentinel errors, so a caller can write
 // errors.Is(err, grpc.ErrNotFound) instead of inspecting status.Code
-// directly. The original status message is preserved via %w-wrapping.
+// directly. The original status message is preserved, and the returned
+// error also implements GRPCStatus so status.Code(result) and
+// status.FromError(result) keep reporting the original status code (and
+// any status Details) instead of codes.Unknown.
 //
 // Code table:
 //
@@ -137,7 +253,7 @@ func TranslateError(err error) error {
 	if !known {
 		sentinel = ErrInternal
 	}
-	return fmt.Errorf("%s: %w", st.Message(), sentinel)
+	return &translatedError{st: st, sentinel: sentinel}
 }
 
 // UnaryClientErrorInterceptor applies TranslateError to the error returned by

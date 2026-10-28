@@ -222,12 +222,15 @@ func TestHTTPMiddleware(t *testing.T) {
 			wantStatusCode: codes.Unset,
 		},
 		{
-			name:           "records the status code attribute on 5xx responses",
+			// Regression: a 5xx response must set the span's actual Status
+			// to codes.Error (not just an "error" attribute), so tracing
+			// backends that key off Status flag it as a failed span.
+			name:           "sets span status to Error on 5xx responses",
 			method:         http.MethodPost,
 			path:           "/fail",
 			handlerStatus:  http.StatusInternalServerError,
 			wantSpanName:   "POST",
-			wantStatusCode: codes.Unset,
+			wantStatusCode: codes.Error,
 			check: func(t *testing.T, span sdktrace.ReadOnlySpan) {
 				assert.Equal(t, int64(500), span.Attributes()[2].Value.AsInt64())
 			},
@@ -351,6 +354,44 @@ func TestSubscriberMiddleware(t *testing.T) {
 			}
 		})
 	}
+}
+
+// flushRecorder is an httptest.ResponseRecorder that also implements
+// http.Flusher, so http.ResponseController's capability probing (which
+// walks Unwrap() to find an underlying Flusher/Hijacker) has something
+// concrete to find through the statusWriter middleware wrapper.
+type flushRecorder struct {
+	*httptest.ResponseRecorder
+	flushed bool
+}
+
+func (f *flushRecorder) Flush() { f.flushed = true }
+
+// TestHTTPMiddlewareResponseWriterUnwraps asserts the middleware's
+// status-capturing ResponseWriter wrapper exposes an Unwrap method so
+// http.ResponseController (used by callers for Flush/Hijack support
+// detection, e.g. for Server-Sent Events) can see through the wrapper to
+// the underlying ResponseWriter. Without Unwrap, http.ResponseController.Flush
+// would report ErrNotSupported even though the underlying writer supports
+// flushing.
+func TestHTTPMiddlewareResponseWriterUnwraps(t *testing.T) {
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+
+	middleware := modulexotel.HTTPMiddleware(tp)
+	var rc *http.ResponseController
+	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rc = http.NewResponseController(w)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("body"))
+		require.NoError(t, rc.Flush())
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/stream", nil)
+	rec := &flushRecorder{ResponseRecorder: httptest.NewRecorder()}
+	handler.ServeHTTP(rec, req)
+
+	assert.True(t, rec.flushed, "http.ResponseController.Flush should reach the underlying Flusher through Unwrap")
 }
 
 type foreignSpanContext struct{}

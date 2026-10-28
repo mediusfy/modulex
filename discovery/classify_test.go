@@ -46,6 +46,20 @@ func TestClassifyCommand(t *testing.T) {
 		// safe.
 		{"unknown command", "curl https://example.com/whatever", provenance.ClassApprovalRequired},
 		{"empty command", "", provenance.ClassApprovalRequired},
+
+		// H3 regression: option smuggling must not reach ClassSafe. These
+		// are the exact proofs-of-concept from an external review: a
+		// "safe" git diff/log or make target with an option appended that
+		// writes a file or runs an arbitrary makefile/recipe.
+		{"git diff --output overwrites a tracked file", "git diff --output=README.md", provenance.ClassApprovalRequired},
+		{"git log --output overwrites a tracked file", "git log --output=go.sum", provenance.ClassApprovalRequired},
+		{"git diff -o short flag", "git diff -o pwned.txt", provenance.ClassApprovalRequired},
+		{"git log --ext-diff hands control to a configured program", "git log --ext-diff", provenance.ClassApprovalRequired},
+		{"git diff still safe with a benign flag", "git diff --stat", provenance.ClassSafe},
+		{"git log still safe with a benign flag", "git log -5 --oneline", provenance.ClassSafe},
+		{"make build with -f runs an arbitrary makefile", "make build -f /tmp/evil.mk", provenance.ClassApprovalRequired},
+		{"make check-x with -C runs in an arbitrary directory", "make check-x -C /tmp/attacker", provenance.ClassApprovalRequired},
+		{"make test with --eval runs an arbitrary recipe", "make test --eval=xyz", provenance.ClassApprovalRequired},
 	}
 
 	for _, tt := range tests {

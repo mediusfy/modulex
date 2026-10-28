@@ -140,29 +140,14 @@ func Run(logger *slog.Logger, configLoader func(target interface{}) error, modul
 		return fmt.Errorf("app: failed to construct manager: %w", err)
 	}
 
-	if cfg.setup != nil {
-		if err := cfg.setup(mgr); err != nil {
-			return fmt.Errorf("app: setup failed: %w", err)
-		}
-	}
-
-	for i, mod := range modules {
-		if mod == nil {
-			return fmt.Errorf("app: module at index %d must not be nil", i)
-		}
-		if err := mgr.RegisterModule(mod); err != nil {
-			return fmt.Errorf("app: failed to register module %q: %w", mod.Name(), err)
-		}
-	}
-
 	ctx, stop := signal.NotifyContext(cfg.ctx(), cfg.signals...)
 	defer stop()
 
 	// runStop drives the shared pre-stop -> StopModules -> post-stop sequence.
 	// It is used both by the normal shutdown path below and by the early-exit
-	// cleanup path if Init or Start fails midway, so WithPostStop hooks (e.g.
-	// shutting down a tracer provider) are never skipped regardless of why
-	// Run is returning.
+	// cleanup path if setup, module registration, Init, or Start fails
+	// midway, so WithPostStop hooks (e.g. shutting down a tracer provider)
+	// are never skipped regardless of why Run is returning.
 	runStop := func() error {
 		stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cfg.shutdownTimeout)
 		defer cancel()
@@ -184,11 +169,16 @@ func Run(logger *slog.Logger, configLoader func(target interface{}) error, modul
 		return errors.Join(errs...)
 	}
 
-	// Ensure resources are stopped if Init or Start fails midway. The cleanup
-	// error is joined into Run's named return value, per
-	// WithPreStop/WithPostStop's documented contract that hook (and
-	// StopModules) errors are joined into Run's return value even when Run
-	// exits early because InitModules or StartModules failed.
+	// Ensure resources are stopped if setup, module registration, Init, or
+	// Start fails midway. This defer is registered immediately after mgr and
+	// the signal-aware ctx exist -- before cfg.setup and RegisterModule run
+	// -- so a WithSetup hook that already started something (e.g. an
+	// EventBus constructed via WithManagerOptions, or a task spawned during
+	// setup) is cleaned up on any later error, not only on an
+	// InitModules/StartModules failure. The cleanup error is joined into
+	// Run's named return value, per WithPreStop/WithPostStop's documented
+	// contract that hook (and StopModules) errors are joined into Run's
+	// return value regardless of why Run exits early.
 	var fullyStarted bool
 	defer func() {
 		if !fullyStarted {
@@ -197,6 +187,21 @@ func Run(logger *slog.Logger, configLoader func(target interface{}) error, modul
 			}
 		}
 	}()
+
+	if cfg.setup != nil {
+		if err := cfg.setup(mgr); err != nil {
+			return fmt.Errorf("app: setup failed: %w", err)
+		}
+	}
+
+	for i, mod := range modules {
+		if mod == nil {
+			return fmt.Errorf("app: module at index %d must not be nil", i)
+		}
+		if err := mgr.RegisterModule(mod); err != nil {
+			return fmt.Errorf("app: failed to register module %q: %w", mod.Name(), err)
+		}
+	}
 
 	if initErr := mgr.InitModules(ctx); initErr != nil {
 		return fmt.Errorf("app: init failed: %w", initErr)
@@ -209,6 +214,16 @@ func Run(logger *slog.Logger, configLoader func(target interface{}) error, modul
 	logger.Info("application running")
 
 	<-ctx.Done()
+	// Stop intercepting the configured signals as soon as the shutdown
+	// context fires, not only via the deferred stop() call at the very end
+	// of Run (which only runs once runStop below has returned). If the
+	// shutdown sequence itself hangs, a second SIGINT/SIGTERM from the
+	// operator would otherwise be silently absorbed by this already-done
+	// context; calling stop() now reverts those signals to their default
+	// disposition (process termination) so a second signal can still force
+	// an exit. signal.NotifyContext's stop function is idempotent, so the
+	// deferred call above remains safe.
+	stop()
 	logger.Info("shutdown signal received, stopping modules")
 
 	return runStop()

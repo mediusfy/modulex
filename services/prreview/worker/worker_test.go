@@ -19,7 +19,7 @@ import (
 
 type fakeMinter struct{ tokens []int64 }
 
-func (f *fakeMinter) InstallationToken(_ context.Context, id int64) (string, error) {
+func (f *fakeMinter) InstallationToken(_ context.Context, id int64, _, _ string) (string, error) {
 	f.tokens = append(f.tokens, id)
 	return "tok-inst", nil
 }
@@ -187,9 +187,13 @@ func TestHandle(t *testing.T) {
 				if len(f.comments.updated) != 1 || f.comments.updated[0] != 555 {
 					t.Fatalf("updated %v, want [555]", f.comments.updated)
 				}
-				// Incremental: diff base is the last-reviewed SHA, not main.
-				if f.fetcher.baseRefs[0] != "sha-0" {
-					t.Fatalf("fetch base %q, want sha-0", f.fetcher.baseRefs[0])
+				// M14 regression: gating must always see the full PR
+				// base...head range, never an incremental diff from the
+				// last-reviewed SHA — an incremental diff can miss a
+				// secret introduced by an earlier, already-reviewed push
+				// that a later unrelated push doesn't touch.
+				if f.fetcher.baseRefs[0] != "main" {
+					t.Fatalf("fetch base %q, want main (full range, not the last-reviewed SHA)", f.fetcher.baseRefs[0])
 				}
 			},
 		},
@@ -395,5 +399,57 @@ func TestComposeCommentEscapesFenceBreakout(t *testing.T) {
 				t.Fatalf("payload backticks not neutralized:\n%s", body)
 			}
 		})
+	}
+}
+
+// TestComposeCommentSanitizesAICommentary: a PR author can influence the AI
+// commentary via the diff content itself (prompt injection). The commentary
+// must not be able to trigger an @-mention or render as a live link when
+// posted to GitHub under the bot's identity.
+func TestComposeCommentSanitizesAICommentary(t *testing.T) {
+	tests := []struct{ name string }{{name: "mentions and raw links neutralized"}}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			commentary := "cc @security-team please review, see https://example.com/evil for details"
+			body := ComposeComment("sha", passResults(), commentary)
+			if strings.Contains(body, "@security-team") {
+				t.Fatalf("raw @-mention survived unescaped:\n%s", body)
+			}
+			if !strings.Contains(body, "@\u200bsecurity-team") {
+				t.Fatalf("expected zero-width-space-neutralized mention:\n%s", body)
+			}
+			if strings.Contains(body, "https://example.com/evil for") {
+				t.Fatalf("raw bare link survived unescaped:\n%s", body)
+			}
+			if !strings.Contains(body, "`https://example.com/evil`") {
+				t.Fatalf("expected backtick-wrapped neutralized link:\n%s", body)
+			}
+		})
+	}
+}
+
+// TestReviewOnceAlwaysUsesFullBaseRangeForGating is a decisive M14
+// regression test: even across pushes (LastReviewedSHA set, possibly from
+// a history no longer an ancestor of the new head after a force-push), the
+// gating checks must be fetched and reviewed against the PR's real base
+// branch every time, never against the incremental last-reviewed SHA \u2014
+// otherwise a secret introduced by an earlier push could be hidden by a
+// later, unrelated push whose incremental diff never touches it.
+func TestReviewOnceAlwaysUsesFullBaseRangeForGating(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture("")
+	// Simulate a job that already completed one review, whose
+	// LastReviewedSHA is unrelated history (as after a force-push, it may
+	// not even be an ancestor of the new head).
+	_, _ = f.mem.Mutate(ctx, key(), func(j store.Job) store.Job {
+		j.LastReviewedSHA = "sha-rewritten-away"
+		j.CommentID = 555
+		return j
+	})
+	if err := f.w.Handle(ctx, req()); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if len(f.fetcher.baseRefs) != 1 || f.fetcher.baseRefs[0] != "main" {
+		t.Fatalf("fetch base refs = %v, want [main] (full base...head range, not the stale LastReviewedSHA)", f.fetcher.baseRefs)
 	}
 }

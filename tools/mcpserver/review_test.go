@@ -187,6 +187,10 @@ func TestReviewDiff_UnparseableContractFailsClosed(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, contractFileName), []byte("protected_paths: [oops\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile(%s): %v", contractFileName, err)
 	}
+	// The contract is loaded from baseRef via `git show`, which only sees
+	// committed content, not an uncommitted working-tree edit.
+	runGit(t, dir, "add", contractFileName)
+	runGit(t, dir, "commit", "--quiet", "-m", "add unparseable contract")
 
 	_, err := reviewDiff(context.Background(), dir, "HEAD", "HEAD", false)
 	if err == nil {

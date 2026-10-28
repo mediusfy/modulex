@@ -57,6 +57,24 @@ const (
 	// defaultDeadLetterSuffix is appended to a topic to form its
 	// dead-letter subject, absent WithDurableDeadLetterSuffix.
 	defaultDeadLetterSuffix = ".DEAD"
+
+	// initialDurableFetchBackoff is the delay before the first retry after a
+	// non-timeout durableConsumeLoop Fetch error, and the delay it resets to
+	// after any successful (or timed-out, which is itself "successful" in the
+	// sense of "the server is fine, there was just nothing to deliver")
+	// Fetch.
+	initialDurableFetchBackoff = 100 * time.Millisecond
+
+	// maxDurableFetchBackoff caps the exponential backoff applied between
+	// durableConsumeLoop Fetch retries so a persistently failing fetch still
+	// polls periodically rather than backing off forever.
+	maxDurableFetchBackoff = 30 * time.Second
+
+	// maxDurableNakDelay caps the exponential redelivery delay
+	// handleDurableMessage's Nack path requests via msg.NakWithDelay, so a
+	// message that has already failed many times still gets redelivered on
+	// a bounded cadence rather than an ever-growing one.
+	maxDurableNakDelay = 5 * time.Minute
 )
 
 // JetStreamEventBus implements modulex.EventBus's Publish and Close using
@@ -221,18 +239,28 @@ func (j *JetStreamEventBus) Subscribe(context.Context, string, modulex.EventHand
 // pull-based durable consumer.
 //
 // Acknowledgement: handler's returned modulex.AckDecision is translated to
-// JetStream's native ack API — Ack calls msg.Ack(), Nack calls msg.Nak(),
-// and DeadLetter republishes the message to the configured dead-letter
-// subject (see WithDurableDeadLetterSuffix) and then calls msg.Term() so
-// JetStream never redelivers it. An unrecognized AckDecision value (e.g.
-// the zero value of a differently-typed constant) is treated as Nack,
-// erring toward retry rather than silently acking or dropping.
+// JetStream's native ack API — Ack calls msg.Ack(), Nack calls
+// msg.NakWithDelay() with an exponential backoff derived from the message's
+// delivery count (capped at maxDurableNakDelay) rather than an immediate
+// msg.Nak(), and DeadLetter republishes the message to the configured
+// dead-letter subject (see WithDurableDeadLetterSuffix) and then calls
+// msg.Term() so JetStream never redelivers it. An unrecognized AckDecision
+// value (e.g. the zero value of a differently-typed constant) is treated as
+// Nack, erring toward retry rather than silently acking or dropping.
 //
-// Retry: on Nack, JetStream redelivers the message after
-// WithDurableAckWait, up to WithDurableMaxDeliver total attempts
-// (including the first); beyond that JetStream itself stops redelivering
-// even without an explicit DeadLetter decision (this is JetStream's own
-// max-deliver behavior, not something this adapter enforces separately).
+// Retry: on Nack, JetStream redelivers the message after the backoff
+// described above (which starts at WithDurableAckWait and doubles per
+// delivery attempt), up to WithDurableMaxDeliver total attempts (including
+// the first); once a Nack would be the delivery that reaches
+// WithDurableMaxDeliver, this adapter proactively dead-letters the message
+// (as if the handler had itself returned DeadLetter) instead of nacking it,
+// so the dead-letter republish/log path runs even when the handler itself
+// never asked for it. Beyond WithDurableMaxDeliver, JetStream itself would
+// also stop redelivering even without this (this is JetStream's own
+// max-deliver behavior, not something this adapter enforces separately) —
+// the proactive dead-letter above only makes that last attempt visible via
+// the configured dead-letter subject instead of the message silently
+// stopping.
 //
 // Replay: modulex.WithReplayPolicy(modulex.ReplayAll) (the default) creates
 // the durable consumer with JetStream's DeliverAll policy;
@@ -278,6 +306,24 @@ func (j *JetStreamEventBus) SubscribeDurable(ctx context.Context, topic string, 
 	}
 	j.mu.Unlock()
 
+	deliverPolicy := nats.DeliverAllPolicy
+	if o.Replay == modulex.ReplayNew {
+		deliverPolicy = nats.DeliverNewPolicy
+	}
+
+	// Create (or reconcile) the durable consumer ourselves before
+	// PullSubscribe attaches to it. This matters because nats.go only
+	// marks a *nats.Subscription's underlying JetStream consumer for
+	// deletion on Unsubscribe/Close when nats.go itself created that
+	// consumer as part of the subscribe call; a consumer PullSubscribe
+	// merely finds already-present and attaches to is left alone. Letting
+	// PullSubscribe create the consumer would therefore delete it (and its
+	// acked position) on every graceful Close, undoing the
+	// "resumes ... across process restarts" guarantee documented above.
+	if err := j.ensureDurableConsumer(ctx, topic, o.ConsumerName, deliverPolicy); err != nil {
+		return fmt.Errorf("failed to create durable consumer %q for %q: %w", o.ConsumerName, topic, err)
+	}
+
 	// The durable name is already conveyed via PullSubscribe's second
 	// argument below; passing nats.Durable(o.ConsumerName) here as well
 	// would set the same option twice and nats.go rejects that.
@@ -317,13 +363,97 @@ func (j *JetStreamEventBus) SubscribeDurable(ctx context.Context, topic string, 
 	return nil
 }
 
+// ensureDurableConsumer creates the named durable consumer via
+// JetStreamManager.AddConsumer, or reconciles it via UpdateConsumer if it
+// already exists with a different configuration, before SubscribeDurable's
+// caller attaches to it with PullSubscribe.
+//
+// This is deliberately not left to nats.go's own "create if missing"
+// behavior inside PullSubscribe: when nats.go creates the JetStream
+// consumer itself, it also marks the resulting *nats.Subscription for
+// deletion on Unsubscribe/Close, which would delete this durable consumer
+// (and its acked position) on every graceful shutdown — undoing the
+// "resumes across process restarts" guarantee documented on
+// SubscribeDurable. Pre-creating the consumer here means PullSubscribe
+// below finds it already present and attaches to it instead, so nats.go
+// never marks it for deletion.
+//
+// The existing consumer's config is looked up via ConsumerInfo first, and
+// UpdateConsumer is only called when it actually differs from the desired
+// config: on the common restart path (same deploy, same durable options),
+// this avoids an UpdateConsumer call whose effect on live delivery/ack
+// counters for an unchanged config isn't guaranteed by the nats-server API
+// contract.
+func (j *JetStreamEventBus) ensureDurableConsumer(ctx context.Context, topic, consumerName string, deliverPolicy nats.DeliverPolicy) error {
+	cfg := &nats.ConsumerConfig{
+		Durable:       consumerName,
+		FilterSubject: topic,
+		AckPolicy:     nats.AckExplicitPolicy,
+		DeliverPolicy: deliverPolicy,
+		MaxDeliver:    j.durableMaxDeliver,
+		AckWait:       j.durableAckWait,
+	}
+
+	stream, err := j.js.StreamNameBySubject(topic, nats.Context(ctx))
+	if err != nil {
+		return fmt.Errorf("failed to resolve stream for subject %q: %w", topic, err)
+	}
+
+	info, err := j.js.ConsumerInfo(stream, consumerName, nats.Context(ctx))
+	if err != nil {
+		if !errors.Is(err, nats.ErrConsumerNotFound) {
+			return fmt.Errorf("failed to look up durable consumer %q on stream %q: %w", consumerName, stream, err)
+		}
+		if _, err := j.js.AddConsumer(stream, cfg, nats.Context(ctx)); err != nil {
+			return fmt.Errorf("failed to create durable consumer %q on stream %q: %w", consumerName, stream, err)
+		}
+		return nil
+	}
+
+	if durableConsumerConfigMatches(info.Config, cfg) {
+		return nil
+	}
+
+	// The consumer already exists with a different configuration (for
+	// example, a prior deploy used different durable options); bring it
+	// in line so this subscription's AckWait/MaxDeliver/DeliverPolicy take
+	// effect rather than silently using whatever the first deploy created.
+	if _, err := j.js.UpdateConsumer(stream, cfg, nats.Context(ctx)); err != nil {
+		return fmt.Errorf("failed to update durable consumer %q on stream %q: %w", consumerName, stream, err)
+	}
+	return nil
+}
+
+// durableConsumerConfigMatches reports whether an existing consumer's
+// config already matches the config ensureDurableConsumer would submit,
+// so that callers can skip an unnecessary UpdateConsumer call on the common
+// restart path.
+func durableConsumerConfigMatches(existing nats.ConsumerConfig, desired *nats.ConsumerConfig) bool {
+	return existing.FilterSubject == desired.FilterSubject &&
+		existing.AckPolicy == desired.AckPolicy &&
+		existing.DeliverPolicy == desired.DeliverPolicy &&
+		existing.MaxDeliver == desired.MaxDeliver &&
+		existing.AckWait == desired.AckWait
+}
+
 // durableConsumeLoop pulls and resolves messages for one SubscribeDurable
 // subscription until ctx is cancelled. It fetches at most one outstanding
 // batch at a time, resolving every message in a batch before fetching the
 // next, so that messages delivered to this subscription are processed in
 // order (see the "Ordering" semantic on SubscribeDurable).
+//
+// A non-timeout Fetch error backs off exponentially (capped at
+// maxDurableFetchBackoff) before the next attempt, honoring ctx while
+// waiting, instead of retrying immediately: without this, a closed
+// connection or a server-side-deleted consumer would otherwise make this
+// loop spin at full CPU, re-issuing a failing Fetch as fast as it can. A
+// terminal error (the connection is closed, or the consumer no longer
+// exists) exits the loop promptly instead of backing off forever for a
+// condition that will never resolve itself.
 func (j *JetStreamEventBus) durableConsumeLoop(ctx context.Context, topic, consumerName string, sub *nats.Subscription, handler modulex.DurableHandler) {
 	defer j.durableWG.Done()
+
+	backoff := initialDurableFetchBackoff
 
 	for {
 		select {
@@ -343,16 +473,37 @@ func (j *JetStreamEventBus) durableConsumeLoop(ctx context.Context, topic, consu
 				return
 			}
 			if errors.Is(err, nats.ErrTimeout) {
-				// No messages arrived within the fetch window; poll again.
+				// No messages arrived within the fetch window; poll again
+				// immediately, and reset the backoff so a single transient
+				// error followed by healthy timeouts doesn't leave the loop
+				// needlessly slow.
+				backoff = initialDurableFetchBackoff
 				continue
 			}
-			j.logger.ErrorContext(ctx, "durable fetch error",
+			if matched, matchedVia := isTerminalFetchErrorMatch(err); matched {
+				j.logger.ErrorContext(ctx, "durable fetch terminal error, stopping consume loop",
+					slog.String(logKeyTopic, topic),
+					slog.String(logKeyConsumer, consumerName),
+					slog.Any(logKeyError, err),
+					slog.String("matchedVia", matchedVia),
+				)
+				return
+			}
+			j.logger.ErrorContext(ctx, "durable fetch error, backing off before retry",
 				slog.String(logKeyTopic, topic),
 				slog.String(logKeyConsumer, consumerName),
 				slog.Any(logKeyError, err),
+				slog.Duration("backoff", backoff),
 			)
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return
+			}
+			backoff = nextDurableFetchBackoff(backoff)
 			continue
 		}
+		backoff = initialDurableFetchBackoff
 
 		for _, msg := range msgs {
 			j.handleDurableMessage(ctx, topic, consumerName, msg, handler)
@@ -362,6 +513,65 @@ func (j *JetStreamEventBus) durableConsumeLoop(ctx context.Context, topic, consu
 			default:
 			}
 		}
+	}
+}
+
+// nextDurableFetchBackoff doubles d, capped at maxDurableFetchBackoff, for
+// durableConsumeLoop's retry-after-error backoff. Extracted as its own
+// function (rather than inlined arithmetic in the loop) so the
+// growth/capping behavior itself is directly unit-testable.
+func nextDurableFetchBackoff(d time.Duration) time.Duration {
+	d *= 2
+	if d <= 0 || d > maxDurableFetchBackoff {
+		return maxDurableFetchBackoff
+	}
+	return d
+}
+
+// isTerminalFetchError reports whether err from sub.Fetch indicates a
+// condition that will never resolve itself by retrying: the connection is
+// permanently closed, or the pull consumer no longer exists server-side
+// (deleted, or the subscription/consumer was otherwise torn down). Retrying
+// forever (even with backoff) against either condition would just spin the
+// loop uselessly until the caller's ctx happens to be cancelled, so
+// durableConsumeLoop exits immediately instead.
+//
+// nats.ErrNoResponders is included because a pull consumer's Fetch is
+// itself a request/reply call against that consumer's JetStream API
+// subject: once the consumer is deleted server-side, that subject has no
+// responder, and Fetch surfaces that as ErrNoResponders rather than always
+// as ErrConsumerNotFound/ErrConsumerDeleted.
+//
+// The trailing strings.Contains checks are a fallback for JetStream server
+// error text that isn't always wrapped as a typed *nats.Error by the
+// client, and are inherently fragile to upstream wording changes. If they
+// under-match, the only consequence is that durableConsumeLoop falls back
+// to its (already-implemented) exponential backoff instead of exiting
+// immediately — not a hot loop — so isTerminalFetchErrorMatch's matchedVia
+// result lets the caller log when this fallback, rather than a sentinel,
+// is what matched, making that drift observable instead of silent.
+func isTerminalFetchError(err error) bool {
+	matched, _ := isTerminalFetchErrorMatch(err)
+	return matched
+}
+
+// isTerminalFetchErrorMatch is isTerminalFetchError's implementation, also
+// reporting whether the match came from a typed sentinel ("sentinel") or
+// the string-substring fallback ("substring"), for caller-side logging.
+func isTerminalFetchErrorMatch(err error) (matched bool, matchedVia string) {
+	switch {
+	case errors.Is(err, nats.ErrConnectionClosed),
+		errors.Is(err, nats.ErrConsumerNotFound),
+		errors.Is(err, nats.ErrConsumerDeleted),
+		errors.Is(err, nats.ErrBadSubscription),
+		errors.Is(err, nats.ErrSubscriptionClosed),
+		errors.Is(err, nats.ErrNoResponders):
+		return true, "sentinel"
+	case strings.Contains(err.Error(), "consumer not found"),
+		strings.Contains(err.Error(), "consumer deleted"):
+		return true, "substring"
+	default:
+		return false, ""
 	}
 }
 
@@ -423,7 +633,22 @@ func (j *JetStreamEventBus) handleDurableMessage(ctx context.Context, topic, con
 				slog.Any("decision", int(decision)),
 			)
 		}
-		if err := msg.Nak(); err != nil {
+		if dm.DeliveryCount > 0 && dm.DeliveryCount >= j.durableMaxDeliver {
+			// This Nack would be (or already is past) the delivery attempt
+			// that exhausts WithDurableMaxDeliver. JetStream would stop
+			// redelivering on its own at that point regardless of what this
+			// adapter does, but nacking here would let the message vanish
+			// silently instead of going through the configured dead-letter
+			// path. Route it through DeadLetter explicitly so it is still
+			// republished/logged like any other dead-lettered message.
+			j.deadLetter(msgCtx, topic, consumerName, msg)
+			return
+		}
+		// NakWithDelay (not an immediate Nak) so a failing message backs off
+		// exponentially with its delivery count rather than being
+		// redelivered as fast as the consumer can re-fetch it; see
+		// nakDelay's doc comment.
+		if err := msg.NakWithDelay(j.nakDelay(dm.DeliveryCount)); err != nil {
 			j.logger.ErrorContext(msgCtx, "failed to nack durable message",
 				slog.String(logKeyTopic, topic),
 				slog.String(logKeyConsumer, consumerName),
@@ -431,6 +656,36 @@ func (j *JetStreamEventBus) handleDurableMessage(ctx context.Context, topic, con
 			)
 		}
 	}
+}
+
+// nakDelay returns the redelivery delay handleDurableMessage's Nack path
+// requests via msg.NakWithDelay, growing exponentially with deliveryCount
+// (starting at WithDurableAckWait, doubling per attempt, capped at
+// maxDurableNakDelay) so a repeatedly failing message backs off instead of
+// being redelivered as fast as the consumer can re-fetch it. deliveryCount
+// less than 1 (e.g. metadata was unavailable) is treated as 1, the minimum
+// meaningful delivery count.
+func (j *JetStreamEventBus) nakDelay(deliveryCount int) time.Duration {
+	if deliveryCount < 1 {
+		deliveryCount = 1
+	}
+	delay := j.durableAckWait
+	// Capping the number of doublings (rather than only the final result)
+	// avoids any risk of the repeated multiplication overflowing
+	// time.Duration for a very large deliveryCount before the maxDelay
+	// comparison below ever gets a chance to clamp it.
+	shifts := deliveryCount - 1
+	const maxShifts = 20
+	if shifts > maxShifts {
+		shifts = maxShifts
+	}
+	for i := 0; i < shifts && delay < maxDurableNakDelay; i++ {
+		delay *= 2
+	}
+	if delay > maxDurableNakDelay {
+		delay = maxDurableNakDelay
+	}
+	return delay
 }
 
 // deadLetter republishes msg to the configured dead-letter subject (if any)

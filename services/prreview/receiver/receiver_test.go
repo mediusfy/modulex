@@ -165,6 +165,28 @@ func TestHandler(t *testing.T) {
 	}
 }
 
+// TestHandlerDedupResistsDeliveryIDReplay is the L10(a) regression test:
+// the X-GitHub-Delivery header is not covered by the HMAC signature, so an
+// attacker who captures one valid signed webhook body must not be able to
+// bypass dedup (and get it reprocessed) merely by resending the identical
+// signed bytes under a different, self-chosen delivery ID.
+func TestHandlerDedupResistsDeliveryIDReplay(t *testing.T) {
+	h, q := newHandler(100)
+	w1 := do(h, request{event: "pull_request", delivery: "original-delivery", body: prPayload})
+	if w1.Code != http.StatusAccepted {
+		t.Fatalf("first delivery code %d, want %d", w1.Code, http.StatusAccepted)
+	}
+	// Same signed body, replayed under a freshly chosen delivery ID that
+	// never appeared in the original signed request.
+	w2 := do(h, request{event: "pull_request", delivery: "attacker-chosen-replay-id", body: prPayload})
+	if w2.Code != http.StatusOK {
+		t.Fatalf("replayed delivery code %d, want %d (deduped, not reprocessed)", w2.Code, http.StatusOK)
+	}
+	if got := len(q.Tasks()); got != 1 {
+		t.Fatalf("queued %d tasks across the replay, want 1 (dedup must key on the signed body, not the delivery id)", got)
+	}
+}
+
 func TestHandlerEnqueuesScopedIdentity(t *testing.T) {
 	tests := []struct{ name string }{{name: "tenant identity round-trips"}}
 	for _, tt := range tests {

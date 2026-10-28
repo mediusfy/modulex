@@ -179,8 +179,20 @@ type TaskHandle struct {
 
 func (h *TaskHandle) Name() string { return h.name }
 
-// Wait blocks until the task finishes and returns its final error.
+// ErrTaskHandleNotStarted is returned by TaskHandle.Wait when called on a
+// zero-value TaskHandle (e.g. a caller-constructed &TaskHandle{}) rather
+// than one returned by Manager.Go. The zero value has no underlying done
+// channel, so without this check Wait would block forever instead of
+// reporting that there is no backing task to wait for.
+var ErrTaskHandleNotStarted = errors.New("modulex: task handle has no backing task to wait for")
+
+// Wait blocks until the task finishes and returns its final error. Calling
+// Wait on a zero-value TaskHandle (one not obtained from Manager.Go) returns
+// ErrTaskHandleNotStarted immediately instead of blocking forever.
 func (h *TaskHandle) Wait() error {
+	if h.done == nil {
+		return ErrTaskHandleNotStarted
+	}
 	<-h.done
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -588,6 +600,17 @@ type Starter interface {
 // Stopper is an optional lifecycle capability for modules that release resources
 // during shutdown. The manager calls Stop in reverse topological order when
 // stopping the application or rolling back a failed init/start.
+//
+// Stop must tolerate being called on a module that never reached
+// StateRunning: a module whose Init succeeded but whose Start was never
+// called (e.g. the application shut down, or Init failed for a later
+// dependent module, while this module was only initialized), and a module
+// whose own Start call returned an error (Start may have partially acquired
+// a resource, such as a listener or a background goroutine, before
+// returning that error). In both cases the manager still calls Stop on the
+// module so Init- or Start-acquired resources are released; Stop should be
+// safe to call even if the corresponding Start never ran or did not
+// complete successfully.
 type Stopper interface {
 	Stop(ctx context.Context) (err error)
 }
@@ -1321,10 +1344,19 @@ func sortedModuleTimings(in map[string]time.Duration) []ModuleTiming {
 // over ordered modules. It returns the number of modules successfully
 // processed, a map of per-module wall-clock durations for the modules that
 // were attempted (keyed by module name, populated regardless of whether the
-// phase ultimately succeeded), and the first error encountered. phase names
-// the parent span and appears in the cancellation message; moduleSpanPrefix
-// names each per-module span; action appears in error messages ("init",
-// "start", etc.).
+// phase ultimately succeeded), whether the module at ordered[count] (if any)
+// was actually invoked and returned the error (as opposed to the phase being
+// cancelled via ctx.Err() before that module was ever attempted), and the
+// first error encountered. phase names the parent span and appears in the
+// cancellation message; moduleSpanPrefix names each per-module span; action
+// appears in error messages ("init", "start", etc.).
+//
+// The "attempted" return value matters to callers that roll back on
+// failure: a module whose runFn call actually returned the error may have
+// partially acquired a resource before returning it (e.g. Start spawned a
+// goroutine or bound a listener), so it must be included in the rollback
+// stop-set; a module the phase never reached because the context was
+// already cancelled was never attempted and must not be.
 func (m *Manager) runPhase(
 	ctx context.Context,
 	phase string,
@@ -1332,35 +1364,34 @@ func (m *Manager) runPhase(
 	action string,
 	ordered []Module,
 	runFn func(context.Context, Module) error,
-) (int, map[string]time.Duration, error) {
+) (count int, timings map[string]time.Duration, attempted bool, err error) {
 	ctx, span := m.startSpan(ctx, phase, map[string]any{
 		"modulex.module_count": len(ordered),
 	})
 	defer span.End()
 
-	timings := make(map[string]time.Duration, len(ordered))
-	count := 0
+	timings = make(map[string]time.Duration, len(ordered))
 	for _, mod := range ordered {
-		if err := ctx.Err(); err != nil {
-			return count, timings, fmt.Errorf("%s cancelled: %w", action, err)
+		if cErr := ctx.Err(); cErr != nil {
+			return count, timings, false, fmt.Errorf("%s cancelled: %w", action, cErr)
 		}
 
 		modCtx, modSpan := m.startSpan(ctx, fmt.Sprintf("%s:%s", moduleSpanPrefix, mod.Name()), map[string]any{
 			"modulex.module_name": mod.Name(),
 		})
 		modStart := time.Now()
-		err := runFn(modCtx, mod)
+		runErr := runFn(modCtx, mod)
 		timings[mod.Name()] = time.Since(modStart)
-		if err != nil {
-			modSpan.RecordError(err)
+		if runErr != nil {
+			modSpan.RecordError(runErr)
 			modSpan.End()
-			span.RecordError(err)
-			return count, timings, fmt.Errorf("failed to %s module %q: %w", action, mod.Name(), err)
+			span.RecordError(runErr)
+			return count, timings, true, fmt.Errorf("failed to %s module %q: %w", action, mod.Name(), runErr)
 		}
 		modSpan.End()
 		count++
 	}
-	return count, timings, nil
+	return count, timings, false, nil
 }
 
 // InitModules sorts the modules topologically based on dependencies,
@@ -1380,7 +1411,7 @@ func (m *Manager) InitModules(ctx context.Context) error {
 	}
 
 	phaseStart := time.Now()
-	initializedCount, moduleTimings, initErr := m.runPhase(ctx, "InitModules", "InitModule", "init", ordered, func(ctx context.Context, mod Module) error {
+	initializedCount, moduleTimings, _, initErr := m.runPhase(ctx, "InitModules", "InitModule", "init", ordered, func(ctx context.Context, mod Module) error {
 		return mod.Init(ctx, m)
 	})
 	m.recordInitTiming(time.Since(phaseStart), moduleTimings)
@@ -1466,11 +1497,22 @@ func (m *Manager) StartModules(ctx context.Context) error {
 	m.mu.RUnlock()
 
 	phaseStart := time.Now()
-	startedCount, moduleTimings, startErr := m.runPhase(ctx, "StartModules", "StartModule", "start", mods, m.startModule)
+	startedCount, moduleTimings, startAttempted, startErr := m.runPhase(ctx, "StartModules", "StartModule", "start", mods, m.startModule)
 	m.recordStartTiming(time.Since(phaseStart), moduleTimings)
 	if startErr != nil {
+		// stopCount includes the module whose Start itself failed (when its
+		// Start was actually invoked, as opposed to the phase being
+		// cancelled before reaching it) so that a Start which partially
+		// acquired a resource (a goroutine, a listener) before returning its
+		// error still gets a matching Stop call during rollback. See the
+		// Stopper doc comment: Stop must tolerate being called on a module
+		// whose own Start failed.
+		stopCount := startedCount
+		if startAttempted && stopCount < len(mods) {
+			stopCount++
+		}
 		return m.finalizeFailure(ctx, startErr,
-			func(ctx context.Context) error { return m.rollback(ctx, mods[:startedCount], "start rollback") },
+			func(ctx context.Context) error { return m.rollback(ctx, mods[:stopCount], "start rollback") },
 			nil,
 		)
 	}
@@ -1580,14 +1622,32 @@ func (m *Manager) waitForTasks(ctx context.Context) error {
 	// while skipping this drain on a timed-out wait would silently lose errors
 	// from tasks that had already finished (and been removed from m.tasks)
 	// before waitForTasks even took its snapshot above.
+	// Deliberately do NOT replace m.tasks with a fresh map here: a task that
+	// is still running when the caller's deadline expires (the gCtx.Done()
+	// branch above) remains in m.tasks on purpose, so Diagnostics keeps
+	// reporting it instead of showing zero tasks during exactly the
+	// incident where an operator most needs to see what is still running.
+	// That handle is removed from m.tasks by the task's own completion
+	// goroutine (under taskMu) once it actually finishes; a task that
+	// already finished before this point was already removed by the same
+	// path, so m.tasks at this moment only ever contains genuinely
+	// still-running tasks.
 	m.taskMu.Lock()
 	errs := append([]error(nil), m.taskErrs...)
 	m.taskErrs = nil
-	m.tasks = make(map[string]*TaskHandle)
+	var pending []string
+	for name := range m.tasks {
+		pending = append(pending, name)
+	}
 	m.taskMu.Unlock()
 
 	if ctx.Err() != nil {
-		errs = append(errs, fmt.Errorf("timed out waiting for tasks to finish: %w", ctx.Err()))
+		if len(pending) > 0 {
+			sort.Strings(pending)
+			errs = append(errs, fmt.Errorf("timed out waiting for tasks to finish: %w (still running: %s)", ctx.Err(), strings.Join(pending, ", ")))
+		} else {
+			errs = append(errs, fmt.Errorf("timed out waiting for tasks to finish: %w", ctx.Err()))
+		}
 	}
 
 	m.resetTaskCtx()
@@ -1635,7 +1695,6 @@ func (m *Manager) StopModules(ctx context.Context) error {
 		m.stateMu.Unlock()
 		return fmt.Errorf("%w: StopModules called in %q state", ErrInvalidLifecycleState, state)
 	}
-	origState := state
 	m.state = StateStopping
 	// Cancel the task context while we still hold stateMu so that new Go calls
 	// are rejected and existing tasks receive cancellation before we release the
@@ -1653,29 +1712,48 @@ func (m *Manager) StopModules(ctx context.Context) error {
 		errs = append(errs, err)
 	}
 
-	if origState == StateRunning {
-		m.mu.RLock()
-		mods := make([]Module, len(m.orderedMods))
-		copy(mods, m.orderedMods)
-		m.mu.RUnlock()
+	// Stop every module that reached at least StateInitialized, not only
+	// ones that reached StateRunning: m.orderedMods is populated once
+	// InitModules succeeds for all modules (i.e. as soon as origState is
+	// StateInitialized or StateRunning) and stays nil/empty if the manager
+	// never got past StateConfiguring, so this is safe to run unconditionally
+	// -- it is a no-op when there is nothing to stop. Without this, a
+	// shutdown that happens from StateInitialized (StartModules was never
+	// called) would never call Stop on any module, leaking resources
+	// acquired during Init (DB pools, listeners). See the Stopper doc
+	// comment for the matching contract: Stop must tolerate being called on
+	// a module that was initialized but never started.
+	m.mu.RLock()
+	mods := make([]Module, len(m.orderedMods))
+	copy(mods, m.orderedMods)
+	m.mu.RUnlock()
 
-		span.SetAttributes(map[string]any{"modulex.module_count": len(mods)})
+	span.SetAttributes(map[string]any{"modulex.module_count": len(mods)})
 
-		for i := len(mods) - 1; i >= 0; i-- {
-			if err := ctx.Err(); err != nil {
-				errs = append(errs, fmt.Errorf("stop cancelled: %w", err))
-				break
-			}
-			mod := mods[i]
-			modCtx, modSpan := m.startSpan(ctx, fmt.Sprintf("StopModule:%s", mod.Name()), map[string]any{
-				"modulex.module_name": mod.Name(),
-			})
-			if err := m.stopModule(modCtx, mod, "stop"); err != nil {
-				modSpan.RecordError(err)
-				errs = append(errs, err)
-			}
-			modSpan.End()
+	// A module later in the stop order (earlier reverse-iteration index)
+	// being slow, or the caller's deadline already having expired before
+	// this loop starts, must not starve every module before it from ever
+	// getting a Stop call: that would skip buffer flushes and connection
+	// closes for modules that would otherwise shut down quickly. So this
+	// deliberately keeps calling Stop on every remaining module even once
+	// ctx is done, passing the already-expired ctx through so a Stop
+	// implementation can fast-path/no-op on it if it chooses (the same
+	// already-expired-context tolerance documented on EventBus.Close and
+	// used by this repo's own adapters, e.g. nats/jetstream.go), rather than
+	// breaking out of the loop on the first ctx.Err().
+	if err := ctx.Err(); err != nil {
+		errs = append(errs, fmt.Errorf("stop context already done before stopping modules: %w", err))
+	}
+	for i := len(mods) - 1; i >= 0; i-- {
+		mod := mods[i]
+		modCtx, modSpan := m.startSpan(ctx, fmt.Sprintf("StopModule:%s", mod.Name()), map[string]any{
+			"modulex.module_name": mod.Name(),
+		})
+		if err := m.stopModule(modCtx, mod, "stop"); err != nil {
+			modSpan.RecordError(err)
+			errs = append(errs, err)
 		}
+		modSpan.End()
 	}
 
 	if err := m.closeEventBus(ctx); err != nil {

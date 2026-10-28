@@ -23,18 +23,31 @@ var (
 type Task func(context.Context) error
 
 // Handle represents accepted work. A handle must be awaited by callers that
-// need to preserve message acknowledgement semantics.
+// need to preserve message acknowledgement semantics. Wait may be called
+// more than once, including concurrently from multiple goroutines: every
+// call observes the same result once the task completes.
 type Handle struct {
-	done chan error
+	done chan struct{} // closed exactly once, when result/err are safe to read
+	err  error
+}
+
+// setResult records the task's outcome and unblocks every current and
+// future Wait call. It must be called at most once per Handle.
+func (h *Handle) setResult(err error) {
+	h.err = err
+	close(h.done)
 }
 
 // Wait blocks until the task finishes or ctx is cancelled. Cancelling ctx does
 // not cancel the task itself; task cancellation is controlled by the context
-// passed to Submit.
+// passed to Submit. Wait is idempotent: calling it again (or concurrently)
+// after the task has already completed returns the same result immediately
+// instead of blocking, since the result is stored on the Handle rather than
+// delivered once over a channel.
 func (h *Handle) Wait(ctx context.Context) error {
 	select {
-	case err := <-h.done:
-		return err
+	case <-h.done:
+		return h.err
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -134,7 +147,7 @@ func (p *Processor) Submit(ctx context.Context, fn Task) (*Handle, error) {
 	p.mu.Unlock()
 	defer p.inFlight.Done()
 
-	h := &Handle{done: make(chan error, 1)}
+	h := &Handle{done: make(chan struct{})}
 	t := task{ctx: ctx, fn: fn, result: h}
 
 	select {
@@ -204,7 +217,7 @@ func (p *Processor) worker() {
 		if err != nil {
 			p.failed.Add(1)
 		}
-		t.result.done <- err
+		t.result.setResult(err)
 	}
 }
 
