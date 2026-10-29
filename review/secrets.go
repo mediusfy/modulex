@@ -17,11 +17,16 @@ import (
 // truncation discipline for the same reason.
 const maxSecretFindings = 20
 
-// hunkHeaderPattern extracts the starting line number of the "new" (+) side
-// of a unified diff hunk header, e.g. "@@ -10,0 +11,2 @@ func foo() {"
-// captures "11". The count and any trailing function-context text (added by
-// git, not requested here) are ignored.
-var hunkHeaderPattern = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@`)
+// hunkHeaderPattern extracts the old-side line count and the new-side
+// starting line and count from a unified diff hunk header, e.g.
+// "@@ -10,0 +11,2 @@ func foo() {" captures oldCount="0", newStart="11",
+// newCount="2" (a count form with no explicit ",N" defaults to 1, per the
+// unified diff format). Any trailing function-context text (added by git,
+// not requested here) is ignored. addedLines uses the old+new counts to
+// consume exactly a hunk's body by position rather than by re-matching
+// each body line's own prefix (see addedLines' doc comment for why that
+// distinction matters).
+var hunkHeaderPattern = regexp.MustCompile(`^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@`)
 
 // strictGenericSecretPattern is this package's own, source-code-tuned
 // variant of provenance's genericAssignmentPattern (the key/token/password/
@@ -65,20 +70,27 @@ func secretShapedValue(value string) bool {
 	return len(value) >= 16 || !identifierLikeValue.MatchString(value)
 }
 
-// nosecretMarker, when present anywhere in an added line (case-insensitive),
-// suppresses that line from ScanSecrets' findings regardless of pattern
-// matches — the escape hatch for lines that are secret-shaped on purpose
-// (a test fixture asserting redaction behavior, a doc line illustrating a
-// pattern) rather than by accident. Mirrors the `#nosec`/`// nolint`
-// convention other static-analysis tools in this ecosystem use. Example:
+// nosecretMarkerPattern matches a well-formed, trailing "// nosecret: <reason>"
+// line comment (case-insensitive; the word "nosecret" exactly, not merely as
+// a substring of some other identifier) that suppresses that line from
+// ScanSecrets' findings regardless of pattern matches — the escape hatch for
+// lines that are secret-shaped on purpose (a test fixture asserting
+// redaction behavior, a doc line illustrating a pattern) rather than by
+// accident. Requiring the "//" comment form and a non-empty reason after the
+// colon means the marker can't be accidentally or maliciously triggered by
+// an unrelated identifier that merely happens to contain "nosecret" (e.g. a
+// variable named nosecretDBPassword), and it leaves an audit trail of why
+// the suppression exists — a bare "// nosecret" with no reason does not
+// match. Mirrors the `#nosec`/`// nolint` convention other static-analysis
+// tools in this ecosystem use. Example:
 //
 //	token := "fake-test-token-value" // nosecret: test fixture
-const nosecretMarker = "nosecret"
+var nosecretMarkerPattern = regexp.MustCompile(`(?i)//\s*nosecret\b\s*:\s*\S`)
 
-// hasNosecretMarker reports whether line contains nosecretMarker,
-// case-insensitively.
+// hasNosecretMarker reports whether line carries a well-formed
+// "// nosecret: <reason>" marker; see nosecretMarkerPattern.
 func hasNosecretMarker(line string) bool {
-	return strings.Contains(strings.ToLower(line), nosecretMarker)
+	return nosecretMarkerPattern.MatchString(line)
 }
 
 // redactLine runs both provenance.RedactHighConfidenceSecrets (the precise,
@@ -113,8 +125,8 @@ func redactLine(line string) (string, bool) {
 // doc comment's "Boundary and compatibility checks are not diff-scoped" for
 // why a repository-wide scan would be worse, not better, here.
 //
-// A line containing nosecretMarker ("nosecret", case-insensitive) is never
-// flagged, regardless of pattern matches — see its doc comment.
+// A line carrying a well-formed "// nosecret: <reason>" marker (see
+// nosecretMarkerPattern) is never flagged, regardless of pattern matches.
 //
 // A finding's Message never contains the raw secret value: each reported
 // line is passed through redactLine before being included, so only the
@@ -209,29 +221,69 @@ type addedLine struct {
 }
 
 // addedLines extracts every added (+) line from diff (as produced by
-// gitDiff), tracking the current file (from "+++ b/<path>" lines) and line
-// number (from "@@ -a,b +c,d @@" hunk headers, incrementing per added line)
-// as it scans. A line whose file is "/dev/null" (the "new" side of a pure
-// deletion — --unified=0 never actually emits a "+" line under it, but this
-// is guarded defensively) is skipped.
+// gitDiff's --unified=0 invocation), tracking the current file (from
+// "+++ b/<path>" lines) as it scans and, once inside a hunk, consuming
+// exactly that hunk's body by the line counts in its "@@ -a,b +c,d @@"
+// header rather than by re-inspecting each body line's own prefix.
+//
+// That positional consumption matters specifically because --unified=0
+// emits no context lines, so a hunk body is made up entirely of "+"/"-"
+// lines whose stripped content is never re-validated against "+++ "/"@@ "
+// once the scanner is inside the hunk: an added line whose actual content
+// begins with "++" renders, after the diff's own leading "+" marker, as
+// "+++..." — which the old prefix-sniffing approach either misparsed as a
+// bogus "+++ " file header (silently corrupting file attribution for every
+// line after it) or, lacking a space, matched neither the file-header nor
+// the added-line case and dropped entirely without advancing the line
+// counter (misattributing every subsequent added line's reported number).
+// Consuming the hunk body by its declared length sidesteps both failure
+// modes: what a body line's content happens to look like is irrelevant to
+// whether it's treated as part of the hunk.
+//
+// A line whose file is "/dev/null" (the "new" side of a pure deletion —
+// --unified=0 never actually emits a "+" line under it, but this is
+// guarded defensively) is skipped.
 func addedLines(diff string) []addedLine {
 	var out []addedLine
+	lines := strings.Split(diff, "\n")
 	file := ""
-	nextLine := 0
 
-	for _, line := range strings.Split(diff, "\n") {
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
 		switch {
 		case strings.HasPrefix(line, "+++ "):
 			file = strings.TrimPrefix(strings.TrimPrefix(line, "+++ "), "b/")
 		case strings.HasPrefix(line, "@@ "):
-			if m := hunkHeaderPattern.FindStringSubmatch(line); m != nil {
-				nextLine, _ = strconv.Atoi(m[1])
+			m := hunkHeaderPattern.FindStringSubmatch(line)
+			if m == nil {
+				continue
 			}
-		case strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++"):
-			if file != "" && file != "/dev/null" {
-				out = append(out, addedLine{file: file, line: nextLine, text: line[1:]})
+			oldCount := 1
+			if m[1] != "" {
+				oldCount, _ = strconv.Atoi(m[1])
 			}
-			nextLine++
+			newStart, _ := strconv.Atoi(m[2])
+			newCount := 1
+			if m[3] != "" {
+				newCount, _ = strconv.Atoi(m[3])
+			}
+			nextLine := newStart
+			// Consume exactly oldCount+newCount following lines as this
+			// hunk's body, by position, regardless of what they look like.
+			bodyLen := oldCount + newCount
+			for n := 0; n < bodyLen && i+1 < len(lines); n++ {
+				i++
+				body := lines[i]
+				if strings.HasPrefix(body, "+") {
+					if file != "" && file != "/dev/null" {
+						out = append(out, addedLine{file: file, line: nextLine, text: body[1:]})
+					}
+					nextLine++
+				}
+				// "-" body lines are removed (old-side only); they never
+				// occupy a new-side line number, so nextLine does not
+				// advance for them.
+			}
 		}
 	}
 	return out

@@ -5,11 +5,23 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/mediusfy/modulex/provenance"
 )
+
+// TestMain disables the production SSRF guard (validateBaseURL) for every
+// test in this file except TestValidateBaseURL* below, which exercise it
+// directly: every other test here points cfg.BaseURL at a local httptest
+// server (loopback) to simulate a provider's real endpoint, which
+// validateBaseURL must reject in production (see its doc comment) but
+// which these wire-format/error-path tests need to keep working.
+func TestMain(m *testing.M) {
+	validateBaseURLHook = func(context.Context, string) error { return nil }
+	os.Exit(m.Run())
+}
 
 func results() []provenance.VerificationResult {
 	return []provenance.VerificationResult{
@@ -191,6 +203,71 @@ func TestDispatchDefaultsToAnthropicWhenProviderEmpty(t *testing.T) {
 				t.Fatalf("got (%q, %d, %v), want (\"\", 0, nil)", text, tokens, err)
 			}
 		})
+	}
+}
+
+// TestValidateBaseURLBlocksSSRFTargets is the L10(c) regression test:
+// base_url is a tenant-supplied value (see tenants.AIConfig/SecretManager),
+// and the hosted worker — not the tenant's own network — is what dials it.
+// It must never be usable to reach loopback, link-local (including the
+// cloud metadata address), private, or otherwise internal addresses.
+func TestValidateBaseURLBlocksSSRFTargets(t *testing.T) {
+	tests := []struct {
+		name    string
+		baseURL string
+	}{
+		{name: "loopback", baseURL: "http://127.0.0.1:11434"},
+		{name: "localhost", baseURL: "http://localhost:11434"},
+		{name: "cloud metadata IP", baseURL: "http://169.254.169.254/computeMetadata/v1/"},
+		{name: "cloud metadata hostname", baseURL: "http://metadata.google.internal/computeMetadata/v1/"},
+		{name: "RFC1918 private", baseURL: "http://10.0.0.5:11434"},
+		{name: "RFC1918 private 192.168", baseURL: "http://192.168.1.5:11434"},
+		{name: "unspecified", baseURL: "http://0.0.0.0:11434"},
+		{name: "non-http(s) scheme", baseURL: "ftp://example.com"},
+		{name: "no host", baseURL: "http:///path"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := validateBaseURL(context.Background(), tt.baseURL); err == nil {
+				t.Fatalf("validateBaseURL(%q) = nil, want a rejection error", tt.baseURL)
+			}
+		})
+	}
+}
+
+// TestValidateBaseURLAllowsOrdinaryPublicAddresses ensures the SSRF guard
+// does not also break the legitimate case it exists alongside: an
+// installation's genuinely public-reachable Ollama server or an
+// openai/deepseek-compatible override.
+func TestValidateBaseURLAllowsOrdinaryPublicAddresses(t *testing.T) {
+	tests := []struct {
+		name    string
+		baseURL string
+	}{
+		{name: "public IP literal", baseURL: "https://8.8.8.8:11434"},
+		{name: "https scheme with ordinary hostname", baseURL: "https://example.com"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := validateBaseURL(context.Background(), tt.baseURL); err != nil {
+				t.Fatalf("validateBaseURL(%q) = %v, want nil", tt.baseURL, err)
+			}
+		})
+	}
+}
+
+// TestDispatchRejectsSSRFBaseURL proves the guard is actually wired into
+// Dispatch.Comment's outbound path, bypassing TestMain's override to call
+// the real validateBaseURL for this one test.
+func TestDispatchRejectsSSRFBaseURL(t *testing.T) {
+	old := validateBaseURLHook
+	validateBaseURLHook = validateBaseURL
+	defer func() { validateBaseURLHook = old }()
+
+	cfg := Config{Provider: "ollama", Model: "m", BaseURL: "http://169.254.169.254/computeMetadata/v1/"}
+	_, _, err := Dispatch{}.Comment(context.Background(), cfg, results(), "diff")
+	if err == nil || !strings.Contains(err.Error(), "base_url rejected") {
+		t.Fatalf("err = %v, want a base_url rejection", err)
 	}
 }
 

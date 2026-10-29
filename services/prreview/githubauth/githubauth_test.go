@@ -96,7 +96,7 @@ func TestInstallationTokenScopedToInstallation(t *testing.T) {
 			defer srv.Close()
 
 			a := &AppAuth{AppID: "1234", PrivateKey: testKey(t), BaseURL: srv.URL, HTTP: srv.Client()}
-			token, err := a.InstallationToken(context.Background(), tt.installationID)
+			token, err := a.InstallationToken(context.Background(), tt.installationID, "mediusfy", "demo")
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("want error, got nil")
@@ -137,6 +137,44 @@ func TestInstallationTokenScopedToInstallation(t *testing.T) {
 				t.Fatalf("JWT lifetime %s exceeds GitHub's 10m cap", lifetime)
 			}
 		})
+	}
+}
+
+// TestInstallationTokenScopedToRepoAndMinimalPermissions is the L10(b)
+// regression test: the installation token must be requested scoped down to
+// exactly the one repository under review, and to the minimal permission
+// set this job needs — not the installation's full, default-scoped grant
+// across every repo and permission it has access to.
+func TestInstallationTokenScopedToRepoAndMinimalPermissions(t *testing.T) {
+	var gotBody struct {
+		Repositories []string          `json:"repositories"`
+		Permissions  map[string]string `json:"permissions"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decoding request body: %v", err)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"token": "ghs_scoped"}`))
+	}))
+	defer srv.Close()
+
+	a := &AppAuth{AppID: "1234", PrivateKey: testKey(t), BaseURL: srv.URL, HTTP: srv.Client()}
+	if _, err := a.InstallationToken(context.Background(), 42, "mediusfy", "demo"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(gotBody.Repositories) != 1 || gotBody.Repositories[0] != "demo" {
+		t.Fatalf("repositories = %v, want exactly [demo] (the single repo under review, not a broad/default grant)", gotBody.Repositories)
+	}
+	wantPerms := map[string]string{"contents": "read", "pull_requests": "read", "issues": "write"}
+	if len(gotBody.Permissions) != len(wantPerms) {
+		t.Fatalf("permissions = %v, want %v (minimal set only)", gotBody.Permissions, wantPerms)
+	}
+	for k, v := range wantPerms {
+		if gotBody.Permissions[k] != v {
+			t.Fatalf("permissions[%q] = %q, want %q", k, gotBody.Permissions[k], v)
+		}
 	}
 }
 

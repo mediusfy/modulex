@@ -11,6 +11,8 @@ import (
 	"github.com/ThreeDotsLabs/watermill"
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/ThreeDotsLabs/watermill/pubsub/gochannel"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 
 	"github.com/mediusfy/modulex"
 	"github.com/mediusfy/modulex/internal/busshutdown"
@@ -54,14 +56,27 @@ func NewEventBus(bufferSize int64, persistent bool, debug bool) *EventBus {
 	}
 }
 
-// Publish generates a Watermill-compatible message, propagates context, and sends it.
+// Publish generates a Watermill-compatible message and sends it.
+//
+// It deliberately does not attach ctx to the outgoing message via
+// msg.SetContext: with the in-process GoChannel pubsub this EventBus wraps,
+// a handler may run well after Publish's caller has already returned (e.g.
+// an HTTP request whose context is cancelled the moment its response is
+// written), so propagating that ctx verbatim would hand the handler a
+// context that can carry an unrelated deadline, values, or an unexpected
+// early cancellation, and one this EventBus's own Close never cancels.
+// Instead, only trace/span context is carried across, injected into the
+// message's Metadata the same way the NATS and RabbitMQ EventBus adapters
+// in this module propagate otel context via message headers (see
+// nats/jetstream.go's Inject/Extract). The handler instead runs under a
+// context derived from its own subscription's lifetime; see subscribe.
 func (w *EventBus) Publish(ctx context.Context, topic string, payload []byte) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
 	msg := message.NewMessage(watermill.NewUUID(), payload)
-	msg.SetContext(ctx)
+	otel.GetTextMapPropagator().Inject(ctx, propagation.MapCarrier(msg.Metadata))
 
 	if err := w.pubSub.Publish(topic, msg); err != nil {
 		return fmt.Errorf("watermill publish failed: %w", err)
@@ -156,7 +171,13 @@ func (w *EventBus) subscribe(ctx context.Context, topic string, handler modulex.
 				}
 
 				if processor == nil {
-					msgCtx := msg.Context()
+					// msgCtx is derived from subCtx (this subscription's own
+					// lifetime, cancelled by Close), not from the
+					// publisher's original ctx: see Publish's doc comment
+					// for why that ctx must not reach the handler directly.
+					// Only trace/span context, carried via msg.Metadata, is
+					// layered on top.
+					msgCtx := otel.GetTextMapPropagator().Extract(subCtx, propagation.MapCarrier(msg.Metadata))
 					err := handlerpanic.Recover(func() error { return handler(msgCtx, msg.Payload) })
 					if err != nil {
 						w.logger.Error("handler error, message acknowledged to prevent redelivery", err, nil)
@@ -165,11 +186,9 @@ func (w *EventBus) subscribe(ctx context.Context, topic string, handler modulex.
 					continue
 				}
 
-				// subCtx, not msg.Context(), is submitted here so that a
-				// Submit call blocked waiting for pool capacity is released
-				// by EventBus.Close() (which cancels subCtx): msg.Context()
-				// is derived from gochannel's own subscription context, not
-				// from subCtx, and may never be cancelled by Close().
+				// subCtx is submitted here so that a Submit call blocked
+				// waiting for pool capacity is released by EventBus.Close()
+				// (which cancels subCtx).
 				_, err := processor.Submit(subCtx, func(context.Context) (herr error) {
 					// This defer guarantees msg.Ack() always runs, even if
 					// handler panics: workerpool.runTask's own recover
@@ -187,7 +206,13 @@ func (w *EventBus) subscribe(ctx context.Context, topic string, handler modulex.
 						}
 						msg.Ack()
 					}()
-					return handler(msg.Context(), msg.Payload)
+					// Handler ctx is derived from subCtx (this
+					// subscription's own lifetime, cancelled by Close), not
+					// from the publisher's original ctx via msg.Context();
+					// see Publish's doc comment. Only trace/span context,
+					// carried via msg.Metadata, is layered on top.
+					msgCtx := otel.GetTextMapPropagator().Extract(subCtx, propagation.MapCarrier(msg.Metadata))
+					return handler(msgCtx, msg.Payload)
 				})
 				if err != nil {
 					w.logger.Error("worker pool rejected message, nacking for redelivery", err, nil)

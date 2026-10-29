@@ -3,11 +3,14 @@ package nats_test
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/mediusfy/modulex"
+	"github.com/mediusfy/modulex/internal/eventbustest"
 	natsadapter "github.com/mediusfy/modulex/nats"
 	"github.com/nats-io/nats-server/v2/server"
 	natsserver "github.com/nats-io/nats-server/v2/test"
@@ -558,6 +561,142 @@ func TestJetStreamEventBus_SubscribeDurable_ConsumerIdentityResumesAckedProgress
 	}
 }
 
+// TestJetStreamEventBus_SubscribeDurable_FetchTerminalErrorStopsLoopPromptly
+// locks in the fix for M3: before the fix, durableConsumeLoop retried any
+// non-timeout Fetch error immediately and forever, hot-spinning at full CPU
+// if, for example, the underlying consumer was deleted server-side. This
+// deletes the durable consumer out from under an active pull loop (as an
+// operator's cleanup job or a TTL-based consumer might) and asserts the
+// loop recognizes the resulting error as terminal and stops promptly,
+// instead of retrying indefinitely.
+func TestJetStreamEventBus_SubscribeDurable_FetchTerminalErrorStopsLoopPromptly(t *testing.T) {
+	s := startJetStreamEmbeddedServer(t)
+	conn, err := nats.Connect(s.ClientURL())
+	require.NoError(t, err)
+	t.Cleanup(conn.Close)
+	js, err := conn.JetStream()
+	require.NoError(t, err)
+
+	var logBuf eventbustest.SyncBuffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	eb := natsadapter.NewJetStreamEventBus(js,
+		natsadapter.WithJetStreamLogger(logger),
+		natsadapter.WithDurableFetchWait(100*time.Millisecond),
+	)
+
+	topic := durableTestSubject(t, js)
+	streamName, err := js.StreamNameBySubject(topic)
+	require.NoError(t, err)
+
+	const consumerName = "terminal-error-consumer"
+	received := make(chan modulex.DurableMessage, 10)
+	handler := sequencedDurableHandler(nil, received)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	require.NoError(t, eb.SubscribeDurable(ctx, topic, handler, modulex.WithConsumerName(consumerName)))
+
+	// No message was ever published, so the loop is idle, repeatedly polling
+	// and timing out. Delete the underlying JetStream consumer server-side
+	// so the next Fetch fails with a terminal "consumer not found"/
+	// "consumer deleted" error instead of a timeout.
+	require.NoError(t, js.DeleteConsumer(streamName, consumerName))
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(logBuf.String(), "durable fetch terminal error, stopping consume loop")
+	}, 5*time.Second, 50*time.Millisecond,
+		"durableConsumeLoop must detect the consumer's deletion as a terminal error and stop, not retry forever; log so far: %q", logBuf.String())
+
+	// Because the loop should have already exited on its own, Close must
+	// return promptly well within its own timeout rather than needing to
+	// wait it out.
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer closeCancel()
+	require.NoError(t, eb.Close(closeCtx), "Close must not time out: the consume loop should have already exited after the terminal fetch error")
+}
+
+// TestJetStreamEventBus_SubscribeDurable_NackBacksOffAndDeadLettersAtMaxDeliver
+// locks in the fix for M4: Nack must use msg.NakWithDelay with a backoff
+// derived from the message's delivery count (not an immediate msg.Nak(),
+// which contradicted the "Nack waits for WithDurableAckWait" claim the
+// doc comment used to make), and once a Nack would be the delivery that
+// reaches WithDurableMaxDeliver, the adapter must proactively dead-letter
+// the message instead of letting it silently stop being redelivered.
+func TestJetStreamEventBus_SubscribeDurable_NackBacksOffAndDeadLettersAtMaxDeliver(t *testing.T) {
+	s := startJetStreamEmbeddedServer(t)
+	conn, err := nats.Connect(s.ClientURL())
+	require.NoError(t, err)
+	t.Cleanup(conn.Close)
+	js, err := conn.JetStream()
+	require.NoError(t, err)
+
+	const ackWait = 400 * time.Millisecond
+	eb := natsadapter.NewJetStreamEventBus(js,
+		natsadapter.WithDurableAckWait(ackWait),
+		natsadapter.WithDurableFetchWait(100*time.Millisecond),
+		natsadapter.WithDurableMaxDeliver(2),
+	)
+	t.Cleanup(func() { _ = eb.Close(context.Background()) })
+
+	topic := durableTestSubject(t, js)
+	require.NoError(t, eb.Publish(context.Background(), topic, []byte("poison")))
+
+	type delivery struct {
+		msg modulex.DurableMessage
+		at  time.Time
+	}
+	received := make(chan delivery, 10)
+	handler := func(_ context.Context, msg modulex.DurableMessage) modulex.AckDecision {
+		received <- delivery{msg: msg, at: time.Now()}
+		return modulex.Nack
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	require.NoError(t, eb.SubscribeDurable(ctx, topic, handler, modulex.WithConsumerName("backoff-consumer")))
+
+	var first, second delivery
+	select {
+	case first = <-received:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for first delivery")
+	}
+	assert.Equal(t, 1, first.msg.DeliveryCount)
+
+	select {
+	case second = <-received:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for redelivery after Nack")
+	}
+	assert.Equal(t, 2, second.msg.DeliveryCount)
+
+	// The redelivery must not have been near-instant: NakWithDelay's
+	// backoff (starting at ackWait) must have actually elapsed, not
+	// msg.Nak()'s immediate redelivery.
+	elapsed := second.at.Sub(first.at)
+	assert.GreaterOrEqual(t, elapsed, ackWait/2,
+		"redelivery after Nack happened too fast (%s); NakWithDelay backoff was not applied", elapsed)
+
+	// This second delivery's count (2) reaches WithDurableMaxDeliver (2), so
+	// the adapter must dead-letter it now instead of nacking it again, even
+	// though the handler itself returned Nack both times.
+	dlSub, err := js.PullSubscribe(topic+".DEAD", fmt.Sprintf("backoff-dlq-check-%d", time.Now().UnixNano()))
+	require.NoError(t, err)
+	msgs, err := dlSub.Fetch(1, nats.MaxWait(3*time.Second))
+	require.NoError(t, err)
+	require.Len(t, msgs, 1)
+	assert.Equal(t, []byte("poison"), msgs[0].Data)
+	require.NoError(t, msgs[0].Ack())
+
+	// No third delivery should ever occur.
+	select {
+	case d := <-received:
+		t.Fatalf("unexpected third delivery after max-deliver dead-letter: %+v", d)
+	case <-time.After(3 * ackWait):
+	}
+}
+
 func TestJetStreamEventBus_SubscribeDurable_ReplayPolicy(t *testing.T) {
 	s := startJetStreamEmbeddedServer(t)
 	conn, err := nats.Connect(s.ClientURL())
@@ -688,4 +827,80 @@ func TestJetStreamEventBus_Close_WaitsForInFlightHandler(t *testing.T) {
 	defer closeCancel()
 	require.NoError(t, eb.Close(closeCtx))
 	assert.True(t, handlerFinished.Load(), "Close must wait for the in-flight handler to finish before returning")
+}
+
+// TestJetStreamEventBus_SubscribeDurable_ConsumerSurvivesClose reproduces
+// H1: Close (a graceful shutdown/redeploy) must not delete the durable
+// JetStream consumer. Unlike
+// TestJetStreamEventBus_SubscribeDurable_ConsumerIdentityResumesAckedProgress,
+// which only cancels the subscription's ctx, this test closes the whole
+// EventBus (the real shutdown path) and then builds a brand-new EventBus
+// bound to the same underlying JetStream context, simulating a process
+// restart.
+func TestJetStreamEventBus_SubscribeDurable_ConsumerSurvivesClose(t *testing.T) {
+	s := startJetStreamEmbeddedServer(t)
+	conn, err := nats.Connect(s.ClientURL())
+	require.NoError(t, err)
+	t.Cleanup(conn.Close)
+	js, err := conn.JetStream()
+	require.NoError(t, err)
+
+	const consumerName = "survives-close-consumer"
+
+	topic := durableTestSubject(t, js)
+	streamName, err := js.StreamNameBySubject(topic)
+	require.NoError(t, err)
+
+	eb1 := natsadapter.NewJetStreamEventBus(js,
+		natsadapter.WithDurableFetchWait(100*time.Millisecond),
+	)
+
+	require.NoError(t, eb1.Publish(context.Background(), topic, []byte("first")))
+
+	received := make(chan modulex.DurableMessage, 10)
+	handler := sequencedDurableHandler(nil, received) // always Ack
+
+	require.NoError(t, eb1.SubscribeDurable(context.Background(), topic, handler, modulex.WithConsumerName(consumerName)))
+
+	select {
+	case msg := <-received:
+		assert.Equal(t, []byte("first"), msg.Payload)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for first message")
+	}
+	// Give the ack time to land before shutting down.
+	time.Sleep(100 * time.Millisecond)
+
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer closeCancel()
+	require.NoError(t, eb1.Close(closeCtx))
+
+	// The consumer must still exist after a graceful Close: nats.go must
+	// not have deleted it as a side effect of Unsubscribe.
+	info, err := js.ConsumerInfo(streamName, consumerName)
+	require.NoError(t, err, "durable consumer must survive a graceful Close")
+	assert.EqualValues(t, 1, info.AckFloor.Consumer, "the acked position must also survive Close")
+
+	// A brand-new EventBus (simulating a process restart) resuming with the
+	// same ConsumerName must only see messages published after the first
+	// ack, never redeliver "first".
+	eb2 := natsadapter.NewJetStreamEventBus(js,
+		natsadapter.WithDurableFetchWait(100*time.Millisecond),
+	)
+	t.Cleanup(func() { _ = eb2.Close(context.Background()) })
+
+	require.NoError(t, eb1.Publish(context.Background(), topic, []byte("second")))
+	require.NoError(t, eb2.SubscribeDurable(context.Background(), topic, handler, modulex.WithConsumerName(consumerName)))
+
+	select {
+	case msg := <-received:
+		assert.Equal(t, []byte("second"), msg.Payload)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for second message after resume")
+	}
+	select {
+	case msg := <-received:
+		t.Fatalf("unexpected redelivery of an already-acked message after resume: %+v", msg)
+	case <-time.After(500 * time.Millisecond):
+	}
 }

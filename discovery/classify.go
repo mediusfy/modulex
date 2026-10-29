@@ -13,10 +13,57 @@ import (
 // main"); Reason should be specific enough that a human reviewing an agent
 // transcript understands why the command was classified the way it was
 // without re-deriving it themselves.
+//
+// RejectArgs, if non-nil, is an extra guard for a Pattern that is
+// deliberately not fully anchored at "$" because the command legitimately
+// takes further arguments (e.g. "git diff --stat", "git log -5"). It
+// receives the command's whitespace-split argument tokens (everything
+// after the matched command word(s)) and returns true if any of them
+// makes the command unsafe to classify under this rule — for example, an
+// option that writes to a file (git diff/log --output) or hands control to
+// another configured program (--ext-diff). When RejectArgs returns true,
+// ClassifyCommand treats this as a non-match and falls through to the
+// next rule (and ultimately the fail-safe default) rather than
+// classifying the command safe just because its first token matched.
 type ClassificationRule struct {
-	Pattern *regexp.Regexp
-	Class   provenance.CommandClass
-	Reason  string
+	Pattern    *regexp.Regexp
+	RejectArgs func(args []string) bool
+	Class      provenance.CommandClass
+	Reason     string
+}
+
+// unsafeGitReadOnlyArg reports whether arg is an option that would make an
+// otherwise read-only `git status|diff|log` invocation unsafe: one that
+// writes output to an arbitrary file (-o/--output[=...]) or hands control
+// to another configured program (--ext-diff, which invokes diff.external;
+// -c, which can set diff.external or core.pager for this invocation).
+// Option arguments pass straight through a plain prefix match (see H3 in
+// an external review: "git diff --output=README.md" and "git log
+// --output=go.sum" both classified safe and then overwrote a tracked
+// file), so every argument token must be checked explicitly rather than
+// relying on the command prefix alone.
+func unsafeGitReadOnlyArg(arg string) bool {
+	switch {
+	case arg == "-o" || arg == "-O" || arg == "-c":
+		return true
+	case strings.HasPrefix(arg, "--output") || strings.HasPrefix(arg, "--output-directory"):
+		return true
+	case strings.HasPrefix(arg, "--ext-diff"):
+		return true
+	default:
+		return false
+	}
+}
+
+// rejectUnsafeGitReadOnlyArgs is the RejectArgs for the `git
+// status|diff|log` safe rule below.
+func rejectUnsafeGitReadOnlyArgs(args []string) bool {
+	for _, arg := range args {
+		if unsafeGitReadOnlyArg(arg) {
+			return true
+		}
+	}
+	return false
 }
 
 // ClassificationRules is the ordered, first-match-wins rule table
@@ -33,9 +80,10 @@ type ClassificationRule struct {
 var ClassificationRules = []ClassificationRule{
 	// --- git: safe / read-only ---
 	{
-		Pattern: regexp.MustCompile(`^git (status|diff|log)\b`),
-		Class:   provenance.ClassSafe,
-		Reason:  "read-only git inspection command; always allowed per agent-safety-policy.md",
+		Pattern:    regexp.MustCompile(`^git (status|diff|log)\b`),
+		RejectArgs: rejectUnsafeGitReadOnlyArgs,
+		Class:      provenance.ClassSafe,
+		Reason:     "read-only git inspection command; always allowed per agent-safety-policy.md",
 	},
 
 	// --- git: destructive / history-rewriting ---
@@ -147,7 +195,15 @@ var ClassificationRules = []ClassificationRule{
 
 	// --- make targets: safe (read-only builds/tests/verification) ---
 	{
-		Pattern: regexp.MustCompile(`^make (build|test|test-arch|lint|help|check-[a-z-]+)\b`),
+		// Fully anchored at "$": none of these targets take further
+		// arguments in this repository's Makefile (see the command
+		// matrix in AGENTS.md/modulex.agent.yaml), so any trailing text
+		// is unexpected rather than a legitimate argument. Anchoring at
+		// "\b" alone let "make build -f evil.mk" and "make check-x -C
+		// /tmp/attacker" classify safe and run an arbitrary makefile or
+		// recipe (H3 in an external review); requiring an exact match
+		// closes that off without an arg-level allowlist.
+		Pattern: regexp.MustCompile(`^make (build|test|test-arch|lint|help|check-[a-z-]+)$`),
 		Class:   provenance.ClassSafe,
 		Reason:  "runs a read-only build, test, or verification target (wraps go build/test/vet, golangci-lint run, or a read-only check script) with no network or mutating side effects",
 	},
@@ -182,9 +238,13 @@ func ClassifyCommand(cmd string) (provenance.CommandClass, string) {
 		return provenance.ClassApprovalRequired, "command contains a shell metacharacter (;, &, |, `, $, <, >, or a newline) that could chain, substitute, or redirect beyond the matched command; fail-safe default treats this as approval-required rather than classifying by prefix alone"
 	}
 	for _, rule := range ClassificationRules {
-		if rule.Pattern.MatchString(trimmed) {
-			return rule.Class, rule.Reason
+		if !rule.Pattern.MatchString(trimmed) {
+			continue
 		}
+		if rule.RejectArgs != nil && rule.RejectArgs(strings.Fields(trimmed)) {
+			continue
+		}
+		return rule.Class, rule.Reason
 	}
 	return provenance.ClassApprovalRequired, "no classification rule matched this command; fail-safe default treats any unrecognized command as approval-required rather than assuming it is safe"
 }

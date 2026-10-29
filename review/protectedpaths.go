@@ -3,6 +3,7 @@ package review
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"path"
@@ -10,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/mediusfy/modulex/contract"
 	"github.com/mediusfy/modulex/provenance"
 )
 
@@ -76,6 +78,78 @@ func ChangedFiles(ctx context.Context, dir, baseRef, headRef string) ([]string, 
 		return nil, nil
 	}
 	return strings.Split(trimmed, "\n"), nil
+}
+
+// contractMissingAtRefSubstrings are the exact substrings `git show
+// <ref>:<path>` reports on stderr when ref itself resolves but path does
+// not exist in it — "fatal: path '<path>' does not exist in '<ref>'" when
+// path never existed in ref's tree, or "fatal: path '<path>' exists on
+// disk, but not in '<ref>'" when path exists in the working
+// tree/index but not in that specific ref — as opposed to a ref that does
+// not resolve at all ("fatal: invalid object name '<ref>'."). gitOutput
+// folds stderr into the returned error's message, so these substrings are
+// how LoadProtectedPathsAtRef distinguishes "no contract at this ref yet"
+// (a normal outcome) from a real git failure such as an unresolvable
+// baseRef, which must fail closed instead.
+var contractMissingAtRefSubstrings = []string{
+	"does not exist in",
+	"exists on disk, but not in",
+}
+
+// ErrContractUnparseable wraps any error LoadProtectedPathsAtRef returns
+// because modulex.agent.yaml exists at ref but failed to parse as YAML, as
+// opposed to a git failure (e.g. ref does not resolve). A caller that
+// treats a bad ref as a non-fatal StatusUnavailable result, but a broken
+// contract as a hard error, can distinguish the two with errors.Is(err,
+// ErrContractUnparseable).
+var ErrContractUnparseable = errors.New("contract is present but unparseable")
+
+// LoadProtectedPathsAtRef returns the protected_paths modulex.agent.yaml
+// declares as of ref — NOT the checked-out working tree — via `git show
+// ref:modulex.agent.yaml`, with contract.FileName itself always appended
+// so the contract can never omit its own path from the set it declares.
+//
+// Reading the contract at ref rather than at the checkout under review
+// fixes a real gap: a caller that instead read modulex.agent.yaml from
+// the PR head being reviewed let a PR remove an offending path from
+// protected_paths (or delete the contract outright) in the same commit
+// that touches it, and the check would still pass. Callers of this
+// function should always pass baseRef (the pre-PR state), which the PR
+// branch cannot have altered, then pass the result to CheckProtectedPaths
+// alongside headRef.
+//
+// A missing contract at ref (a new repository, or a contract first added
+// by the very change under review) is a normal "none declared yet"
+// outcome: err is nil and only contract.FileName itself comes back. Any
+// other git failure (ref does not resolve, dir is not a repository, ...)
+// is a real error that the caller must surface as StatusUnavailable, not
+// silently treat as "nothing protected."
+func LoadProtectedPathsAtRef(ctx context.Context, dir, ref string) ([]string, error) {
+	data, err := gitShow(ctx, dir, ref, contract.FileName)
+	if err != nil {
+		for _, substr := range contractMissingAtRefSubstrings {
+			if strings.Contains(err.Error(), substr) {
+				// No contract at ref at all: nothing declared, and nothing
+				// to self-protect yet (a change that introduces
+				// modulex.agent.yaml for the first time is not "disarming"
+				// an existing policy).
+				return nil, nil
+			}
+		}
+		return nil, fmt.Errorf("loading %s at %s: %w", contract.FileName, ref, err)
+	}
+
+	c, parseErr := contract.Unmarshal([]byte(data))
+	if parseErr != nil {
+		return nil, fmt.Errorf("loading %s at %s: %w: %w", contract.FileName, ref, ErrContractUnparseable, parseErr)
+	}
+
+	for _, p := range c.ProtectedPaths {
+		if p == contract.FileName {
+			return c.ProtectedPaths, nil
+		}
+	}
+	return append(append([]string{}, c.ProtectedPaths...), contract.FileName), nil
 }
 
 // CheckProtectedPaths reports whether any file changed between baseRef and

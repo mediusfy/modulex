@@ -41,6 +41,46 @@ func TestModuleContractDeterministic(t *testing.T) {
 	assert.Equal(t, []string{}, contract.Modules[2].DependsOn)
 }
 
+// TestModuleContractNormalizesDependsOn asserts ModuleContract applies the
+// same whitespace-trim-and-skip-empty normalization to DependsOn entries
+// that sortModules/ExportDAG already apply (see modulex.go), so that two
+// module graphs which behave identically but differ only in incidental
+// whitespace or an empty DependsOn entry produce byte-identical
+// ModuleContract output.
+func TestModuleContractNormalizesDependsOn(t *testing.T) {
+	t.Parallel()
+
+	manager := newTestManager(nil)
+	require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "beta"})))
+	require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "gamma"})))
+	require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{
+		name: "alpha",
+		deps: []string{" gamma ", "", "  ", "beta"},
+	})))
+
+	contract := manager.ModuleContract()
+	require.Len(t, contract.Modules, 3)
+	assert.Equal(t, "alpha", contract.Modules[0].Name)
+	assert.Equal(t, []string{"beta", "gamma"}, contract.Modules[0].DependsOn,
+		"whitespace must be trimmed and empty/whitespace-only entries skipped, matching sortModules/ExportDAG")
+
+	// A functionally identical graph using already-clean DependsOn entries
+	// must marshal to byte-identical JSON.
+	clean := newTestManager(nil)
+	require.NoError(t, clean.RegisterModule(newMockModule(t, mockModuleConfig{name: "beta"})))
+	require.NoError(t, clean.RegisterModule(newMockModule(t, mockModuleConfig{name: "gamma"})))
+	require.NoError(t, clean.RegisterModule(newMockModule(t, mockModuleConfig{
+		name: "alpha",
+		deps: []string{"gamma", "beta"},
+	})))
+
+	dirtyJSON, err := json.Marshal(contract)
+	require.NoError(t, err)
+	cleanJSON, err := json.Marshal(clean.ModuleContract())
+	require.NoError(t, err)
+	assert.Equal(t, cleanJSON, dirtyJSON)
+}
+
 // TestModuleContractEmptyManager asserts a manager with no registered
 // modules produces valid, non-nil, empty-ish JSON rather than panicking or
 // marshaling `null`.

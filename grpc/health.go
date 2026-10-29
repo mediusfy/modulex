@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -55,10 +56,19 @@ type HealthChecker interface {
 //
 // # Service name convention
 //
-//   - "" (empty) or any name not recognized below evaluates the registered
-//     liveness checks (modulex.Registry.RegisterHealthCheck).
+//   - "" (empty) evaluates the registered liveness checks
+//     (modulex.Registry.RegisterHealthCheck).
 //   - ReadinessService ("readiness") evaluates the registered readiness
 //     checks (modulex.Registry.RegisterReadinessCheck).
+//   - Any other service name is unrecognized: checksFor returns
+//     codes.NotFound rather than falling back to liveness. This matches
+//     the standard gRPC health-checking protocol, under which a server
+//     reports NOT_FOUND for a service it does not know about, and is
+//     safer than silently answering for the wrong (or a mistyped) service
+//     name: a caller asking about a service this server doesn't host
+//     should get an explicit "I don't know that service" error, not a
+//     seemingly-valid liveness answer that has nothing to do with what it
+//     asked for.
 //
 // Unlike the standard library's google.golang.org/grpc/health.Server (which
 // requires a caller to push status updates via SetServingStatus),
@@ -146,21 +156,52 @@ func (h *HealthServer) checksFor(service string) (map[string]func(context.Contex
 	}
 }
 
-// evaluateChecks runs every check, each bounded by defaultCheckTimeout, and
-// reports whether all of them passed. A nil check function, a non-nil
-// error, or a check that outlives its timeout all count as a failure,
-// mirroring httpx.runChecks' treatment of nil checks and per-check
-// timeouts.
+// evaluateChecks runs every check concurrently, each bounded by
+// defaultCheckTimeout, and reports whether all of them passed. A nil check
+// function, a non-nil error, or a check that outlives its timeout all
+// count as a failure, mirroring httpx.runChecks' treatment of nil checks
+// and per-check timeouts.
+//
+// Checks run concurrently (via a WaitGroup, mirroring httpx.runChecks'
+// existing parallel pattern) rather than serially: a serial loop over N
+// checks, each individually bounded by defaultCheckTimeout, still takes up
+// to N*defaultCheckTimeout in the worst case, which Check and Watch would
+// otherwise impose on every caller even though each check only needs its
+// own timeout budget, not an additive share of everyone else's.
 func evaluateChecks(ctx context.Context, checks map[string]func(context.Context) error) bool {
-	for _, check := range checks {
-		if check == nil {
-			return false
-		}
-		if !runCheckWithTimeout(ctx, check) {
-			return false
-		}
+	if len(checks) == 0 {
+		return true
 	}
-	return true
+
+	var (
+		mu      sync.Mutex
+		wg      sync.WaitGroup
+		healthy = true
+	)
+	wg.Add(len(checks))
+
+	for _, check := range checks {
+		go func(check func(context.Context) error) {
+			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					mu.Lock()
+					healthy = false
+					mu.Unlock()
+				}
+			}()
+
+			ok := check != nil && runCheckWithTimeout(ctx, check)
+			if !ok {
+				mu.Lock()
+				healthy = false
+				mu.Unlock()
+			}
+		}(check)
+	}
+
+	wg.Wait()
+	return healthy
 }
 
 // runCheckWithTimeout runs check under a context derived from ctx via

@@ -1,6 +1,7 @@
 package approval
 
 import (
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -365,6 +366,103 @@ func TestBroker_ActiveGrantsExcludesUsedAndExpired(t *testing.T) {
 	}
 	if grants[0].Scope != active {
 		t.Errorf("ActiveGrants()[0].Scope = %+v, want %+v", grants[0].Scope, active)
+	}
+}
+
+// --- Unbounded grant-map growth (L9) ---
+
+// TestBroker_PruneRemovesExpiredAndUsedGrants is a regression test for a
+// real unbounded-memory-growth bug: before pruning was added, grants were
+// never removed from the internal map after being consumed or expiring, so
+// a long-running process (e.g. an MCP server) that keeps calling
+// Broker.Grant/Check would accumulate one map entry per grant forever.
+// This proves the map is actually pruned back down during ordinary
+// Grant/Check activity, not just that Check/DryRunCheck still report the
+// right status (which TestBroker_ActiveGrantsExcludesUsedAndExpired
+// already covers without looking at the map's size).
+func TestBroker_PruneRemovesExpiredAndUsedGrants(t *testing.T) {
+	clock := newFixedClock(time.Now())
+	b := newTestBroker(clock)
+
+	const n = 5
+	for i := 0; i < n; i++ {
+		scope := Scope{Action: "push", Resource: fmt.Sprintf("r%d", i)}
+		if _, err := b.Grant(scope, "drew", time.Second); err != nil {
+			t.Fatalf("Grant() error = %v", err)
+		}
+	}
+
+	// Consume two of them; the rest are left to expire. (Each Check call
+	// also opportunistically prunes any already-stale entry it happens to
+	// find via findMatch, so the map's size right after this isn't a fixed
+	// number — the point of this test is what happens next.)
+	if got := b.Check(Scope{Action: "push", Resource: "r0"}); got != provenance.StatusPass {
+		t.Fatalf("Check(r0) = %v, want Pass", got)
+	}
+	if got := b.Check(Scope{Action: "push", Resource: "r1"}); got != provenance.StatusPass {
+		t.Fatalf("Check(r1) = %v, want Pass", got)
+	}
+
+	// Expire the remaining three unconsumed grants.
+	clock.advance(2 * time.Second)
+
+	// A long-running process keeps calling Grant for unrelated new work;
+	// this (or any Check/CheckToken/DryRunCheck/DryRunCheckToken call)
+	// must prune every stale entry, not just serve the new request.
+	newScope := Scope{Action: "push", Resource: "fresh"}
+	if _, err := b.Grant(newScope, "drew", time.Minute); err != nil {
+		t.Fatalf("Grant() error = %v", err)
+	}
+
+	b.mu.Lock()
+	after := len(b.grants)
+	b.mu.Unlock()
+	if after != 1 {
+		t.Fatalf("after pruning, internal grants map = %d entries, want 1 (only the fresh grant; "+
+			"the 2 consumed and 3 expired grants from before must have been pruned, not left to "+
+			"accumulate forever)", after)
+	}
+
+	// The fresh grant itself must still be fully usable.
+	if got := b.Check(newScope); got != provenance.StatusPass {
+		t.Fatalf("Check(fresh) after pruning = %v, want Pass", got)
+	}
+}
+
+// TestBroker_FindMatchIsDeterministicNotMapOrder proves that when more than
+// one unexpired, unused grant matches the same scope, a scope-only Check
+// always consumes the same one (the earliest-approved) — not an arbitrary
+// one decided by Go's randomized map iteration order.
+func TestBroker_FindMatchIsDeterministicNotMapOrder(t *testing.T) {
+	clock := newFixedClock(time.Now())
+	b := newTestBroker(clock)
+
+	scope := Scope{Action: "push", Resource: "branch-a"}
+
+	first, err := b.Grant(scope, "drew", time.Hour)
+	if err != nil {
+		t.Fatalf("Grant() error = %v", err)
+	}
+	clock.advance(time.Second)
+	second, err := b.Grant(scope, "drew", time.Hour)
+	if err != nil {
+		t.Fatalf("Grant() error = %v", err)
+	}
+
+	// Two unexpired, unused grants now match the same scope. A scope-only
+	// Check must deterministically resolve to the earliest-approved one
+	// (first) every time this test runs, not whichever one Go's map
+	// iteration happens to visit first on a given run.
+	if got := b.Check(scope); got != provenance.StatusPass {
+		t.Fatalf("Check(scope) = %v, want Pass", got)
+	}
+	if got := b.DryRunCheckToken(first.Token, scope); got != provenance.StatusApprovalRequired {
+		t.Fatalf("the earliest-approved grant should have been the one Check() consumed, "+
+			"but DryRunCheckToken(first.Token) = %v, want ApprovalRequired", got)
+	}
+	if got := b.DryRunCheckToken(second.Token, scope); got != provenance.StatusPass {
+		t.Fatalf("the later grant should still be unused after Check() consumed the "+
+			"earliest-approved one, got %v, want Pass", got)
 	}
 }
 

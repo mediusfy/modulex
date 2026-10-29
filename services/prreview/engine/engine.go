@@ -23,7 +23,6 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/mediusfy/modulex/contract"
 	"github.com/mediusfy/modulex/provenance"
 	"github.com/mediusfy/modulex/review"
 )
@@ -42,13 +41,15 @@ func (Modulex) Review(ctx context.Context, dir, baseRef, headRef string) ([]prov
 	// The contract is read fail-CLOSED, matching the mcpserver and
 	// agentcli adapters: a present-but-broken modulex.agent.yaml must
 	// error, not silently disable protected-path enforcement.
-	c, _, err := contract.Load(dir)
+	//
+	// It is read from baseRef, not dir's checked-out head: dir is the
+	// tenant PR under review, so a PR that both violates a protected path
+	// and removes it from protected_paths (or deletes modulex.agent.yaml
+	// outright) in the same change must not be able to make this check
+	// pass by editing the policy that judges it. baseRef predates the PR.
+	protectedPaths, err := review.LoadProtectedPathsAtRef(ctx, dir, baseRef)
 	if err != nil {
 		return nil, err
-	}
-	var protectedPaths []string
-	if c != nil {
-		protectedPaths = c.ProtectedPaths
 	}
 
 	// ScanSecrets and CheckProtectedPaths are fully independent checks over

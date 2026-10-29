@@ -162,6 +162,103 @@ func TestRun_RegisterModuleFailure(t *testing.T) {
 	assert.ErrorIs(t, err, modulex.ErrDuplicateModule)
 }
 
+// fakeEventBus is a minimal modulex.EventBus used to prove app.Run cleans up
+// a resource that was already constructed via WithManagerOptions when a
+// later setup or module-registration failure causes Run to exit early.
+type fakeEventBus struct {
+	mu         sync.Mutex
+	closeCount int
+}
+
+func (b *fakeEventBus) Publish(context.Context, string, []byte) error { return nil }
+func (b *fakeEventBus) Subscribe(context.Context, string, modulex.EventHandler) error {
+	return nil
+}
+func (b *fakeEventBus) Close(context.Context) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.closeCount++
+	return nil
+}
+func (b *fakeEventBus) CloseCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.closeCount
+}
+
+// TestRun_SetupFailureRunsCleanup is a regression test for a bug where Run
+// returned immediately on a WithSetup failure, before its cleanup defer was
+// even registered (the defer was declared after the setup call), so a
+// resource already constructed via WithManagerOptions (here, an EventBus)
+// and any registered pre/post-stop hooks were never invoked at all on this
+// path.
+func TestRun_SetupFailureRunsCleanup(t *testing.T) {
+	eb := &fakeEventBus{}
+	setupErr := errors.New("setup boom")
+
+	var mu sync.Mutex
+	var order []string
+	record := func(name string) func(context.Context) error {
+		return func(context.Context) error {
+			mu.Lock()
+			order = append(order, name)
+			mu.Unlock()
+			return nil
+		}
+	}
+
+	err := app.Run(newTestLogger(), nil, nil,
+		app.WithManagerOptions(modulex.WithEventBus(eb)),
+		app.WithSetup(func(*modulex.Manager) error { return setupErr }),
+		app.WithPreStop(record("pre")),
+		app.WithPostStop(record("post")),
+	)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, setupErr)
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, []string{"pre", "post"}, order, "pre/post-stop hooks must run even when WithSetup fails")
+	assert.Equal(t, 1, eb.CloseCount(), "the event bus constructed via WithManagerOptions must be closed on a setup failure")
+}
+
+// TestRun_RegisterModuleFailureRunsCleanup is the module-registration
+// analogue of TestRun_SetupFailureRunsCleanup: a duplicate module name used
+// to make Run return before its cleanup defer was registered, so neither
+// the pre/post-stop hooks nor an already-constructed EventBus were ever
+// touched.
+func TestRun_RegisterModuleFailureRunsCleanup(t *testing.T) {
+	eb := &fakeEventBus{}
+	modA := &recordingModule{name: "dup"}
+	modB := &recordingModule{name: "dup"}
+
+	var mu sync.Mutex
+	var order []string
+	record := func(name string) func(context.Context) error {
+		return func(context.Context) error {
+			mu.Lock()
+			order = append(order, name)
+			mu.Unlock()
+			return nil
+		}
+	}
+
+	err := app.Run(newTestLogger(), nil, []modulex.Module{modA, modB},
+		app.WithManagerOptions(modulex.WithEventBus(eb)),
+		app.WithPreStop(record("pre")),
+		app.WithPostStop(record("post")),
+	)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, modulex.ErrDuplicateModule)
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, []string{"pre", "post"}, order, "pre/post-stop hooks must run even when module registration fails")
+	assert.Equal(t, 1, eb.CloseCount(), "the event bus constructed via WithManagerOptions must be closed on a register failure")
+}
+
 func TestRun_SetupHookRunsBeforeInit(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

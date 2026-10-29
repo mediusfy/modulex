@@ -90,21 +90,22 @@ func Approve(root, action, resource, approvedBy string, ttl time.Duration) (appr
 // always uses discovery.Discover.
 var discoverRepo = discovery.Discover
 
-// loadProtectedPaths reads <root>/modulex.agent.yaml (via contract.Load) and
-// returns its declared ProtectedPaths, or nil if the file is absent. Unlike
-// LoadContract it does NOT validate the contract: a contract that fails
-// validation for some unrelated reason still declares protected paths that
-// must be enforced, matching tools/mcpserver's review_diff ("invalid isn't
-// the same as absent"). A present-but-unparseable file is a real error.
-func loadProtectedPaths(root string) ([]string, error) {
-	c, present, err := contract.Load(root)
-	if err != nil {
-		return nil, err
-	}
-	if !present {
-		return nil, nil
-	}
-	return c.ProtectedPaths, nil
+// loadProtectedPaths reads modulex.agent.yaml as of baseRef — NOT the
+// working tree at root — via review.LoadProtectedPathsAtRef, and returns
+// its declared ProtectedPaths (plus contract.FileName itself).
+//
+// Reading from baseRef rather than root's current checkout (the PR head
+// under review) is deliberate: root is the side under review, so a PR
+// that both violates a protected path and removes it from
+// protected_paths (or deletes modulex.agent.yaml outright) in the same
+// change must not be able to make this check pass by editing the policy
+// that judges it. baseRef predates the PR and cannot have been altered by
+// it. A contract missing at baseRef (new repository, or a contract first
+// added by this very change) is a normal "none declared yet" outcome,
+// matching tools/mcpserver's review_diff ("invalid isn't the same as
+// absent"); any other git failure is a real error.
+func loadProtectedPaths(ctx context.Context, root, baseRef string) ([]string, error) {
+	return review.LoadProtectedPathsAtRef(ctx, root, baseRef)
 }
 
 // reviewRepo is the single prologue behind Review and Handoff: discover root,
@@ -118,7 +119,7 @@ func reviewRepo(ctx context.Context, root, baseRef, headRef string, allowNetwork
 	if err != nil {
 		return discovery.Repository{}, nil, fmt.Errorf("discovering %q: %w", root, err)
 	}
-	protectedPaths, err := loadProtectedPaths(root)
+	protectedPaths, err := loadProtectedPaths(ctx, root, baseRef)
 	if err != nil {
 		return discovery.Repository{}, nil, err
 	}

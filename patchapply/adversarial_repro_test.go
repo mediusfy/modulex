@@ -125,12 +125,16 @@ func TestAdversarial_DeletionNeverSucceedsWithoutApprovedBroker(t *testing.T) {
 		t.Fatalf("file was deleted despite no broker: %v", statErr)
 	}
 
-	// Broker present but scope never granted.
+	// Broker present but scope never granted. Apply derives the enforced
+	// Resource from the batch itself (via BatchScope), so Scope.Resource
+	// here is irrelevant — only a prior Grant for the derived scope
+	// matters, and none exists yet.
 	b := approval.NewBroker()
-	scope := approval.Scope{Action: "delete", Resource: "important.txt"}
+	deleteScope := approval.Scope{Action: "delete"}
+	grantedScope := patchapply.BatchScope("delete", []string{"important.txt"})
 	_, err = patchapply.Apply(dir, []patchapply.FileChange{
 		{Path: "important.txt", Delete: true},
-	}, patchapply.ApplyOptions{Broker: b, Scope: scope})
+	}, patchapply.ApplyOptions{Broker: b, Scope: deleteScope})
 	if err == nil {
 		t.Fatal("delete with unapproved broker/scope succeeded, want rejection")
 	}
@@ -139,30 +143,33 @@ func TestAdversarial_DeletionNeverSucceedsWithoutApprovedBroker(t *testing.T) {
 	}
 
 	// Broker present, WRONG scope granted (attacker tries to reuse an
-	// unrelated approval for a different delete).
-	if _, err := b.Grant(approval.Scope{Action: "delete", Resource: "other-file.txt"}, "human@example.com", time.Minute); err != nil {
+	// unrelated approval for a different delete): grant covers a batch
+	// deleting "other-file.txt", which derives to an entirely different
+	// Resource than the "important.txt" batch below.
+	if _, err := b.Grant(patchapply.BatchScope("delete", []string{"other-file.txt"}), "human@example.com", time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	_, err = patchapply.Apply(dir, []patchapply.FileChange{
 		{Path: "important.txt", Delete: true},
-	}, patchapply.ApplyOptions{Broker: b, Scope: scope})
+	}, patchapply.ApplyOptions{Broker: b, Scope: deleteScope})
 	if err == nil {
-		t.Fatal("delete succeeded using an approval granted for a DIFFERENT resource, want rejection")
+		t.Fatal("delete succeeded using an approval granted for a DIFFERENT batch, want rejection")
 	}
 	if _, statErr := os.Stat(path); statErr != nil {
 		t.Fatalf("file was deleted using a mismatched-scope approval: %v", statErr)
 	}
 
-	// Now grant the correct scope; deletion should succeed exactly once.
-	if _, err := b.Grant(scope, "human@example.com", time.Minute); err != nil {
+	// Now grant the correct (batch-derived) scope; deletion should succeed
+	// exactly once.
+	if _, err := b.Grant(grantedScope, "human@example.com", time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	if got := b.DryRunCheck(scope); got != provenance.StatusPass {
+	if got := b.DryRunCheck(grantedScope); got != provenance.StatusPass {
 		t.Fatalf("sanity check: DryRunCheck after correct grant = %v, want Pass", got)
 	}
 	_, err = patchapply.Apply(dir, []patchapply.FileChange{
 		{Path: "important.txt", Delete: true},
-	}, patchapply.ApplyOptions{Broker: b, Scope: scope})
+	}, patchapply.ApplyOptions{Broker: b, Scope: deleteScope})
 	if err != nil {
 		t.Fatalf("delete with correctly approved scope failed: %v", err)
 	}
@@ -225,7 +232,17 @@ func TestAdversarial_SharedNewDirectoryRollbackDoesNotLoseSiblingFiles(t *testin
 		t.Fatalf("b.txt missing after successful Apply: %v", statErr)
 	}
 
-	if err := patchapply.Rollback(dir, j); err != nil {
+	// Rolling back both files means deleting paths Apply created, which
+	// requires an approved grant for the scope Rollback derives from them.
+	broker := approval.NewBroker()
+	scope := patchapply.BatchScope("delete", []string{"newdir/sub/a.txt", "newdir/sub/b.txt"})
+	if _, err := broker.Grant(scope, "human@example.com", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err := patchapply.Rollback(dir, j, patchapply.RollbackOptions{
+		Broker: broker,
+		Scope:  approval.Scope{Action: "delete"},
+	}); err != nil {
 		t.Fatalf("Rollback failed: %v", err)
 	}
 	if _, statErr := os.Stat(filepath.Join(dir, "newdir")); !os.IsNotExist(statErr) {
@@ -236,16 +253,17 @@ func TestAdversarial_SharedNewDirectoryRollbackDoesNotLoseSiblingFiles(t *testin
 	}
 }
 
+// TestAdversarial_ThirdPartyFileAddedToCreatedDirSurvivesUntilSiblingRemoved
+// is a regression test for a real data-loss bug found in review (M11):
+// Rollback's CreatedDir cleanup used to call os.RemoveAll on a directory
+// chain Apply created, which removes EVERYTHING under that directory —
+// including a file some other process placed there after Apply ran but
+// before Rollback runs, even though that file was never tracked by the
+// Journal at all. Rollback must now walk the chain bottom-up with
+// os.Remove and stop at the first non-empty directory, so a human-added
+// file (or any third-party file) in a package-created directory always
+// survives.
 func TestAdversarial_ThirdPartyFileAddedToCreatedDirSurvivesUntilSiblingRemoved(t *testing.T) {
-	// This documents (rather than "fixes") a narrow edge case flagged by
-	// the implementer: Rollback's CreatedDir cleanup uses os.RemoveAll,
-	// which removes EVERYTHING under a directory this package created —
-	// including a file some other process placed there after Apply ran,
-	// if that file happens to still be present when the LAST sibling in
-	// that directory is rolled back. Concurrent third-party writes into a
-	// directory this package just created are outside this package's
-	// stated guarantees (single target-directory, not a general-purpose
-	// concurrent-multi-writer filesystem transaction manager).
 	dir := t.TempDir()
 
 	j, err := patchapply.Apply(dir, []patchapply.FileChange{
@@ -260,18 +278,32 @@ func TestAdversarial_ThirdPartyFileAddedToCreatedDirSurvivesUntilSiblingRemoved(
 	thirdPartyFile := filepath.Join(dir, "created", "unrelated-third-party-file.txt")
 	mustWrite(t, thirdPartyFile, []byte("not tracked by the journal at all"))
 
-	if err := patchapply.Rollback(dir, j); err != nil {
+	broker := approval.NewBroker()
+	scope := patchapply.BatchScope("delete", []string{"created/only.txt"})
+	if _, err := broker.Grant(scope, "human@example.com", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err := patchapply.Rollback(dir, j, patchapply.RollbackOptions{
+		Broker: broker,
+		Scope:  approval.Scope{Action: "delete"},
+	}); err != nil {
 		t.Fatalf("Rollback failed: %v", err)
 	}
 
-	if _, statErr := os.Stat(thirdPartyFile); statErr == nil {
-		t.Log("NOTE (expected, documented limitation): Rollback's RemoveAll on a " +
-			"self-created directory also deleted a third party's unrelated file " +
-			"placed there after Apply and before Rollback")
-	} else if os.IsNotExist(statErr) {
-		t.Log("confirmed: third-party file placed into a package-created directory " +
-			"was removed by Rollback's directory cleanup (RemoveAll) — this is the " +
-			"documented, narrow edge case, not a violation of a stated guarantee")
+	// only.txt was tracked by the journal and must be gone.
+	if _, statErr := os.Stat(filepath.Join(dir, "created", "only.txt")); !os.IsNotExist(statErr) {
+		t.Fatalf("only.txt should have been removed by rollback, stat err = %v", statErr)
+	}
+	// The third party's file was NEVER tracked by the journal and must
+	// survive — this is the exact bug this test guards against.
+	got := mustRead(t, thirdPartyFile)
+	if !bytes.Equal(got, []byte("not tracked by the journal at all")) {
+		t.Fatalf("third-party file content changed: got %q", got)
+	}
+	// Because the directory is non-empty (the third-party file still
+	// lives there), Rollback must not have removed it either.
+	if _, statErr := os.Stat(filepath.Join(dir, "created")); statErr != nil {
+		t.Fatalf("created/ directory should survive while it still contains the third-party file: %v", statErr)
 	}
 }
 
@@ -310,7 +342,7 @@ func TestAdversarial_SerializedJournalRefusesToRollbackRatherThanDestroyData(t *
 		t.Fatalf("unmarshal failed: %v", err)
 	}
 
-	err = patchapply.Rollback(dir, reloaded)
+	err = patchapply.Rollback(dir, reloaded, patchapply.RollbackOptions{})
 	if err == nil {
 		t.Fatal("Rollback on a JSON-round-tripped Journal succeeded, want ErrJournalNotRestorable")
 	}

@@ -49,9 +49,22 @@ func Load(root string) (c *Contract, present bool, err error) {
 		return nil, false, fmt.Errorf("reading %s: %w", FileName, readErr)
 	}
 
-	var parsed Contract
-	if unmarshalErr := yaml.Unmarshal(data, &parsed); unmarshalErr != nil {
-		return nil, true, fmt.Errorf("parsing %s: %w", FileName, unmarshalErr)
+	parsed, unmarshalErr := Unmarshal(data)
+	if unmarshalErr != nil {
+		return nil, true, unmarshalErr
 	}
-	return &parsed, true, nil
+	return parsed, true, nil
+}
+
+// Unmarshal parses data — the contents of a FileName file — into a
+// Contract. Load uses this after reading the file from the working tree;
+// a caller that obtains the file's bytes some other way (e.g. `git show
+// <ref>:<FileName>`, to read the contract as it existed at a specific git
+// ref rather than the current working tree) can call this directly.
+func Unmarshal(data []byte) (*Contract, error) {
+	var parsed Contract
+	if err := yaml.Unmarshal(data, &parsed); err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", FileName, err)
+	}
+	return &parsed, nil
 }

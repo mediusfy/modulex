@@ -3,6 +3,7 @@ package modulex
 import (
 	"context"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -41,7 +42,24 @@ func (m *Manager) ModuleContract() ModuleContract {
 	entries := make([]ModuleContractEntry, 0, len(names))
 	for _, name := range names {
 		mod := m.modules[name]
-		deps := append([]string(nil), mod.DependsOn()...)
+		// Normalize DependsOn the same way sortModules/ExportDAG do (see
+		// modulex.go): trim whitespace and skip empty entries, so that two
+		// module graphs which behave identically but differ only in
+		// incidental whitespace or an empty DependsOn entry produce
+		// byte-identical ModuleContract output. Unlike sortModules (which
+		// sorts raw, pre-trim values for its own, unrelated tie-break
+		// purposes), the normalized values are sorted here, since
+		// ModuleContract's own documented guarantee is a whitespace-
+		// insensitive deterministic ordering for diffing.
+		rawDeps := mod.DependsOn()
+		var deps []string
+		for _, dep := range rawDeps {
+			depName := strings.TrimSpace(dep)
+			if depName == "" {
+				continue
+			}
+			deps = append(deps, depName)
+		}
 		sort.Strings(deps)
 		if deps == nil {
 			deps = []string{}

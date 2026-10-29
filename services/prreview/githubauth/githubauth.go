@@ -26,8 +26,16 @@ import (
 
 // TokenMinter mints a short-lived installation-scoped access token. No job
 // ever holds a token for any other installation.
+//
+// The token is additionally scoped down to exactly the one repository being
+// reviewed, and to the minimum GitHub permissions this service's job
+// actually needs (reading PR/repo contents and commenting on issues/PRs):
+// an unscoped installation token would carry the installation's full,
+// potentially multi-repo, default-permission grant, which is far more
+// blast radius than any single review job requires if that token were ever
+// leaked or misused.
 type TokenMinter interface {
-	InstallationToken(ctx context.Context, installationID int64) (string, error)
+	InstallationToken(ctx context.Context, installationID int64, owner, repo string) (string, error)
 }
 
 // Commenter posts or updates the App's single review comment on a PR
@@ -127,18 +135,51 @@ func (a *AppAuth) appJWT(now time.Time) (string, error) {
 	return signingInput + "." + base64.RawURLEncoding.EncodeToString(sig), nil
 }
 
-func (a *AppAuth) InstallationToken(ctx context.Context, installationID int64) (string, error) {
+// minimalReviewPermissions is the smallest GitHub App permission set this
+// service's job actually exercises against the token it mints: reading the
+// repository's code (the checkout), reading the PR (head-SHA re-anchoring),
+// and writing issue comments (PR comments are posted via the issues API).
+// Any installation-level permission beyond this (e.g. admin, workflows,
+// other repos' contents) is deliberately never requested.
+var minimalReviewPermissions = map[string]string{
+	"contents":      "read",
+	"pull_requests": "read",
+	"issues":        "write",
+}
+
+func (a *AppAuth) InstallationToken(ctx context.Context, installationID int64, owner, repo string) (string, error) {
 	jwt, err := a.appJWT(time.Now())
 	if err != nil {
 		return "", err
 	}
 	url := fmt.Sprintf("%s/app/installations/%d/access_tokens", a.BaseURL, installationID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	// Scope the minted token down to exactly the one repository under
+	// review and to minimalReviewPermissions, rather than requesting the
+	// installation's full default-scoped grant (every repo and permission
+	// the installation has access to): a per-job token this narrow limits
+	// the blast radius of any single leaked or misused token to one repo
+	// and the few permissions this job needs. owner is the repository's
+	// account, implied by installationID itself in GitHub's API (the
+	// "repositories" field below takes bare repo names within that
+	// account), so it is not sent on the wire, but callers always know
+	// which repo they're asking for by owner/repo.
+	payload, err := json.Marshal(struct {
+		Repositories []string          `json:"repositories"`
+		Permissions  map[string]string `json:"permissions"`
+	}{
+		Repositories: []string{repo},
+		Permissions:  minimalReviewPermissions,
+	})
+	if err != nil {
+		return "", fmt.Errorf("encoding scoped token request for %s/%s: %w", owner, repo, err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Authorization", "Bearer "+jwt)
 	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Content-Type", "application/json")
 	resp, err := a.HTTP.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("minting installation token: %w", err)

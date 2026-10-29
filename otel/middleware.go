@@ -47,6 +47,7 @@ func HTTPMiddleware(tp oteltrace.TracerProvider, opts ...HTTPOption) func(http.H
 			span.SetAttributes(semconv.HTTPResponseStatusCodeKey.Int(sw.status))
 			if sw.status >= 500 {
 				span.SetAttributes(attribute.Bool("error", true))
+				span.SetStatus(codes.Error, fmt.Sprintf("HTTP %d", sw.status))
 			}
 		})
 	}
@@ -160,4 +161,12 @@ func (w *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 		return h.Hijack()
 	}
 	return nil, nil, fmt.Errorf("http.Hijacker not supported by underlying ResponseWriter")
+}
+
+// Unwrap exposes the underlying http.ResponseWriter so http.ResponseController
+// (and anything else using errors.As/Unwrap-style traversal, such as
+// net/http's internal interface checks for Flush/Hijack/SetReadDeadline
+// support) can see through this wrapper to the real ResponseWriter.
+func (w *statusWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
 }

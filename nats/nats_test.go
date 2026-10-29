@@ -3,6 +3,7 @@ package nats_test
 import (
 	"context"
 	"log/slog"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -151,4 +152,60 @@ func TestEventBus_HandlerErrorIsLogged(t *testing.T) {
 	eventbustest.RunHandlerErrorLoggingTests(t, func(logger *slog.Logger) modulex.EventBus {
 		return natsadapter.NewEventBus(conn, natsadapter.WithLogger(logger))
 	}, "test.topic.logging", 5*time.Second, time.Second)
+}
+
+// TestEventBus_RejectsSubscribeAfterClose locks in part of the fix for M7:
+// unlike the JetStream, RabbitMQ, and Watermill EventBus adapters, Subscribe
+// did not previously reject a call made after Close, so a caller could
+// register a new subscription on an already-closed bus that Close has no
+// further opportunity to wait for or clean up.
+func TestEventBus_RejectsSubscribeAfterClose(t *testing.T) {
+	s := startEmbeddedServer(t)
+
+	conn, err := nats.Connect(s.ClientURL())
+	require.NoError(t, err)
+	t.Cleanup(conn.Close)
+
+	eb := natsadapter.NewEventBus(conn)
+	require.NoError(t, eb.Close(context.Background()))
+
+	err = eb.Subscribe(context.Background(), "test.topic.after.close", func(context.Context, []byte) error { return nil })
+	assert.ErrorContains(t, err, "event bus is closed")
+}
+
+// TestEventBus_CloseWaitsForInFlightHandler locks in the other part of the
+// fix for M7: Close previously unsubscribed and returned immediately,
+// without waiting for a handler invocation already in flight to finish --
+// unlike JetStreamEventBus.Close (durableWG) and rabbitmq.EventBus.Close
+// (active/stopped), which both wait for in-flight work before returning.
+func TestEventBus_CloseWaitsForInFlightHandler(t *testing.T) {
+	s := startEmbeddedServer(t)
+
+	conn, err := nats.Connect(s.ClientURL())
+	require.NoError(t, err)
+	t.Cleanup(conn.Close)
+
+	eb := natsadapter.NewEventBus(conn)
+
+	handlerStarted := make(chan struct{})
+	var handlerFinished atomic.Bool
+	require.NoError(t, eb.Subscribe(context.Background(), "test.topic.wait", func(context.Context, []byte) error {
+		close(handlerStarted)
+		time.Sleep(200 * time.Millisecond)
+		handlerFinished.Store(true)
+		return nil
+	}))
+
+	require.NoError(t, eb.Publish(context.Background(), "test.topic.wait", []byte("payload")))
+
+	select {
+	case <-handlerStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for handler to start")
+	}
+
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer closeCancel()
+	require.NoError(t, eb.Close(closeCtx))
+	assert.True(t, handlerFinished.Load(), "Close must wait for the in-flight handler to finish before returning")
 }

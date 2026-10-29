@@ -11,6 +11,9 @@ import (
 	"github.com/mediusfy/modulex/watermill"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	oteltrace "go.opentelemetry.io/otel/trace"
 	"go.uber.org/goleak"
 )
 
@@ -193,6 +196,121 @@ func TestEventBus_SubscriptionRespectsCallerContextCancellation(t *testing.T) {
 	// report a leaked goroutine if the subscription loop ignores the
 	// cancellation.
 	cancel()
+}
+
+// TestEventBus_HandlerContextNotTiedToPublisherContext asserts that a
+// handler's context is independent of the publisher's ctx: cancelling the
+// ctx passed to Publish (e.g. because it was an HTTP request context
+// cancelled the moment its response was written) must not cause the
+// handler's ctx to observe that cancellation, since the handler may run
+// well after the publishing request completed on this in-process
+// GoChannel-backed bus.
+func TestEventBus_HandlerContextNotTiedToPublisherContext(t *testing.T) {
+	bus := watermill.NewEventBus(0, false, false)
+	defer func() { _ = bus.Close(context.Background()) }()
+
+	release := make(chan struct{})
+	handlerCtxErr := make(chan error, 1)
+	require.NoError(t, bus.Subscribe(context.Background(), "test.topic", func(ctx context.Context, _ []byte) error {
+		<-release
+		handlerCtxErr <- ctx.Err()
+		return nil
+	}))
+
+	publishCtx, publishCancel := context.WithCancel(context.Background())
+	require.NoError(t, bus.Publish(publishCtx, "test.topic", []byte("hello")))
+
+	// Simulate the publisher's own request context ending immediately after
+	// Publish returns, then only afterwards let the handler check its ctx.
+	publishCancel()
+	close(release)
+
+	select {
+	case err := <-handlerCtxErr:
+		assert.NoError(t, err, "handler ctx must not be derived from (and therefore cancelled along with) the publisher's own request context")
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler was not invoked")
+	}
+}
+
+// TestEventBus_HandlerContextCancelledByClose asserts that, unlike the
+// publisher's ctx, the handler's ctx is tied to its own subscription's
+// lifetime: cancelling that subscription via EventBus.Close must cancel the
+// in-flight handler's ctx.
+func TestEventBus_HandlerContextCancelledByClose(t *testing.T) {
+	bus := watermill.NewEventBus(0, false, false)
+
+	handlerStarted := make(chan struct{})
+	handlerCtxDone := make(chan struct{})
+	require.NoError(t, bus.Subscribe(context.Background(), "test.topic", func(ctx context.Context, _ []byte) error {
+		close(handlerStarted)
+		<-ctx.Done()
+		close(handlerCtxDone)
+		return ctx.Err()
+	}))
+
+	require.NoError(t, bus.Publish(context.Background(), "test.topic", []byte("hello")))
+
+	select {
+	case <-handlerStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler was not invoked")
+	}
+
+	closeDone := make(chan struct{})
+	go func() {
+		_ = bus.Close(context.Background())
+		close(closeDone)
+	}()
+
+	select {
+	case <-handlerCtxDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler ctx was not cancelled by Close")
+	}
+
+	select {
+	case <-closeDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not return after the handler observed cancellation")
+	}
+}
+
+// TestEventBus_PropagatesTraceContextViaMetadataNotCtx asserts that trace
+// context is carried from Publish to the handler via the message's
+// Metadata (the same mechanism the NATS/RabbitMQ adapters use via headers),
+// rather than by attaching the publisher's live ctx to the message.
+func TestEventBus_PropagatesTraceContextViaMetadataNotCtx(t *testing.T) {
+	prevPropagator := otel.GetTextMapPropagator()
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	t.Cleanup(func() { otel.SetTextMapPropagator(prevPropagator) })
+
+	bus := watermill.NewEventBus(0, false, false)
+	defer func() { _ = bus.Close(context.Background()) }()
+
+	wantSpanCtx := oteltrace.NewSpanContext(oteltrace.SpanContextConfig{
+		TraceID:    oteltrace.TraceID{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+		SpanID:     oteltrace.SpanID{1, 2, 3, 4, 5, 6, 7, 8},
+		TraceFlags: oteltrace.FlagsSampled,
+		Remote:     true,
+	})
+	publishCtx := oteltrace.ContextWithSpanContext(context.Background(), wantSpanCtx)
+
+	gotSpanCtx := make(chan oteltrace.SpanContext, 1)
+	require.NoError(t, bus.Subscribe(context.Background(), "test.topic", func(ctx context.Context, _ []byte) error {
+		gotSpanCtx <- oteltrace.SpanContextFromContext(ctx)
+		return nil
+	}))
+
+	require.NoError(t, bus.Publish(publishCtx, "test.topic", []byte("hello")))
+
+	select {
+	case got := <-gotSpanCtx:
+		assert.Equal(t, wantSpanCtx.TraceID(), got.TraceID(), "trace ID should propagate to the handler via message metadata")
+		assert.Equal(t, wantSpanCtx.SpanID(), got.SpanID(), "span ID should propagate to the handler via message metadata")
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler was not invoked")
+	}
 }
 
 func TestEventBus_CloseWithManyConcurrentSubscriptions(t *testing.T) {
