@@ -53,8 +53,8 @@ implementation, so the full pipeline is table-tested without GCP:
 |---|---|---|
 | `webhook` | HMAC verify + event parsing | pure |
 | `receiver` | webhook HTTP handler | pure over interfaces |
-| `store` | lease state machine, dedup, ledger | Firestore |
-| `queue` | task hand-off | Cloud Tasks |
+| `store` | lease state machine, dedup, ledger | Firestore or Postgres |
+| `queue` | task hand-off | Cloud Tasks or NATS JetStream |
 | `worker` | job orchestration | pure over interfaces |
 | `engine` | review engine + checkout | modulex packages + git |
 | `ai` | caller-keyed commentary | Anthropic Go SDK |
@@ -103,3 +103,32 @@ Build images from the repository root:
 docker build -f services/prreview/Dockerfile --target receiver -t <registry>/prreview-receiver .
 docker build -f services/prreview/Dockerfile --target worker   -t <registry>/prreview-worker .
 ```
+
+## Self-hosted backends (Postgres + NATS)
+
+The default deployment is the GCP one above. For a self-hosted cluster
+(for example k3s) the job store and task queue can be swapped independently
+of each other; both binaries select them from the environment:
+
+| Variable | Applies to | Meaning |
+|---|---|---|
+| `STORE_BACKEND` | receiver, worker | `firestore` (default) or `postgres` |
+| `POSTGRES_DSN` | receiver, worker | Postgres connection string; required when `STORE_BACKEND=postgres` |
+| `QUEUE_BACKEND` | receiver, worker | `cloudtasks` (default) or `nats` |
+| `NATS_URL` | receiver, worker | NATS server URL (default `nats://127.0.0.1:4222`) |
+| `NATS_STREAM` | receiver, worker | JetStream stream name (default `PRREVIEW_REVIEWS`); created if absent |
+| `NATS_CONSUMER` | worker | durable consumer name (default `prreview-worker`) |
+| `NATS_WORKER_CONCURRENCY` | worker | competing pull loops (default `5`) |
+
+Notes:
+
+- Apply `store/migrations/001_init_schema.sql` to the Postgres database
+  before the first start. Dedup rows are never pruned automatically (expired
+  rows are ignored by `Seen`); vacuum `prreview_dedup` on whatever schedule
+  suits you.
+- With `QUEUE_BACKEND=nats` the worker pulls tasks from JetStream instead of
+  receiving Cloud Tasks pushes; it still serves `/health` on `PORT`. Delivery
+  is retried up to 8 times with backoff; a malformed task is dropped, not
+  retried. Per-PR serialization still comes from the store lease.
+- `GOOGLE_CLOUD_PROJECT` is still required by the worker for per-installation
+  AI config in Secret Manager, whichever backends are selected.
