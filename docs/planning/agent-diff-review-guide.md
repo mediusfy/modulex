@@ -222,8 +222,18 @@ fails, the exception does not apply. Every other `protectedPaths` entry
 keeps plain "any change is a hit" matching.
 
 `review.Review`'s `protectedPaths` is `[]string`, not a `contract.Contract`
-— the caller (`tools/mcpserver`'s `review_diff`) reads `modulex.agent.yaml`
-and extracts `ProtectedPaths` itself before calling `Review`.
+— the caller obtains it (`tools/mcpserver`'s `review_diff`, `tools/agentcli`
+and the hosted PR-review engine all use
+`review.LoadProtectedPathsAtRef(ctx, dir, baseRef)`) before calling `Review`.
+
+Callers must read the contract **at `baseRef`**, not from the working tree
+under review: a change that both touches a protected path and removes it
+from `protected_paths` (or deletes `modulex.agent.yaml`) would otherwise
+disarm its own check. `LoadProtectedPathsAtRef` reads
+`git show <baseRef>:modulex.agent.yaml`, always adds `modulex.agent.yaml`
+itself to the list, returns a nil slice and no error if the contract does not
+exist at `baseRef` (nothing declared yet), and wraps `ErrContractUnparseable`
+if it exists but does not parse. An unresolvable `baseRef` is a plain error.
 
 ## The boundary/compatibility/changelog checks
 
@@ -263,12 +273,11 @@ if err != nil {
     return err
 }
 
-var protectedPaths []string
-if data, err := os.ReadFile("modulex.agent.yaml"); err == nil {
-    var c contract.Contract
-    if yaml.Unmarshal(data, &c) == nil {
-        protectedPaths = c.ProtectedPaths
-    }
+// Read the contract as of the base ref, never the working tree under
+// review, so the change being reviewed cannot edit the policy that judges it.
+protectedPaths, err := review.LoadProtectedPathsAtRef(ctx, ".", "origin/main")
+if err != nil {
+    return err // unresolvable ref or unparseable contract: fail closed
 }
 
 results := review.Review(ctx, ".", "origin/main", "HEAD", repo.Tools, false /* allowNetwork */, protectedPaths)

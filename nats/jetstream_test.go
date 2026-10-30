@@ -904,3 +904,61 @@ func TestJetStreamEventBus_SubscribeDurable_ConsumerSurvivesClose(t *testing.T) 
 	case <-time.After(500 * time.Millisecond):
 	}
 }
+
+// TestJetStreamEventBus_SubscribeDurable_ReplayPolicyChangeOnExistingConsumer
+// pins the behavior when a durable consumer already exists and a later
+// SubscribeDurable call requests a different replay policy: JetStream does
+// not allow a consumer's deliver policy to change after creation, so the
+// existing consumer must keep working under its original policy instead of
+// SubscribeDurable failing the whole subscription.
+func TestJetStreamEventBus_SubscribeDurable_ReplayPolicyChangeOnExistingConsumer(t *testing.T) {
+	tests := []struct {
+		name     string
+		first    modulex.ReplayPolicy
+		second   modulex.ReplayPolicy
+		consumer string
+	}{
+		{"ReplayAll then ReplayNew", modulex.ReplayAll, modulex.ReplayNew, "replay-change-all-new"},
+		{"ReplayNew then ReplayAll", modulex.ReplayNew, modulex.ReplayAll, "replay-change-new-all"},
+	}
+
+	s := startJetStreamEmbeddedServer(t)
+	conn, err := nats.Connect(s.ClientURL())
+	require.NoError(t, err)
+	t.Cleanup(conn.Close)
+	js, err := conn.JetStream()
+	require.NoError(t, err)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			eb := natsadapter.NewJetStreamEventBus(js,
+				natsadapter.WithDurableFetchWait(150*time.Millisecond),
+			)
+			t.Cleanup(func() { _ = eb.Close(context.Background()) })
+			topic := durableTestSubject(t, js)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			received := make(chan modulex.DurableMessage, 10)
+			require.NoError(t, eb.SubscribeDurable(ctx, topic, sequencedDurableHandler(nil, received),
+				modulex.WithConsumerName(tt.consumer), modulex.WithReplayPolicy(tt.first)))
+			require.NoError(t, eb.Close(context.Background()))
+
+			eb2 := natsadapter.NewJetStreamEventBus(js,
+				natsadapter.WithDurableFetchWait(150*time.Millisecond),
+			)
+			t.Cleanup(func() { _ = eb2.Close(context.Background()) })
+			require.NoError(t, eb2.SubscribeDurable(ctx, topic, sequencedDurableHandler(nil, received),
+				modulex.WithConsumerName(tt.consumer), modulex.WithReplayPolicy(tt.second)),
+				"re-subscribing with a different replay policy must not fail")
+
+			require.NoError(t, eb2.Publish(context.Background(), topic, []byte("after")))
+			select {
+			case msg := <-received:
+				assert.Equal(t, []byte("after"), msg.Payload)
+			case <-time.After(5 * time.Second):
+				t.Fatal("timed out waiting for message on re-subscribed consumer")
+			}
+		})
+	}
+}

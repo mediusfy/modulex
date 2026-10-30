@@ -196,7 +196,7 @@ caller applying to a real, possibly-dirty worktree should always set it —
 
 ```go
 // Undo a previously successful Apply call, any time later.
-if err := patchapply.Rollback(targetDir, journal); err != nil {
+if err := patchapply.Rollback(targetDir, journal, patchapply.RollbackOptions{}); err != nil {
     log.Fatal(err)
 }
 
@@ -210,7 +210,15 @@ if err := patchapply.Verify(targetDir, journal); err != nil {
 bytes (for a file that existed before `Apply`) or removes it entirely,
 including any directory chain `Apply` itself created for it (for a file
 that did not exist before `Apply` — it is deleted, never left behind as an
-empty file). `Verify` re-reads every journaled file and reports, per file,
+empty file). Those deletions are approval-gated like `Apply`'s own
+`Delete: true`: if the journal contains any entry that did not exist before
+`Apply`, `Rollback` requires `RollbackOptions.Broker` with a grant for
+`patchapply.BatchScope(action, paths)` (pass the grant's `Token` for
+deterministic consumption) and otherwise deletes nothing and returns an
+error. Restoring an existing file's original bytes is never gated. `Apply`
+likewise derives the scope's `Resource` from the batch itself rather than
+trusting `ApplyOptions.Scope.Resource`, and preserves an existing file's
+permission mode (new files get 0644). `Verify` re-reads every journaled file and reports, per file,
 any difference from the journal's recorded pre-`Apply` state — useful both
 right after a `Rollback` (should report nothing) and later, to detect
 drift that happened after a rollback.
@@ -338,7 +346,7 @@ func main() {
     fmt.Println("rejected as expected:", err) // ErrPriorContentMismatch
 
     // 3. Roll back the FIRST (successful) apply, and confirm it worked.
-    if err := patchapply.Rollback(targetDir, journal); err != nil {
+    if err := patchapply.Rollback(targetDir, journal, patchapply.RollbackOptions{}); err != nil {
         log.Fatal(err)
     }
     if err := patchapply.Verify(targetDir, journal); err != nil {

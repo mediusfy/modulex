@@ -81,24 +81,35 @@ Errors from the failed init and from rollback stops are joined.
 1. Verify the manager is in the `initialized` state.
 2. Call `Start` on each module that implements `modulex.Starter` in
    topological order.
-3. If any module fails, stop modules that already started (and implement
-   `modulex.Stopper`) in reverse order.
+3. If any module fails, stop modules that already started, plus the module
+   whose own `Start` failed (it may have partially acquired a resource), for
+   those that implement `modulex.Stopper`, in reverse order.
 
 ### Rollback on start failure
 
-If `module-b` fails to start after `module-a` succeeded, `module-a.Stop` runs
-before the error is returned. The original start error and any rollback stop
-errors are joined.
+If `module-b` fails to start after `module-a` succeeded, `module-b.Stop` and
+then `module-a.Stop` run before the error is returned. `module-b` is stopped
+because a failed `Start` may have partially acquired a resource (a listener,
+a goroutine), so `Stop` must tolerate being called on a module whose `Start`
+did not complete. The original start error and any rollback stop errors are
+joined.
 
-Modules that were never reached are not started and are not stopped.
+Modules that were never reached are not started and are not stopped. If the
+phase was cancelled before a module was attempted, that module is not
+stopped either.
 
 ## Shutdown
 
 `StopModules` performs these steps:
 
 1. Cancel and await supervised background tasks.
-2. Call `Stop` on each started module that implements `modulex.Stopper` in
-   reverse topological order.
+2. Call `Stop` on each initialized module that implements
+   `modulex.Stopper` in reverse topological order. This includes modules that
+   were initialized but never started (shutdown from the `initialized`
+   state), so `Stop` must tolerate a module whose `Start` never ran. Every
+   module still gets its `Stop` call even if the caller's context has already
+   expired; the expired context is passed through and the timeout is
+   reported in the returned error.
 3. Close the configured `EventBus`.
 
 The `EventBus` is closed last so that a module's `Stop` can still publish or

@@ -53,8 +53,11 @@ if err != nil {
   `nats` and `rabbitmq` adapters use for message headers. **The composition
   root must call `otel.SetTextMapPropagator(...)` at startup** (e.g.
   `propagation.TraceContext{}`); the global default is a no-op.
-- `UnaryServerErrorInterceptor` maps domain errors to `status.Error` using a
-  caller-supplied `ErrorMapping`; `TranslateError` converts a client-received
+- `UnaryServerErrorInterceptor(mapping, opts...)` maps domain errors to
+  `status.Error` using a caller-supplied `ErrorMapping`. For
+  `codes.Internal` and `codes.Unknown` the client receives a generic
+  `"internal error"` message (the real error is logged; see
+  `WithServerErrorLogger`) unless `WithExposeInternalErrors()` is set; `TranslateError` converts a client-received
   status error back into one of this package's sentinel errors
   (`ErrNotFound`, `ErrInvalidInput`, etc.) for use with `errors.Is`.
 - `HealthServer` implements `grpc_health_v1.HealthServer` by evaluating a

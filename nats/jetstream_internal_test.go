@@ -26,7 +26,7 @@ func TestIsTerminalFetchError(t *testing.T) {
 		{"consumer deleted is terminal", nats.ErrConsumerDeleted, true},
 		{"bad subscription is terminal", nats.ErrBadSubscription, true},
 		{"subscription closed is terminal", nats.ErrSubscriptionClosed, true},
-		{"no responders is terminal (deleted consumer's Fetch API subject)", nats.ErrNoResponders, true},
+		{"no responders is not terminal (transient leader election must not end the subscription)", nats.ErrNoResponders, false},
 		{"wrapped connection closed is terminal", fmt.Errorf("fetch failed: %w", nats.ErrConnectionClosed), true},
 		{"literal consumer not found string is terminal", errors.New("consumer not found"), true},
 		{"literal consumer deleted string is terminal", errors.New("consumer deleted"), true},

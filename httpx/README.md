@@ -39,8 +39,11 @@ if err != nil {
   deadline or a 5-second default when the request carries none. It responds
   `200 {"status":"ok","checks":{...}}` if every check passes, or
   `503 {"status":"unhealthy","checks":{...}}` if any fail. Every registered
-  check appears in `checks`, with `"ok"` for passes and the check's error
-  message for failures.
+  check appears in `checks`, with `"ok"` for passes and `"failed"` for
+  failures. The check's real error (or recovered panic value) is logged via
+  the `WithHandlerLogger` logger (default `slog.Default()`); pass
+  `WithDetailedErrors()` to put it in the response body instead, only for
+  endpoints not reachable by untrusted callers.
 - `ReadinessHandler(p modulex.ReadinessProvider)` behaves identically, sourced
   from `ReadinessChecks()` instead, using `"ready"` / `"not-ready"` in place
   of `"ok"` / `"unhealthy"`.
