@@ -7,8 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-This release contains breaking API changes and behavior changes, so it must
-be tagged as a minor version (v0.12.0), not a patch.
+## [0.12.0] - 2026-11-01
+
+This release contains breaking API changes and behavior changes, so it is
+tagged as a minor version (v0.12.0), not a patch.
 
 ### Added
 
@@ -83,6 +85,9 @@ be tagged as a minor version (v0.12.0), not a patch.
 - `scripts/check-api-compat.sh` now covers every public package (it
   previously skipped `contract`, `review`, `discovery`, `approval`, `grpc`,
   `httpx`, `patchapply` and others, which hid the breaking changes above).
+- Dependency bumps: `github.com/nats-io/nats.go` to `v1.55.0`,
+  `github.com/nats-io/nats-server/v2` to `v2.15.2`, and
+  `google.golang.org/grpc` to `v1.85.0`.
 
 ### Fixed
 
@@ -1612,7 +1617,8 @@ Initial v0 prerelease.
   service locator, and pluggable event-bus adapters (Chi, NATS, RabbitMQ,
   Watermill, OpenTelemetry).
 
-[Unreleased]: https://github.com/mediusfy/modulex/compare/v0.11.2...HEAD
+[Unreleased]: https://github.com/mediusfy/modulex/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/mediusfy/modulex/compare/v0.11.2...v0.12.0
 [0.11.2]: https://github.com/mediusfy/modulex/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/mediusfy/modulex/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/mediusfy/modulex/compare/v0.10.2...v0.11.0
