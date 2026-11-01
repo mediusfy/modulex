@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-11-01
+
+### Fixed
+
+- `nats`: when a durable consumer is deleted between `sub.Fetch` polls, its
+  `$JS.API.CONSUMER.MSG.NEXT.<stream>.<consumer>` subject returns
+  `nats.ErrNoResponders` rather than `nats.ErrConsumerDeleted` (which broke
+  `TestJetStreamEventBus_SubscribeDurable_FetchTerminalErrorStopsLoopPromptly`
+  and the `v0.12.0` release workflow after #212 stopped treating
+  `nats.ErrNoResponders` as unconditionally terminal). `durableConsumeLoop`
+  now probes `ConsumerInfo` on `nats.ErrNoResponders` and exits only when the
+  server confirms `nats.ErrConsumerNotFound` or `nats.ErrStreamNotFound`,
+  while still backing off and retrying through transient JetStream RAFT leader
+  elections.
+- `modtest`: `AssertRespectsCancellation` and `AssertRespectsDeadline` now
+  signal phase completion via `chan struct{}` instead of discarding an
+  `error` receive on `chan error`, fixing `golangci-lint` (`errcheck`) on
+  v2.15+.
+
 ## [0.12.0] - 2026-11-01
 
 This release contains breaking API changes and behavior changes, so it is
@@ -1617,7 +1636,8 @@ Initial v0 prerelease.
   service locator, and pluggable event-bus adapters (Chi, NATS, RabbitMQ,
   Watermill, OpenTelemetry).
 
-[Unreleased]: https://github.com/mediusfy/modulex/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/mediusfy/modulex/compare/v0.12.1...HEAD
+[0.12.1]: https://github.com/mediusfy/modulex/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/mediusfy/modulex/compare/v0.11.2...v0.12.0
 [0.11.2]: https://github.com/mediusfy/modulex/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/mediusfy/modulex/compare/v0.11.0...v0.11.1
