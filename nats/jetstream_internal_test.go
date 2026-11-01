@@ -1,6 +1,7 @@
 package nats
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -76,4 +77,49 @@ func TestJetStreamEventBus_NakDelay(t *testing.T) {
 	// A very large delivery count must still cap at maxDurableNakDelay,
 	// rather than overflowing time.Duration via repeated doubling.
 	assert.Equal(t, maxDurableNakDelay, j.nakDelay(1000))
+}
+
+type stubConsumerInfoJS struct {
+	nats.JetStreamContext
+	err error
+}
+
+func (s stubConsumerInfoJS) ConsumerInfo(_ string, _ string, _ ...nats.JSOpt) (*nats.ConsumerInfo, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return &nats.ConsumerInfo{}, nil
+}
+
+// TestJetStreamEventBus_IsDurableConsumerGone verifies how durableConsumeLoop
+// disambiguates nats.ErrNoResponders from sub.Fetch: only an explicit
+// ErrConsumerNotFound or ErrStreamNotFound from ConsumerInfo is treated as
+// terminal (consumer deleted), whereas a live consumer or a transient lookup
+// failure (such as another ErrNoResponders or timeout during a JetStream RAFT
+// leader election) returns false so the consume loop backs off and retries.
+func TestJetStreamEventBus_IsDurableConsumerGone(t *testing.T) {
+	tests := []struct {
+		name string
+		js   nats.JetStreamContext
+		str  string
+		want bool
+	}{
+		{"nil JetStreamContext is not terminal", nil, "EVENTS", false},
+		{"empty stream is not terminal", stubConsumerInfoJS{err: nats.ErrConsumerNotFound}, "", false},
+		{"consumer still exists is not terminal", stubConsumerInfoJS{err: nil}, "EVENTS", false},
+		{"consumer not found is terminal", stubConsumerInfoJS{err: nats.ErrConsumerNotFound}, "EVENTS", true},
+		{"stream not found is terminal", stubConsumerInfoJS{err: nats.ErrStreamNotFound}, "EVENTS", true},
+		{"no responders during leader election is not terminal", stubConsumerInfoJS{err: nats.ErrNoResponders}, "EVENTS", false},
+		{"timeout during leader election is not terminal", stubConsumerInfoJS{err: nats.ErrTimeout}, "EVENTS", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			j := &JetStreamEventBus{
+				js:               tt.js,
+				durableFetchWait: 100 * time.Millisecond,
+			}
+			assert.Equal(t, tt.want, j.isDurableConsumerGone(context.Background(), tt.str, "c1"))
+		})
+	}
 }

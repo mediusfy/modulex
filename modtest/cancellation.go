@@ -122,9 +122,10 @@ func AssertRespectsCancellation(t TB, mod modulex.Module, phase Phase, grace tim
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	done := make(chan error, 1)
+	done := make(chan struct{})
 	go func() {
-		done <- invokePhase(mod, phase, ctx, reg)
+		defer close(done)
+		_ = invokePhase(mod, phase, ctx, reg)
 	}()
 
 	cancel()
@@ -158,9 +159,10 @@ func AssertRespectsDeadline(t TB, mod modulex.Module, phase Phase, deadline, gra
 	ctx, cancel := context.WithTimeout(context.Background(), deadline)
 	defer cancel()
 
-	done := make(chan error, 1)
+	done := make(chan struct{})
 	go func() {
-		done <- invokePhase(mod, phase, ctx, reg)
+		defer close(done)
+		_ = invokePhase(mod, phase, ctx, reg)
 	}()
 
 	select {
