@@ -116,8 +116,13 @@ checking its own domain sentinel errors:
 type ErrorMapping func(err error) codes.Code
 ```
 
-- **Server side**: `UnaryServerErrorInterceptor(mapping)` converts a non-nil
-  error returned by a handler into `status.Error(mapping(err), err.Error())`.
+- **Server side**: `UnaryServerErrorInterceptor(mapping, opts...)` converts a
+  non-nil error returned by a handler into `status.Error(mapping(err),
+  err.Error())`, except that for `codes.Internal` and `codes.Unknown` (the
+  usual catch-all, where wrapped driver errors end up) the message sent to
+  the caller is the generic `"internal error"` and the real error is logged.
+  `WithExposeInternalErrors()` restores the real message; use it only for
+  trusted callers.
   An error that already carries a gRPC status (e.g. one passed straight
   through from a nested gRPC call) is left unchanged. `ServerOptions(mapping)`
   bundles this together with the trace interceptors into one

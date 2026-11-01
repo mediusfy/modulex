@@ -152,6 +152,10 @@ isolated and durable:
   SQL**: Cloud SQL bills an always-on instance and cannot scale to zero, which
   would defeat the requirement. The only non-zero idle costs are fixed cents —
   the container image in Artifact Registry and Firestore storage at rest.
+  (Update, #208: the store and queue are now pluggable. `STORE_BACKEND=postgres`
+  and `QUEUE_BACKEND=nats` select a self-hosted Postgres and NATS JetStream
+  for operators who run those anyway; the hosted default and its scale-to-zero
+  properties are unchanged. See `services/prreview/README.md`.)
 
 - **Fast ack, async work.** The Cloud Run receiver verifies the webhook HMAC
   (`X-Hub-Signature-256`), deduplicates on the GitHub delivery ID (dedup

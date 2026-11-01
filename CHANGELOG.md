@@ -7,6 +7,110 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+This release contains breaking API changes and behavior changes, so it must
+be tagged as a minor version (v0.12.0), not a patch.
+
+### Added
+
+- `modulex.ErrTaskHandleNotStarted`: `TaskHandle.Wait` on a zero-value
+  handle returns it instead of blocking forever.
+- `rabbitmq.WithPublisherConfirms`: opt-in publisher-confirm mode; `Publish`
+  waits for the broker's ack/nack instead of returning once the message is
+  written to the socket.
+- `contract.Unmarshal`, `review.LoadProtectedPathsAtRef` and
+  `review.ErrContractUnparseable`: read the protected-path policy as of a git
+  ref.
+- `grpc.ServerErrorInterceptorOption` with `WithExposeInternalErrors` and
+  `WithServerErrorLogger`; `httpx.HandlerOption` with `WithDetailedErrors`
+  and `WithHandlerLogger`.
+- `patchapply.BatchScope`, `patchapply.RollbackOptions`,
+  `ApplyOptions.Token` and `JournalEntry.OriginalMode`.
+- `discovery.ClassificationRule.RejectArgs`.
+- Hosted PR-review service: opt-in self-hosted backends,
+  `STORE_BACKEND=postgres` (with `POSTGRES_DSN`; schema in
+  `store/migrations/001_init_schema.sql`) and `QUEUE_BACKEND=nats` (NATS
+  JetStream). The Firestore and Cloud Tasks defaults are unchanged.
+
+### Changed
+
+- **Breaking (API):** `grpc.UnaryServerErrorInterceptor` now takes
+  `(ErrorMapping, ...ServerErrorInterceptorOption)`; `httpx.HealthHandler`
+  and `httpx.ReadinessHandler` now take a trailing `...HandlerOption`.
+  Existing calls compile, but code that assigns these functions to a
+  variable of the old func type does not.
+- **Breaking (API):** `patchapply.Rollback` takes a third `RollbackOptions`
+  argument. Its deletions (removing files `Apply` created) are now
+  approval-gated like `Apply`'s `Delete: true`: with a nil `Broker` and any
+  such entry it deletes nothing and returns an error.
+- **Breaking (API):** `discovery.ClassificationRule` is no longer comparable
+  (new `RejectArgs` func field).
+- **Breaking (behavior):** `grpc.UnaryServerErrorInterceptor` sends the
+  generic message `internal error` for `codes.Internal` and `codes.Unknown`
+  and logs the real error; `httpx` health/readiness responses report
+  `"failed"` for a failing check instead of its error text. Use
+  `WithExposeInternalErrors` / `WithDetailedErrors` to restore the old
+  output for trusted callers.
+- `grpc.HealthServer` runs its checks concurrently (each still under the
+  5-second timeout); a nil check or a panicking check counts as unhealthy.
+- **Breaking (behavior):** `review.ScanSecrets` only honors the suppression
+  marker in the form `// nosecret: <reason>` (a non-empty reason is
+  required); a bare `nosecret` substring, a `# nosecret` comment or a marker
+  without a reason no longer suppresses a finding. It also now consumes diff
+  hunks by their header counts instead of re-matching each line's prefix.
+- `Manager.StopModules` now calls `Stop` on every initialized module
+  (including ones whose `Start` never ran) and keeps stopping the rest after
+  the caller's context expires; a failed `StartModules` rollback also stops
+  the module whose own `Start` failed. `Stop` implementations must tolerate
+  being called on a module that never started or whose `Start` failed.
+- `app.Run`: `WithSetup` and module registration now run under the
+  early-exit cleanup, so `WithPostStop` hooks run if they fail, and signals
+  revert to their default behavior once shutdown begins so a second
+  SIGINT/SIGTERM can force an exit.
+- `patchapply.Apply` derives the approval scope's `Resource` from the batch
+  itself (`BatchScope`) instead of trusting the caller's value, preserves an
+  existing file's permission mode, and creates new files as 0644.
+- `approval.Broker` prunes expired and used grants, and `Check` without a
+  token consumes the earliest matching grant instead of an arbitrary one.
+- `nats.JetStreamEventBus.SubscribeDurable` creates the durable consumer
+  itself, so it survives `Close` and restarts as documented; a `Nack` backs
+  off exponentially via `NakWithDelay` and the delivery that reaches
+  `WithDurableMaxDeliver` is dead-lettered; fetch errors back off up to 30s.
+  `nats.EventBus.Close` waits for in-flight handlers and `Subscribe` fails
+  after `Close`.
+- `rabbitmq` handler contexts are no longer derived from the subscription's
+  context (cancelled only by `Close`); `watermill.Publish` no longer
+  propagates the publisher's context to handlers (trace context only).
+- `scripts/check-api-compat.sh` now covers every public package (it
+  previously skipped `contract`, `review`, `discovery`, `approval`, `grpc`,
+  `httpx`, `patchapply` and others, which hid the breaking changes above).
+
+### Fixed
+
+- Protected-path enforcement in `review`/`tools/mcpserver`/`tools/agentcli`
+  and the hosted engine reads `modulex.agent.yaml` at the base ref and always
+  protects the policy file itself, so a PR can no longer remove a path from
+  `protected_paths` (or delete the contract) in the same change that touches
+  it.
+- `discovery.ClassifyCommand`: option smuggling no longer classifies
+  `git diff --output=FILE`, `--ext-diff`, `-c` or `make build -f x.mk` as
+  safe.
+- `nats.JetStreamEventBus.SubscribeDurable` no longer fails when an existing
+  durable consumer was created with a different `Replay` policy (JetStream
+  cannot change it); the existing policy is kept and a warning is logged.
+- The durable consume loop no longer exits permanently on
+  `nats.ErrNoResponders`, which a JetStream leader election produces
+  transiently.
+- `review` pins `LC_ALL=C` for its git calls so detecting a missing contract
+  does not depend on git's locale.
+- `Manager.ExportDAG`/`ModuleContract` normalize `DependsOn` whitespace and
+  empty entries; `Manager.Diagnostics` keeps reporting still-running tasks
+  after a shutdown timeout; `workerpool.Handle.Wait` is idempotent.
+- `otel`: OTLP endpoints with a path (`http://host:4318/v1`) are split into
+  host and path instead of being passed whole as the host.
+- Documentation (lifecycle guide, ADR-0033, ADR-0035, diff-review,
+  discovery, atomic-patch, approval-broker, gRPC and httpx guides, README)
+  updated to match the behavior above.
+
 ## [0.11.2] - 2026-10-25
 
 No code or dependency changes; this release exercises the fixed release

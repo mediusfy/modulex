@@ -608,9 +608,13 @@ if err != nil {
   concurrently, each bounded by the caller's request deadline (or a 5-second
   default), and respond with a JSON body listing every check by name:
   `{"status":"ok","checks":{"db-ping":"ok"}}` (200) or
-  `{"status":"unhealthy","checks":{"db-ping":"connection refused"}}` (503).
+  `{"status":"unhealthy","checks":{"db-ping":"failed"}}` (503).
   `ReadinessHandler` uses `"ready"` / `"not-ready"` in place of `"ok"` /
-  `"unhealthy"`.
+  `"unhealthy"`. A failing check's real error is logged server-side and the
+  response says only `"failed"`, because these endpoints are usually
+  reachable by unauthenticated callers; pass `httpx.WithDetailedErrors()` to
+  include the real text and `httpx.WithHandlerLogger(l)` to choose the
+  logger.
 - `httpx.Serve` spawns `server.ListenAndServe()` as a supervised task via
   `modulex.TaskSpawner.Go` and shuts the server down gracefully with the
   given timeout when either the passed context or the manager's own

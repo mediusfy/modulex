@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path"
 	"regexp"
@@ -47,6 +48,9 @@ func gitOutput(ctx context.Context, dir string, args ...string) (string, error) 
 
 	var stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, gitPath, fullArgs...)
+	// Pin git's locale: callers (LoadProtectedPathsAtRef) match substrings
+	// of git's English stderr text, which a translated git would change.
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
@@ -120,7 +124,8 @@ var ErrContractUnparseable = errors.New("contract is present but unparseable")
 //
 // A missing contract at ref (a new repository, or a contract first added
 // by the very change under review) is a normal "none declared yet"
-// outcome: err is nil and only contract.FileName itself comes back. Any
+// outcome: err is nil and a nil slice comes back (nothing is declared, and
+// there is no existing policy yet for contract.FileName to self-protect). Any
 // other git failure (ref does not resolve, dir is not a repository, ...)
 // is a real error that the caller must surface as StatusUnavailable, not
 // silently treat as "nothing protected."

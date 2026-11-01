@@ -320,7 +320,8 @@ func (j *JetStreamEventBus) SubscribeDurable(ctx context.Context, topic string, 
 	// PullSubscribe create the consumer would therefore delete it (and its
 	// acked position) on every graceful Close, undoing the
 	// "resumes ... across process restarts" guarantee documented above.
-	if err := j.ensureDurableConsumer(ctx, topic, o.ConsumerName, deliverPolicy); err != nil {
+	deliverPolicy, err := j.ensureDurableConsumer(ctx, topic, o.ConsumerName, deliverPolicy)
+	if err != nil {
 		return fmt.Errorf("failed to create durable consumer %q for %q: %w", o.ConsumerName, topic, err)
 	}
 
@@ -333,10 +334,12 @@ func (j *JetStreamEventBus) SubscribeDurable(ctx context.Context, topic string, 
 		nats.MaxDeliver(j.durableMaxDeliver),
 		nats.AckWait(j.durableAckWait),
 	}
-	switch o.Replay {
-	case modulex.ReplayNew:
+	// Use the policy the consumer actually has (which may differ from the
+	// requested Replay; see ensureDurableConsumer), since PullSubscribe
+	// rejects a config that disagrees with the existing consumer.
+	if deliverPolicy == nats.DeliverNewPolicy {
 		subOpts = append(subOpts, nats.DeliverNew())
-	default:
+	} else {
 		subOpts = append(subOpts, nats.DeliverAll())
 	}
 
@@ -378,13 +381,17 @@ func (j *JetStreamEventBus) SubscribeDurable(ctx context.Context, topic string, 
 // below finds it already present and attaches to it instead, so nats.go
 // never marks it for deletion.
 //
+// It returns the deliver policy the consumer actually has, which is the
+// requested one unless a consumer already exists with a different policy
+// (JetStream cannot change that after creation); callers must pass the
+// returned policy to PullSubscribe.
 // The existing consumer's config is looked up via ConsumerInfo first, and
 // UpdateConsumer is only called when it actually differs from the desired
 // config: on the common restart path (same deploy, same durable options),
 // this avoids an UpdateConsumer call whose effect on live delivery/ack
 // counters for an unchanged config isn't guaranteed by the nats-server API
 // contract.
-func (j *JetStreamEventBus) ensureDurableConsumer(ctx context.Context, topic, consumerName string, deliverPolicy nats.DeliverPolicy) error {
+func (j *JetStreamEventBus) ensureDurableConsumer(ctx context.Context, topic, consumerName string, deliverPolicy nats.DeliverPolicy) (nats.DeliverPolicy, error) {
 	cfg := &nats.ConsumerConfig{
 		Durable:       consumerName,
 		FilterSubject: topic,
@@ -396,22 +403,39 @@ func (j *JetStreamEventBus) ensureDurableConsumer(ctx context.Context, topic, co
 
 	stream, err := j.js.StreamNameBySubject(topic, nats.Context(ctx))
 	if err != nil {
-		return fmt.Errorf("failed to resolve stream for subject %q: %w", topic, err)
+		return deliverPolicy, fmt.Errorf("failed to resolve stream for subject %q: %w", topic, err)
 	}
 
 	info, err := j.js.ConsumerInfo(stream, consumerName, nats.Context(ctx))
 	if err != nil {
 		if !errors.Is(err, nats.ErrConsumerNotFound) {
-			return fmt.Errorf("failed to look up durable consumer %q on stream %q: %w", consumerName, stream, err)
+			return deliverPolicy, fmt.Errorf("failed to look up durable consumer %q on stream %q: %w", consumerName, stream, err)
 		}
 		if _, err := j.js.AddConsumer(stream, cfg, nats.Context(ctx)); err != nil {
-			return fmt.Errorf("failed to create durable consumer %q on stream %q: %w", consumerName, stream, err)
+			return deliverPolicy, fmt.Errorf("failed to create durable consumer %q on stream %q: %w", consumerName, stream, err)
 		}
-		return nil
+		return deliverPolicy, nil
+	}
+
+	// JetStream rejects any change to a live consumer's deliver policy
+	// ("deliver policy can not be updated"), so a Replay option that differs
+	// from how the consumer was first created cannot take effect. Keep the
+	// existing policy (and its start position) and warn, rather than
+	// failing the whole subscription on a redeploy that changed Replay.
+	if info.Config.DeliverPolicy != cfg.DeliverPolicy {
+		j.logger.WarnContext(ctx, "durable consumer exists with a different deliver policy; keeping the existing one (JetStream cannot change it)",
+			slog.String(logKeyTopic, topic),
+			slog.String(logKeyConsumer, consumerName),
+			slog.Any("existing", info.Config.DeliverPolicy),
+			slog.Any("requested", cfg.DeliverPolicy),
+		)
+		cfg.DeliverPolicy = info.Config.DeliverPolicy
+		cfg.OptStartSeq = info.Config.OptStartSeq
+		cfg.OptStartTime = info.Config.OptStartTime
 	}
 
 	if durableConsumerConfigMatches(info.Config, cfg) {
-		return nil
+		return cfg.DeliverPolicy, nil
 	}
 
 	// The consumer already exists with a different configuration (for
@@ -419,9 +443,9 @@ func (j *JetStreamEventBus) ensureDurableConsumer(ctx context.Context, topic, co
 	// in line so this subscription's AckWait/MaxDeliver/DeliverPolicy take
 	// effect rather than silently using whatever the first deploy created.
 	if _, err := j.js.UpdateConsumer(stream, cfg, nats.Context(ctx)); err != nil {
-		return fmt.Errorf("failed to update durable consumer %q on stream %q: %w", consumerName, stream, err)
+		return cfg.DeliverPolicy, fmt.Errorf("failed to update durable consumer %q on stream %q: %w", consumerName, stream, err)
 	}
-	return nil
+	return cfg.DeliverPolicy, nil
 }
 
 // durableConsumerConfigMatches reports whether an existing consumer's
@@ -536,11 +560,12 @@ func nextDurableFetchBackoff(d time.Duration) time.Duration {
 // loop uselessly until the caller's ctx happens to be cancelled, so
 // durableConsumeLoop exits immediately instead.
 //
-// nats.ErrNoResponders is included because a pull consumer's Fetch is
-// itself a request/reply call against that consumer's JetStream API
-// subject: once the consumer is deleted server-side, that subject has no
-// responder, and Fetch surfaces that as ErrNoResponders rather than always
-// as ErrConsumerNotFound/ErrConsumerDeleted.
+// nats.ErrNoResponders is deliberately NOT terminal: although a deleted
+// consumer's Fetch can surface it, so can a transient JetStream leader
+// election or server restart, and exiting the loop there would silently
+// end the subscription for good (SubscribeDurable has already returned and
+// nothing resubscribes). Treating it as a retryable error costs only
+// backoff polling against a genuinely deleted consumer.
 //
 // The trailing strings.Contains checks are a fallback for JetStream server
 // error text that isn't always wrapped as a typed *nats.Error by the
@@ -564,8 +589,7 @@ func isTerminalFetchErrorMatch(err error) (matched bool, matchedVia string) {
 		errors.Is(err, nats.ErrConsumerNotFound),
 		errors.Is(err, nats.ErrConsumerDeleted),
 		errors.Is(err, nats.ErrBadSubscription),
-		errors.Is(err, nats.ErrSubscriptionClosed),
-		errors.Is(err, nats.ErrNoResponders):
+		errors.Is(err, nats.ErrSubscriptionClosed):
 		return true, "sentinel"
 	case strings.Contains(err.Error(), "consumer not found"),
 		strings.Contains(err.Error(), "consumer deleted"):

@@ -66,10 +66,10 @@ delivers:
 | Semantic | Contract |
 |---|---|
 | **Acknowledgement** | The `DurableHandler` returns an explicit `modulex.AckDecision` — `Ack`, `Nack`, or `DeadLetter` — for every message. There is no implicit "no decision" path: even a handler panic is recovered and treated as `Nack` (see "Panic safety" below), never silently dropped or silently acked. |
-| **Retry / redelivery** | On `Nack` (or a recovered panic), JetStream redelivers the message after `WithDurableAckWait` (default 30s) elapses without an ack, up to `WithDurableMaxDeliver` total attempts (default 5). Beyond the max-deliver count, JetStream stops redelivering the message on its own — a handler that wants a hard dead-letter guarantee after N failures should return `DeadLetter` explicitly once it observes `DurableMessage.DeliveryCount` approaching that configured limit, rather than relying on JetStream's own exhaustion behavior, which does not itself perform the dead-letter republish this adapter provides. |
-| **Replay** | `modulex.ReplayPolicy` (`ReplayAll`/`ReplayNew`) selects where a **brand-new** `ConsumerName` starts reading from — `ReplayAll` maps to JetStream's `DeliverAll`, `ReplayNew` to `DeliverNew`. This only affects a consumer identity's first-ever subscription; reusing an existing `ConsumerName` resumes from its last acknowledged position regardless of `ReplayPolicy`. |
+| **Retry / redelivery** | On `Nack` (or a recovered panic), the adapter calls `NakWithDelay` with an exponential backoff derived from `DurableMessage.DeliveryCount` (starting at `WithDurableAckWait`, default 30s, doubling per attempt, capped at 5 minutes) rather than redelivering immediately. A message may be delivered up to `WithDurableMaxDeliver` total attempts (default 5). When a `Nack` would be the delivery that reaches that limit, the adapter proactively dead-letters the message (as if the handler had returned `DeadLetter`) so it goes through the republish/log path instead of silently ceasing to be redelivered. |
+| **Replay** | `modulex.ReplayPolicy` (`ReplayAll`/`ReplayNew`) selects where a **brand-new** `ConsumerName` starts reading from — `ReplayAll` maps to JetStream's `DeliverAll`, `ReplayNew` to `DeliverNew`. This only affects a consumer identity's first-ever subscription; reusing an existing `ConsumerName` resumes from its last acknowledged position regardless of `ReplayPolicy`. Replay applies only when the consumer is created: JetStream cannot change an existing consumer's deliver policy, so if a consumer already exists with a different policy the adapter keeps the existing one and logs a warning rather than failing. |
 | **Ordering** | One sequential pull loop per `SubscribeDurable` call: a batch is fetched, every message in it is resolved (ack/nack/dead-letter) in order, and only then is the next batch fetched. Relative order is preserved within one subscription. Ordering across multiple concurrent subscriptions sharing one `ConsumerName` (a competing-consumers group) is **not** guaranteed, since JetStream may deliver to whichever subscription is next available. |
-| **Consumer identity** | `ConsumerName` becomes the JetStream durable consumer name. Reusing the same name — including across process restarts — resumes from its last acknowledged position. Multiple concurrent `SubscribeDurable` calls sharing one `ConsumerName` load-balance messages across them rather than each receiving every message. |
+| **Consumer identity** | `ConsumerName` becomes the JetStream durable consumer name. Reusing the same name — including across process restarts — resumes from its last acknowledged position. Multiple concurrent `SubscribeDurable` calls sharing one `ConsumerName` load-balance messages across them rather than each receiving every message. The adapter creates (or reconciles `AckWait`/`MaxDeliver` on) the durable consumer itself before attaching with `PullSubscribe`, so nats.go does not own the consumer and does not delete it on `Unsubscribe`/`Close`; this is what makes the resume-across-restarts guarantee hold. |
 | **Dead-letter** | On `DeadLetter`, the message is republished to `topic + suffix` (default suffix `.DEAD`, configurable via `WithDurableDeadLetterSuffix`; an empty string disables republishing and only terminates the original) and then `msg.Term()` is called so JetStream never redelivers it through the normal retry path. If the dead-letter republish itself fails (e.g. no stream covers that subject), the original delivery is still terminated — a dead-letter routing failure must not cause the message to retry forever — and the failure is logged. |
 | **Shutdown / ownership** | See "Shutdown and ownership semantics" below. |
 | **Panic safety** | A `DurableHandler` invocation that panics is recovered and treated exactly like an explicit `Nack`: logged, then redelivered per the retry policy above. Without this, an unrecovered panic in the durable consume loop's dedicated goroutine would crash the entire host process, not just that one subscription. This mirrors the core `Manager`'s own `PanicPolicyLog` default for supervised tasks (see `modulex.go`). |
@@ -122,9 +122,15 @@ behavior needs no code changes at all.
 ### Negative
 
 - JetStream's own max-deliver exhaustion does not itself dead-letter a
-  message; a handler wanting that guarantee must watch `DeliveryCount` and
-  decide to `DeadLetter` proactively (documented above as a caller
-  responsibility, not a gap this adapter silently papers over).
+  message, so the adapter does it: a `Nack` on the final allowed delivery is
+  routed through the dead-letter path. A handler may still return
+  `DeadLetter` earlier. A message whose final delivery attempt never reaches
+  the handler (for example the process crashed) is still not dead-lettered.
+- The consume loop retries a failed `Fetch` with exponential backoff (100ms
+  up to 30s) and exits only on conditions that cannot recover (connection
+  closed, consumer deleted, subscription closed). `ErrNoResponders` is
+  deliberately retried, since a JetStream leader election produces it
+  transiently. After the loop exits, nothing resubscribes.
 - Ordering is only guaranteed within one subscription, not across a
   competing-consumers group sharing one `ConsumerName` — a caller needing
   strict global ordering must use a single subscription for that

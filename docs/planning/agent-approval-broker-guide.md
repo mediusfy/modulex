@@ -183,6 +183,13 @@ internal lock. Every other path returns
 - (for `CheckToken`) the presented token is empty or matches no stored
   grant.
 
+Expired and consumed grants are pruned from the broker's map on every
+`Grant`, `Check`, `CheckToken`, dry-run check and `ActiveGrants` call, so a
+long-running broker does not grow without bound. When `Check` (no token)
+finds several grants for the same scope, it consumes the one with the
+earliest `ApprovedAt` (ties broken by `TokenHash`) rather than an arbitrary
+one; use `CheckToken` to consume a specific grant.
+
 There is no `default` branch, error return, or early exit anywhere in
 `Broker.Check`/`Broker.CheckToken` that can produce anything other than
 `StatusPass` or `StatusApprovalRequired` — see `broker.go`'s doc comments

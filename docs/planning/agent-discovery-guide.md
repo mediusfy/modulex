@@ -151,9 +151,10 @@ never omitted from the slice.
 
 ```go
 type ClassificationRule struct {
-    Pattern *regexp.Regexp
-    Class   provenance.CommandClass
-    Reason  string
+    Pattern    *regexp.Regexp
+    RejectArgs func(args []string) bool // optional extra guard; true = not a match
+    Class      provenance.CommandClass
+    Reason     string
 }
 
 var ClassificationRules []ClassificationRule
@@ -163,7 +164,13 @@ func ClassifyCommand(cmd string) (provenance.CommandClass, string)
 
 `ClassifyCommand` matches `cmd` (a full command line, e.g. `"make release
 VERSION=v0.2.0"`) against `ClassificationRules` in order and returns the
-first match's `provenance.CommandClass` and a human-readable reason. The
+first match's `provenance.CommandClass` and a human-readable reason. A rule
+whose `RejectArgs` returns true for the command's argument tokens is treated
+as not matching, so matching falls through to later rules and ultimately the
+approval-required default. The read-only git rule uses this to refuse options
+such as `--output`, `-o` and `--ext-diff`, which write files or run other
+programs; the safe `make` rule is anchored with `$`, so `make build -f x.mk`
+is not classified safe. The
 rule table is built from
 [`docs/planning/agent-safety-policy.md`](agent-safety-policy.md)'s
 command-classification table, and reuses `provenance.CommandClass`
