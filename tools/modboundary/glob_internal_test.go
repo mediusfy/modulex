@@ -18,20 +18,23 @@ func TestGlobToRegexp_OneLevelPatternUnchanged(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cases := []struct {
+	tests := []struct {
+		name string
 		path string
 		want bool
 	}{
-		{"modb/migrations/001_create_users.sql", true},
-		{"migrations/001_create_users.sql", false},             // zero levels: not matched by a one-level pattern
-		{"modb/sub/migrations/001_create_users.sql", false},    // two levels: not matched by a one-level pattern
-		{"modb/migrations/nested/001_create_users.sql", false}, // extra trailing depth
-		{"modb/migrations/001_create_users.txt", false},        // wrong extension
+		{name: "modb/migrations/001_create_users.sql", path: "modb/migrations/001_create_users.sql", want: true},
+		{name: "migrations/001_create_users.sql", path: "migrations/001_create_users.sql", want: false},                         // zero levels: not matched by a one-level pattern
+		{name: "modb/sub/migrations/001_create_users.sql", path: "modb/sub/migrations/001_create_users.sql", want: false},       // two levels: not matched by a one-level pattern
+		{name: "modb/migrations/nested/001_create_users.sql", path: "modb/migrations/nested/001_create_users.sql", want: false}, // extra trailing depth
+		{name: "modb/migrations/001_create_users.txt", path: "modb/migrations/001_create_users.txt", want: false},               // wrong extension
 	}
-	for _, c := range cases {
-		if got := re.MatchString(c.path); got != c.want {
-			t.Errorf("globToRegexp(%q).MatchString(%q) = %v, want %v", "*/migrations/*.sql", c.path, got, c.want)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := re.MatchString(tt.path); got != tt.want {
+				t.Errorf("globToRegexp(%q).MatchString(%q) = %v, want %v", "*/migrations/*.sql", tt.path, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -47,21 +50,24 @@ func TestGlobToRegexp_DoubleStarMatchesAnyDepth(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cases := []struct {
+	tests := []struct {
+		name string
 		path string
 		want bool
 	}{
-		{"migrations/001_create_users.sql", true},                      // zero levels
-		{"modb/migrations/001_create_users.sql", true},                 // one level
-		{"modb/sub/migrations/001_create_users.sql", true},             // two levels
-		{"modb/sub/deep/nested/migrations/001_create_users.sql", true}, // many levels
-		{"modb/migrations/001_create_users.txt", false},                // wrong extension still rejected
-		{"modb/notmigrations/001_create_users.sql", false},             // directory name must be exactly "migrations"
+		{name: "migrations/001_create_users.sql", path: "migrations/001_create_users.sql", want: true},                                           // zero levels
+		{name: "modb/migrations/001_create_users.sql", path: "modb/migrations/001_create_users.sql", want: true},                                 // one level
+		{name: "modb/sub/migrations/001_create_users.sql", path: "modb/sub/migrations/001_create_users.sql", want: true},                         // two levels
+		{name: "modb/sub/deep/nested/migrations/001_create_users.sql", path: "modb/sub/deep/nested/migrations/001_create_users.sql", want: true}, // many levels
+		{name: "modb/migrations/001_create_users.txt", path: "modb/migrations/001_create_users.txt", want: false},                                // wrong extension still rejected
+		{name: "modb/notmigrations/001_create_users.sql", path: "modb/notmigrations/001_create_users.sql", want: false},                          // directory name must be exactly "migrations"
 	}
-	for _, c := range cases {
-		if got := re.MatchString(c.path); got != c.want {
-			t.Errorf("globToRegexp(%q).MatchString(%q) = %v, want %v", "**/migrations/*.sql", c.path, got, c.want)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := re.MatchString(tt.path); got != tt.want {
+				t.Errorf("globToRegexp(%q).MatchString(%q) = %v, want %v", "**/migrations/*.sql", tt.path, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -71,14 +77,31 @@ func TestGlobToRegexp_DoubleStarMatchesAnyDepth(t *testing.T) {
 // an invalid regexp for arbitrary glob input, since every character class
 // it emits is a fixed, valid regexp fragment.
 func TestGlobToRegexp_ArbitraryCharactersAreEscaped(t *testing.T) {
-	re, err := globToRegexp("migrations/v1.2+build.sql")
-	if err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name    string
+		pattern string
+		match   string
+		noMatch string
+	}{
+		{
+			name:    "literal dot and plus are escaped",
+			pattern: "migrations/v1.2+build.sql",
+			match:   "migrations/v1.2+build.sql",
+			noMatch: "migrations/v1X2+build.sql",
+		},
 	}
-	if !re.MatchString("migrations/v1.2+build.sql") {
-		t.Error("literal characters like '.' and '+' should be escaped and matched literally, not treated as regexp metacharacters")
-	}
-	if re.MatchString("migrations/v1X2+build.sql") {
-		t.Error("an escaped '.' must not behave as a regexp wildcard")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			re, err := globToRegexp(tt.pattern)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !re.MatchString(tt.match) {
+				t.Error("literal characters like '.' and '+' should be escaped and matched literally, not treated as regexp metacharacters")
+			}
+			if re.MatchString(tt.noMatch) {
+				t.Error("an escaped '.' must not behave as a regexp wildcard")
+			}
+		})
 	}
 }

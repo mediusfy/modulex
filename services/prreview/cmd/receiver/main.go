@@ -46,6 +46,14 @@ import (
 	"github.com/mediusfy/modulex/services/prreview/store"
 )
 
+// Structured-log attribute keys.
+const (
+	logKeyBackend = "backend"
+	logKeyError   = "error"
+	logKeyName    = "name"
+	logKeyPort    = "port"
+)
+
 func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	ctx := context.Background()
@@ -85,9 +93,9 @@ func main() {
 		ReadTimeout:       30 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 	}
-	log.Info("receiver listening", "port", port)
+	log.Info("receiver listening", logKeyPort, port)
 	if err := server.ListenAndServe(); err != nil {
-		log.Error("serve", "error", err)
+		log.Error("serve", logKeyError, err)
 		os.Exit(1)
 	}
 }
@@ -100,19 +108,19 @@ func newDedupStore(ctx context.Context, log *slog.Logger) store.DedupStore {
 		project := mustEnv(log, "GOOGLE_CLOUD_PROJECT")
 		fs, err := firestore.NewClient(ctx, project)
 		if err != nil {
-			log.Error("firestore client", "error", err)
+			log.Error("firestore client", logKeyError, err)
 			os.Exit(1)
 		}
 		return &store.Firestore{Client: fs}
 	case "postgres":
 		pg, err := store.NewPostgres(mustEnv(log, "POSTGRES_DSN"))
 		if err != nil {
-			log.Error("postgres open", "error", err)
+			log.Error("postgres open", logKeyError, err)
 			os.Exit(1)
 		}
 		return pg
 	default:
-		log.Error("unknown STORE_BACKEND", "backend", backend)
+		log.Error("unknown STORE_BACKEND", logKeyBackend, backend)
 		os.Exit(1)
 		return nil
 	}
@@ -124,7 +132,7 @@ func newEnqueuer(ctx context.Context, log *slog.Logger) queue.Enqueuer {
 	case "cloudtasks":
 		tasks, err := cloudtasks.NewClient(ctx)
 		if err != nil {
-			log.Error("cloud tasks client", "error", err)
+			log.Error("cloud tasks client", logKeyError, err)
 			os.Exit(1)
 		}
 		return &queue.CloudTasks{
@@ -136,22 +144,22 @@ func newEnqueuer(ctx context.Context, log *slog.Logger) queue.Enqueuer {
 	case "nats":
 		conn, err := nats.Connect(envOr("NATS_URL", nats.DefaultURL))
 		if err != nil {
-			log.Error("nats connect", "error", err)
+			log.Error("nats connect", logKeyError, err)
 			os.Exit(1)
 		}
 		js, err := conn.JetStream()
 		if err != nil {
-			log.Error("nats jetstream", "error", err)
+			log.Error("nats jetstream", logKeyError, err)
 			os.Exit(1)
 		}
 		stream := envOr("NATS_STREAM", "PRREVIEW_REVIEWS")
 		if err := queue.EnsureStream(js, stream, queue.ReviewsStreamSubjects...); err != nil {
-			log.Error("nats ensure stream", "error", err)
+			log.Error("nats ensure stream", logKeyError, err)
 			os.Exit(1)
 		}
 		return &queue.NATS{Bus: natsadapter.NewJetStreamEventBus(js, natsadapter.WithJetStreamLogger(log))}
 	default:
-		log.Error("unknown QUEUE_BACKEND", "backend", backend)
+		log.Error("unknown QUEUE_BACKEND", logKeyBackend, backend)
 		os.Exit(1)
 		return nil
 	}
@@ -160,7 +168,7 @@ func newEnqueuer(ctx context.Context, log *slog.Logger) queue.Enqueuer {
 func mustEnv(log *slog.Logger, name string) string {
 	v := os.Getenv(name)
 	if v == "" {
-		log.Error("missing required environment variable", "name", name)
+		log.Error("missing required environment variable", logKeyName, name)
 		os.Exit(1)
 	}
 	return v

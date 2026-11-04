@@ -13,22 +13,35 @@ import (
 )
 
 func TestRecommendVerification(t *testing.T) {
-	t.Run("empty changed files still returns full gates", func(t *testing.T) {
-		out := recommendVerification(nil)
-		if len(out.Plan.FocusedChecks) != 0 {
-			t.Errorf("FocusedChecks = %v, want empty for no changed files", out.Plan.FocusedChecks)
-		}
-		if len(out.Plan.FullGates) != len(verify.FullGates) {
-			t.Errorf("len(FullGates) = %d, want %d", len(out.Plan.FullGates), len(verify.FullGates))
-		}
-	})
-
-	t.Run("a changed go file recommends a focused check", func(t *testing.T) {
-		out := recommendVerification([]string{"httpx/httpx.go"})
-		if len(out.Plan.FocusedChecks) == 0 {
-			t.Error("FocusedChecks is empty, want at least a test/vet check for httpx/httpx.go")
-		}
-	})
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "empty changed files still returns full gates",
+			run: func(t *testing.T) {
+				out := recommendVerification(nil)
+				if len(out.Plan.FocusedChecks) != 0 {
+					t.Errorf("FocusedChecks = %v, want empty for no changed files", out.Plan.FocusedChecks)
+				}
+				if len(out.Plan.FullGates) != len(verify.FullGates) {
+					t.Errorf("len(FullGates) = %d, want %d", len(out.Plan.FullGates), len(verify.FullGates))
+				}
+			},
+		},
+		{
+			name: "a changed go file recommends a focused check",
+			run: func(t *testing.T) {
+				out := recommendVerification([]string{"httpx/httpx.go"})
+				if len(out.Plan.FocusedChecks) == 0 {
+					t.Error("FocusedChecks is empty, want at least a test/vet check for httpx/httpx.go")
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 // mustRunVerification calls runVerification and fails the test immediately
@@ -61,98 +74,123 @@ func mustRunVerification(t *testing.T, root string, checks []CheckSpecIn, allowN
 // TestRunVerification_ApprovalStatusReflectsFileStoreGrant), so it never
 // writes into this repository's real working tree.
 func TestRunVerification(t *testing.T) {
-	t.Run("missing required tool is reported unavailable, never run", func(t *testing.T) {
-		out := mustRunVerification(t, "../..", []CheckSpecIn{
-			{
-				Name:         "fake-check",
-				Command:      "go vet ./...",
-				Category:     provenance.VerificationFull,
-				RequiredTool: "definitely-not-a-real-tool-xyz",
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "missing required tool is reported unavailable, never run",
+			run: func(t *testing.T) {
+				out := mustRunVerification(t, "../..", []CheckSpecIn{
+					{
+						Name:         "fake-check",
+						Command:      "go vet ./...",
+						Category:     provenance.VerificationFull,
+						RequiredTool: "definitely-not-a-real-tool-xyz",
+					},
+				}, false)
+				if len(out.Results) != 1 {
+					t.Fatalf("len(Results) = %d, want 1", len(out.Results))
+				}
+				if out.Results[0].Status != provenance.StatusUnavailable {
+					t.Errorf("Status = %q, want %q", out.Results[0].Status, provenance.StatusUnavailable)
+				}
 			},
-		}, false)
-		if len(out.Results) != 1 {
-			t.Fatalf("len(Results) = %d, want 1", len(out.Results))
-		}
-		if out.Results[0].Status != provenance.StatusUnavailable {
-			t.Errorf("Status = %q, want %q", out.Results[0].Status, provenance.StatusUnavailable)
-		}
-	})
-
-	t.Run("networked check skipped without allow_network", func(t *testing.T) {
-		out := mustRunVerification(t, "../..", []CheckSpecIn{
-			{Name: "networked", Command: "go vet ./...", Category: provenance.VerificationFull, Networked: true},
-		}, false)
-		if out.Results[0].Status != provenance.StatusSkipped {
-			t.Errorf("Status = %q, want %q", out.Results[0].Status, provenance.StatusSkipped)
-		}
-	})
-
-	t.Run("a trivial passing command", func(t *testing.T) {
-		out := mustRunVerification(t, "../..", []CheckSpecIn{
-			{Name: "trivial", Command: "go vet ./...", Category: provenance.VerificationFocused},
-		}, false)
-		if out.Results[0].Status != provenance.StatusPass {
-			t.Errorf("Status = %q, want %q; Message: %s", out.Results[0].Status, provenance.StatusPass, out.Results[0].Message)
-		}
-	})
-
-	t.Run("invalid root returns an error", func(t *testing.T) {
-		_, err := runVerification(context.Background(), "/does/not/exist/at/all", nil, false)
-		if err == nil {
-			t.Fatal("runVerification() error = nil, want an error for an invalid root")
-		}
-	})
-
-	t.Run("destructive command is blocked without running", func(t *testing.T) {
-		out := mustRunVerification(t, "../..", []CheckSpecIn{
-			{Name: "danger", Command: "git reset --hard", Category: provenance.VerificationFull},
-		}, false)
-		if out.Results[0].Status != provenance.StatusApprovalRequired {
-			t.Errorf("Status = %q, want %q", out.Results[0].Status, provenance.StatusApprovalRequired)
-		}
-		if out.Results[0].Reason == "" {
-			t.Error("Reason is empty, want ClassifyCommand's explanation")
-		}
-	})
-
-	t.Run("mutating command is blocked without running, not just destructive", func(t *testing.T) {
-		out := mustRunVerification(t, "../..", []CheckSpecIn{
-			{Name: "would-mutate", Command: "make fmt", Category: provenance.VerificationFull},
-		}, false)
-		if out.Results[0].Status != provenance.StatusApprovalRequired {
-			t.Errorf("Status = %q, want %q (a read-only tool must never run a mutating command, not just destructive/approval-required ones)", out.Results[0].Status, provenance.StatusApprovalRequired)
-		}
-	})
-
-	t.Run("unrecognized command defaults to approval-required, fail-safe", func(t *testing.T) {
-		out := mustRunVerification(t, "../..", []CheckSpecIn{
-			{Name: "mystery", Command: "some-arbitrary-unrecognized-command", Category: provenance.VerificationFull},
-		}, false)
-		if out.Results[0].Status != provenance.StatusApprovalRequired {
-			t.Errorf("Status = %q, want %q (unrecognized commands must fail safe, never silently pass)", out.Results[0].Status, provenance.StatusApprovalRequired)
-		}
-	})
-
-	t.Run("a mix of blocked and runnable checks preserves order and count", func(t *testing.T) {
-		out := mustRunVerification(t, "../..", []CheckSpecIn{
-			{Name: "first-blocked", Command: "git push origin main", Category: provenance.VerificationFull},
-			{Name: "second-runs", Command: "go vet ./...", Category: provenance.VerificationFull},
-			{Name: "third-blocked", Command: "git reset --hard", Category: provenance.VerificationFull},
-		}, false)
-		if len(out.Results) != 3 {
-			t.Fatalf("len(Results) = %d, want 3", len(out.Results))
-		}
-		wantNames := []string{"first-blocked", "second-runs", "third-blocked"}
-		wantStatuses := []provenance.Status{provenance.StatusApprovalRequired, provenance.StatusPass, provenance.StatusApprovalRequired}
-		for i, r := range out.Results {
-			if r.Name != wantNames[i] {
-				t.Errorf("Results[%d].Name = %q, want %q (order must match input)", i, r.Name, wantNames[i])
-			}
-			if r.Status != wantStatuses[i] {
-				t.Errorf("Results[%d].Status = %q, want %q", i, r.Status, wantStatuses[i])
-			}
-		}
-	})
+		},
+		{
+			name: "networked check skipped without allow_network",
+			run: func(t *testing.T) {
+				out := mustRunVerification(t, "../..", []CheckSpecIn{
+					{Name: "networked", Command: "go vet ./...", Category: provenance.VerificationFull, Networked: true},
+				}, false)
+				if out.Results[0].Status != provenance.StatusSkipped {
+					t.Errorf("Status = %q, want %q", out.Results[0].Status, provenance.StatusSkipped)
+				}
+			},
+		},
+		{
+			name: "a trivial passing command",
+			run: func(t *testing.T) {
+				out := mustRunVerification(t, "../..", []CheckSpecIn{
+					{Name: "trivial", Command: "go vet ./...", Category: provenance.VerificationFocused},
+				}, false)
+				if out.Results[0].Status != provenance.StatusPass {
+					t.Errorf("Status = %q, want %q; Message: %s", out.Results[0].Status, provenance.StatusPass, out.Results[0].Message)
+				}
+			},
+		},
+		{
+			name: "invalid root returns an error",
+			run: func(t *testing.T) {
+				_, err := runVerification(context.Background(), "/does/not/exist/at/all", nil, false)
+				if err == nil {
+					t.Fatal("runVerification() error = nil, want an error for an invalid root")
+				}
+			},
+		},
+		{
+			name: "destructive command is blocked without running",
+			run: func(t *testing.T) {
+				out := mustRunVerification(t, "../..", []CheckSpecIn{
+					{Name: "danger", Command: "git reset --hard", Category: provenance.VerificationFull},
+				}, false)
+				if out.Results[0].Status != provenance.StatusApprovalRequired {
+					t.Errorf("Status = %q, want %q", out.Results[0].Status, provenance.StatusApprovalRequired)
+				}
+				if out.Results[0].Reason == "" {
+					t.Error("Reason is empty, want ClassifyCommand's explanation")
+				}
+			},
+		},
+		{
+			name: "mutating command is blocked without running, not just destructive",
+			run: func(t *testing.T) {
+				out := mustRunVerification(t, "../..", []CheckSpecIn{
+					{Name: "would-mutate", Command: "make fmt", Category: provenance.VerificationFull},
+				}, false)
+				if out.Results[0].Status != provenance.StatusApprovalRequired {
+					t.Errorf("Status = %q, want %q (a read-only tool must never run a mutating command, not just destructive/approval-required ones)", out.Results[0].Status, provenance.StatusApprovalRequired)
+				}
+			},
+		},
+		{
+			name: "unrecognized command defaults to approval-required, fail-safe",
+			run: func(t *testing.T) {
+				out := mustRunVerification(t, "../..", []CheckSpecIn{
+					{Name: "mystery", Command: "some-arbitrary-unrecognized-command", Category: provenance.VerificationFull},
+				}, false)
+				if out.Results[0].Status != provenance.StatusApprovalRequired {
+					t.Errorf("Status = %q, want %q (unrecognized commands must fail safe, never silently pass)", out.Results[0].Status, provenance.StatusApprovalRequired)
+				}
+			},
+		},
+		{
+			name: "a mix of blocked and runnable checks preserves order and count",
+			run: func(t *testing.T) {
+				out := mustRunVerification(t, "../..", []CheckSpecIn{
+					{Name: "first-blocked", Command: "git push origin main", Category: provenance.VerificationFull},
+					{Name: "second-runs", Command: "go vet ./...", Category: provenance.VerificationFull},
+					{Name: "third-blocked", Command: "git reset --hard", Category: provenance.VerificationFull},
+				}, false)
+				if len(out.Results) != 3 {
+					t.Fatalf("len(Results) = %d, want 3", len(out.Results))
+				}
+				wantNames := []string{"first-blocked", "second-runs", "third-blocked"}
+				wantStatuses := []provenance.Status{provenance.StatusApprovalRequired, provenance.StatusPass, provenance.StatusApprovalRequired}
+				for i, r := range out.Results {
+					if r.Name != wantNames[i] {
+						t.Errorf("Results[%d].Name = %q, want %q (order must match input)", i, r.Name, wantNames[i])
+					}
+					if r.Status != wantStatuses[i] {
+						t.Errorf("Results[%d].Status = %q, want %q", i, r.Status, wantStatuses[i])
+					}
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 // writeTinyGoModule writes a minimal go.mod plus one .go file (whatever
@@ -181,39 +219,48 @@ func writeTinyGoModule(t *testing.T, dir, goFileContent string) {
 // t.TempDir(), never this repository's own root, so it never writes a
 // real .modulex/approvals.json into the working tree.
 func TestRunVerification_ApprovalStatusReflectsFileStoreGrant(t *testing.T) {
-	root := t.TempDir()
-	writeTinyGoModule(t, root, "package tmp\n")
-
-	store := approval.NewFileStore(approval.DefaultStorePath(root))
-	writer, err := store.Load()
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
+	tests := []struct {
+		name string
+	}{
+		{name: "grant is visible and never consumed"},
 	}
-	grant, err := writer.Grant(approval.Scope{Action: "would-approve"}, "tester", time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Save(writer); err != nil {
-		t.Fatalf("Save() error = %v", err)
-	}
-	t.Logf("granted: %s", grant)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeTinyGoModule(t, root, "package tmp\n")
 
-	var checks []CheckSpecIn
-	checks = append(checks, CheckSpecIn{Name: "would-approve", Command: "git clean -f", Category: provenance.VerificationSecurity})
-	checks = append(checks, CheckSpecIn{Name: "would-deny", Command: "git branch -D stale-branch", Category: provenance.VerificationSecurity})
-	checks = append(checks, CheckSpecIn{Name: "clean-check", Command: "go vet ./...", Category: provenance.VerificationFocused})
+			store := approval.NewFileStore(approval.DefaultStorePath(root))
+			writer, err := store.Load()
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			grant, err := writer.Grant(approval.Scope{Action: "would-approve"}, "tester", time.Minute)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Save(writer); err != nil {
+				t.Fatalf("Save() error = %v", err)
+			}
+			t.Logf("granted: %s", grant)
 
-	for attempt := 1; attempt <= 2; attempt++ {
-		out := mustRunVerification(t, root, checks, false)
-		if got := out.ApprovalStatus["would-approve"]; got != provenance.StatusPass {
-			t.Errorf("attempt %d: ApprovalStatus[would-approve] = %q, want %q (DryRunCheck must not consume the grant)", attempt, got, provenance.StatusPass)
-		}
-		if got := out.ApprovalStatus["would-deny"]; got != provenance.StatusApprovalRequired {
-			t.Errorf("attempt %d: ApprovalStatus[would-deny] = %q, want %q", attempt, got, provenance.StatusApprovalRequired)
-		}
-		if _, ok := out.ApprovalStatus["clean-check"]; ok {
-			t.Errorf("attempt %d: ApprovalStatus has an entry for a check that ran, want none", attempt)
-		}
+			var checks []CheckSpecIn
+			checks = append(checks, CheckSpecIn{Name: "would-approve", Command: "git clean -f", Category: provenance.VerificationSecurity})
+			checks = append(checks, CheckSpecIn{Name: "would-deny", Command: "git branch -D stale-branch", Category: provenance.VerificationSecurity})
+			checks = append(checks, CheckSpecIn{Name: "clean-check", Command: "go vet ./...", Category: provenance.VerificationFocused})
+
+			for attempt := 1; attempt <= 2; attempt++ {
+				out := mustRunVerification(t, root, checks, false)
+				if got := out.ApprovalStatus["would-approve"]; got != provenance.StatusPass {
+					t.Errorf("attempt %d: ApprovalStatus[would-approve] = %q, want %q (DryRunCheck must not consume the grant)", attempt, got, provenance.StatusPass)
+				}
+				if got := out.ApprovalStatus["would-deny"]; got != provenance.StatusApprovalRequired {
+					t.Errorf("attempt %d: ApprovalStatus[would-deny] = %q, want %q", attempt, got, provenance.StatusApprovalRequired)
+				}
+				if _, ok := out.ApprovalStatus["clean-check"]; ok {
+					t.Errorf("attempt %d: ApprovalStatus has an entry for a check that ran, want none", attempt)
+				}
+			}
+		})
 	}
 }
 
@@ -223,13 +270,22 @@ func TestRunVerification_ApprovalStatusReflectsFileStoreGrant(t *testing.T) {
 // agent approve` in) must behave exactly like an empty grant store — every
 // blocked check reports StatusApprovalRequired, not a handler error.
 func TestRunVerification_NoApprovalsFileIsNotAnError(t *testing.T) {
-	root := t.TempDir()
+	tests := []struct {
+		name string
+	}{
+		{name: "missing approvals file behaves like empty store"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
 
-	out := mustRunVerification(t, root, []CheckSpecIn{
-		{Name: "would-deny", Command: "git branch -D stale-branch", Category: provenance.VerificationSecurity},
-	}, false)
-	if got := out.ApprovalStatus["would-deny"]; got != provenance.StatusApprovalRequired {
-		t.Errorf("ApprovalStatus[would-deny] = %q, want %q (no approvals file at all)", got, provenance.StatusApprovalRequired)
+			out := mustRunVerification(t, root, []CheckSpecIn{
+				{Name: "would-deny", Command: "git branch -D stale-branch", Category: provenance.VerificationSecurity},
+			}, false)
+			if got := out.ApprovalStatus["would-deny"]; got != provenance.StatusApprovalRequired {
+				t.Errorf("ApprovalStatus[would-deny] = %q, want %q (no approvals file at all)", got, provenance.StatusApprovalRequired)
+			}
+		})
 	}
 }
 
@@ -243,21 +299,30 @@ func TestRunVerification_NoApprovalsFileIsNotAnError(t *testing.T) {
 // given; only correctly honoring root as the working directory makes the
 // second call fail.
 func TestRunVerification_UsesRootAsWorkingDirectory(t *testing.T) {
-	dirGood := t.TempDir()
-	writeTinyGoModule(t, dirGood, "package tmp\n")
-
-	dirBad := t.TempDir()
-	writeTinyGoModule(t, dirBad, "package tmp\n\nfunc broken( {\n")
-
-	check := []CheckSpecIn{{Name: "vet", Command: "go vet ./...", Category: provenance.VerificationFull}}
-
-	goodOut := mustRunVerification(t, dirGood, check, false)
-	if goodOut.Results[0].Status != provenance.StatusPass {
-		t.Errorf("dirGood: Status = %q, want %q; Message: %s", goodOut.Results[0].Status, provenance.StatusPass, goodOut.Results[0].Message)
+	tests := []struct {
+		name string
+	}{
+		{name: "root is honored as working directory"},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dirGood := t.TempDir()
+			writeTinyGoModule(t, dirGood, "package tmp\n")
 
-	badOut := mustRunVerification(t, dirBad, check, false)
-	if badOut.Results[0].Status != provenance.StatusFail {
-		t.Errorf("dirBad: Status = %q, want %q (root must be honored as the working directory, not silently ignored); Message: %s", badOut.Results[0].Status, provenance.StatusFail, badOut.Results[0].Message)
+			dirBad := t.TempDir()
+			writeTinyGoModule(t, dirBad, "package tmp\n\nfunc broken( {\n")
+
+			check := []CheckSpecIn{{Name: "vet", Command: "go vet ./...", Category: provenance.VerificationFull}}
+
+			goodOut := mustRunVerification(t, dirGood, check, false)
+			if goodOut.Results[0].Status != provenance.StatusPass {
+				t.Errorf("dirGood: Status = %q, want %q; Message: %s", goodOut.Results[0].Status, provenance.StatusPass, goodOut.Results[0].Message)
+			}
+
+			badOut := mustRunVerification(t, dirBad, check, false)
+			if badOut.Results[0].Status != provenance.StatusFail {
+				t.Errorf("dirBad: Status = %q, want %q (root must be honored as the working directory, not silently ignored); Message: %s", badOut.Results[0].Status, provenance.StatusFail, badOut.Results[0].Message)
+			}
+		})
 	}
 }

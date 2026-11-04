@@ -65,6 +65,16 @@ import (
 	"github.com/mediusfy/modulex/services/prreview/worker"
 )
 
+// Structured-log attribute keys.
+const (
+	logKeyBackend     = "backend"
+	logKeyConcurrency = "concurrency"
+	logKeyConsumer    = "consumer"
+	logKeyError       = "error"
+	logKeyName        = "name"
+	logKeyPort        = "port"
+)
+
 func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	ctx := context.Background()
@@ -72,12 +82,12 @@ func main() {
 	project := mustEnv(log, "GOOGLE_CLOUD_PROJECT")
 	secrets, err := secretmanager.NewClient(ctx)
 	if err != nil {
-		log.Error("secret manager client", "error", err)
+		log.Error("secret manager client", logKeyError, err)
 		os.Exit(1)
 	}
 	appKey, err := githubauth.ParsePrivateKey([]byte(mustEnv(log, "GITHUB_APP_PRIVATE_KEY")))
 	if err != nil {
-		log.Error("app private key", "error", err)
+		log.Error("app private key", logKeyError, err)
 		os.Exit(1)
 	}
 	// Defense in depth: the parsed key lives only in process memory from
@@ -123,7 +133,7 @@ func main() {
 	case "nats":
 		runNATSWorker(ctx, w, log)
 	default:
-		log.Error("unknown QUEUE_BACKEND", "backend", backend)
+		log.Error("unknown QUEUE_BACKEND", logKeyBackend, backend)
 		os.Exit(1)
 	}
 }
@@ -142,19 +152,19 @@ func newJobsStore(ctx context.Context, log *slog.Logger) jobsAndLedgerStore {
 		project := mustEnv(log, "GOOGLE_CLOUD_PROJECT")
 		fs, err := firestore.NewClient(ctx, project)
 		if err != nil {
-			log.Error("firestore client", "error", err)
+			log.Error("firestore client", logKeyError, err)
 			os.Exit(1)
 		}
 		return &store.Firestore{Client: fs}
 	case "postgres":
 		pg, err := store.NewPostgres(mustEnv(log, "POSTGRES_DSN"))
 		if err != nil {
-			log.Error("postgres open", "error", err)
+			log.Error("postgres open", logKeyError, err)
 			os.Exit(1)
 		}
 		return pg
 	default:
-		log.Error("unknown STORE_BACKEND", "backend", backend)
+		log.Error("unknown STORE_BACKEND", logKeyBackend, backend)
 		os.Exit(1)
 		return nil
 	}
@@ -167,7 +177,7 @@ func runCloudTasksWorker(w *worker.Worker, log *slog.Logger) {
 	ctx := context.Background()
 	tasks, err := cloudtasks.NewClient(ctx)
 	if err != nil {
-		log.Error("cloud tasks client", "error", err)
+		log.Error("cloud tasks client", logKeyError, err)
 		os.Exit(1)
 	}
 	queueTemplate := queue.CloudTasks{
@@ -201,7 +211,7 @@ func runCloudTasksWorker(w *worker.Worker, log *slog.Logger) {
 		requestWorker := *w
 		requestWorker.Queue = &followUpQueue
 		if err := requestWorker.Handle(r.Context(), req); err != nil {
-			log.Error("review failed; task will retry", "error", err)
+			log.Error("review failed; task will retry", logKeyError, err)
 			http.Error(rw, "review failed", http.StatusInternalServerError)
 			return
 		}
@@ -221,17 +231,17 @@ func runCloudTasksWorker(w *worker.Worker, log *slog.Logger) {
 func runNATSWorker(ctx context.Context, w *worker.Worker, log *slog.Logger) {
 	conn, err := nats.Connect(envOr("NATS_URL", nats.DefaultURL))
 	if err != nil {
-		log.Error("nats connect", "error", err)
+		log.Error("nats connect", logKeyError, err)
 		os.Exit(1)
 	}
 	js, err := conn.JetStream()
 	if err != nil {
-		log.Error("nats jetstream", "error", err)
+		log.Error("nats jetstream", logKeyError, err)
 		os.Exit(1)
 	}
 	stream := envOr("NATS_STREAM", "PRREVIEW_REVIEWS")
 	if err := queue.EnsureStream(js, stream, queue.ReviewsStreamSubjects...); err != nil {
-		log.Error("nats ensure stream", "error", err)
+		log.Error("nats ensure stream", logKeyError, err)
 		os.Exit(1)
 	}
 
@@ -260,11 +270,11 @@ func runNATSWorker(ctx context.Context, w *worker.Worker, log *slog.Logger) {
 	// nearest NATS equivalent to Cloud Tasks' max_concurrent_dispatches.
 	for i := 0; i < concurrency; i++ {
 		if err := queue.Consume(ctx, bus, queue.ReviewsSubject, consumerName, w.Handle); err != nil {
-			log.Error("nats consume", "error", err)
+			log.Error("nats consume", logKeyError, err)
 			os.Exit(1)
 		}
 	}
-	log.Info("worker consuming", "backend", "nats", "consumer", consumerName, "concurrency", concurrency)
+	log.Info("worker consuming", logKeyBackend, "nats", logKeyConsumer, consumerName, logKeyConcurrency, concurrency)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(rw http.ResponseWriter, _ *http.Request) {
@@ -287,9 +297,9 @@ func serve(mux *http.ServeMux, log *slog.Logger, backend string) {
 		ReadTimeout:       30 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 	}
-	log.Info("worker listening", "port", port, "backend", backend)
+	log.Info("worker listening", logKeyPort, port, logKeyBackend, backend)
 	if err := server.ListenAndServe(); err != nil {
-		log.Error("serve", "error", err)
+		log.Error("serve", logKeyError, err)
 		os.Exit(1)
 	}
 }
@@ -297,7 +307,7 @@ func serve(mux *http.ServeMux, log *slog.Logger, backend string) {
 func mustEnv(log *slog.Logger, name string) string {
 	v := os.Getenv(name)
 	if v == "" {
-		log.Error("missing required environment variable", "name", name)
+		log.Error("missing required environment variable", logKeyName, name)
 		os.Exit(1)
 	}
 	return v

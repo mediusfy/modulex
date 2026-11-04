@@ -8,64 +8,148 @@ import (
 	"github.com/mediusfy/modulex/tools/modboundary"
 )
 
-func resetFlags() {
-	modboundary.Analyzer.Flags.Set("root", "")
-	modboundary.Analyzer.Flags.Set("allow", "ports")
-	modboundary.Analyzer.Flags.Set("dbschema", "")
-	modboundary.Analyzer.Flags.Set("sqltables", "schema_migrations,goose_db_version,golang_migrations")
+func resetFlags(t *testing.T) {
+	t.Helper()
+	defaults := []struct{ name, value string }{
+		{"root", ""},
+		{"allow", "ports"},
+		{"dbschema", ""},
+		{"sqltables", "schema_migrations,goose_db_version,golang_migrations"},
+	}
+	for _, d := range defaults {
+		if err := modboundary.Analyzer.Flags.Set(d.name, d.value); err != nil {
+			t.Fatalf("resetting -%s: %v", d.name, err)
+		}
+	}
 }
 
 func TestAllowedImportGraph(t *testing.T) {
-	resetFlags()
-	testdata := analysistest.TestData()
-	if err := modboundary.Analyzer.Flags.Set("root", "allowed"); err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name     string
+		root     string
+		dbschema string
+		pattern  string
+	}{
+		{name: "allowed", root: "allowed", pattern: "allowed/..."},
 	}
-	analysistest.Run(t, testdata, modboundary.Analyzer, "allowed/...")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetFlags(t)
+			testdata := analysistest.TestData()
+			if err := modboundary.Analyzer.Flags.Set("root", tt.root); err != nil {
+				t.Fatal(err)
+			}
+			if tt.dbschema != "" {
+				if err := modboundary.Analyzer.Flags.Set("dbschema", tt.dbschema); err != nil {
+					t.Fatal(err)
+				}
+			}
+			analysistest.Run(t, testdata, modboundary.Analyzer, tt.pattern)
+		})
+	}
 }
 
 func TestForbiddenImportGraph(t *testing.T) {
-	resetFlags()
-	testdata := analysistest.TestData()
-	if err := modboundary.Analyzer.Flags.Set("root", "forbidden"); err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name     string
+		root     string
+		dbschema string
+		pattern  string
+	}{
+		{name: "forbidden", root: "forbidden", pattern: "forbidden/..."},
 	}
-	analysistest.Run(t, testdata, modboundary.Analyzer, "forbidden/...")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetFlags(t)
+			testdata := analysistest.TestData()
+			if err := modboundary.Analyzer.Flags.Set("root", tt.root); err != nil {
+				t.Fatal(err)
+			}
+			if tt.dbschema != "" {
+				if err := modboundary.Analyzer.Flags.Set("dbschema", tt.dbschema); err != nil {
+					t.Fatal(err)
+				}
+			}
+			analysistest.Run(t, testdata, modboundary.Analyzer, tt.pattern)
+		})
+	}
 }
 
 func TestForbiddenDatabaseCrossReference(t *testing.T) {
-	resetFlags()
-	testdata := analysistest.TestData()
-	if err := modboundary.Analyzer.Flags.Set("root", "forbidden-db"); err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name     string
+		root     string
+		dbschema string
+		pattern  string
+	}{
+		{name: "moda references modb table", root: "forbidden-db", dbschema: "*/migrations/*.sql", pattern: "forbidden-db/moda"},
 	}
-	if err := modboundary.Analyzer.Flags.Set("dbschema", "*/migrations/*.sql"); err != nil {
-		t.Fatal(err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetFlags(t)
+			testdata := analysistest.TestData()
+			if err := modboundary.Analyzer.Flags.Set("root", tt.root); err != nil {
+				t.Fatal(err)
+			}
+			if tt.dbschema != "" {
+				if err := modboundary.Analyzer.Flags.Set("dbschema", tt.dbschema); err != nil {
+					t.Fatal(err)
+				}
+			}
+			analysistest.Run(t, testdata, modboundary.Analyzer, tt.pattern)
+		})
 	}
-	analysistest.Run(t, testdata, modboundary.Analyzer, "forbidden-db/moda")
 }
 
 func TestForbiddenDatabaseNoCrossReference(t *testing.T) {
-	resetFlags()
-	testdata := analysistest.TestData()
-	if err := modboundary.Analyzer.Flags.Set("root", "forbidden-db"); err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name     string
+		root     string
+		dbschema string
+		pattern  string
+	}{
+		// modb owns the users table and has no cross-module references.
+		{name: "modb owns its table", root: "forbidden-db", dbschema: "*/migrations/*.sql", pattern: "forbidden-db/modb"},
 	}
-	if err := modboundary.Analyzer.Flags.Set("dbschema", "*/migrations/*.sql"); err != nil {
-		t.Fatal(err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetFlags(t)
+			testdata := analysistest.TestData()
+			if err := modboundary.Analyzer.Flags.Set("root", tt.root); err != nil {
+				t.Fatal(err)
+			}
+			if tt.dbschema != "" {
+				if err := modboundary.Analyzer.Flags.Set("dbschema", tt.dbschema); err != nil {
+					t.Fatal(err)
+				}
+			}
+			analysistest.Run(t, testdata, modboundary.Analyzer, tt.pattern)
+		})
 	}
-	// modb owns the users table and has no cross-module references.
-	analysistest.Run(t, testdata, modboundary.Analyzer, "forbidden-db/modb")
 }
 
 func TestAllowedDatabaseSelfReference(t *testing.T) {
-	resetFlags()
-	testdata := analysistest.TestData()
-	if err := modboundary.Analyzer.Flags.Set("root", "allowed-db"); err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name     string
+		root     string
+		dbschema string
+		pattern  string
+	}{
+		{name: "self reference", root: "allowed-db", dbschema: "*/migrations/*.sql", pattern: "allowed-db/..."},
 	}
-	if err := modboundary.Analyzer.Flags.Set("dbschema", "*/migrations/*.sql"); err != nil {
-		t.Fatal(err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetFlags(t)
+			testdata := analysistest.TestData()
+			if err := modboundary.Analyzer.Flags.Set("root", tt.root); err != nil {
+				t.Fatal(err)
+			}
+			if tt.dbschema != "" {
+				if err := modboundary.Analyzer.Flags.Set("dbschema", tt.dbschema); err != nil {
+					t.Fatal(err)
+				}
+			}
+			analysistest.Run(t, testdata, modboundary.Analyzer, tt.pattern)
+		})
 	}
-	analysistest.Run(t, testdata, modboundary.Analyzer, "allowed-db/...")
 }

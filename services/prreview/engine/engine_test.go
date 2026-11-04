@@ -172,62 +172,67 @@ func shellQuote(s string) string {
 // namespace (`ps`, /proc/<pid>/cmdline); the environment is materially more
 // restricted (/proc/<pid>/environ, same user or root only).
 func TestGitFetcher_TokenNeverAppearsInArgv(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell-script PATH stub requires a POSIX shell")
-	}
+	tests := []struct{ name string }{{name: "token absent from git argv"}}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if runtime.GOOS == "windows" {
+				t.Skip("shell-script PATH stub requires a POSIX shell")
+			}
 
-	realGit, err := exec.LookPath("git")
-	if err != nil {
-		t.Skip("git not found in PATH")
-	}
+			realGit, err := exec.LookPath("git")
+			if err != nil {
+				t.Skip("git not found in PATH")
+			}
 
-	repo := gitRepo(t, nil, map[string]string{"new.txt": "x"})
-	headSHA := strings.TrimSpace(runGit(t, repo, "rev-parse", "feature"))
+			repo := gitRepo(t, nil, map[string]string{"new.txt": "x"})
+			headSHA := strings.TrimSpace(runGit(t, repo, "rev-parse", "feature"))
 
-	argvLog := filepath.Join(t.TempDir(), "argv.log")
-	stubDir := t.TempDir()
-	script := "#!/bin/sh\n" +
-		"echo \"$@\" >> " + shellQuote(argvLog) + "\n" +
-		"exec " + shellQuote(realGit) + " \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(stubDir, "git"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+			argvLog := filepath.Join(t.TempDir(), "argv.log")
+			stubDir := t.TempDir()
+			script := "#!/bin/sh\n" +
+				"echo \"$@\" >> " + shellQuote(argvLog) + "\n" +
+				"exec " + shellQuote(realGit) + " \"$@\"\n"
+			if err := os.WriteFile(filepath.Join(stubDir, "git"), []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
 
-	oldPath := os.Getenv("PATH")
-	t.Cleanup(func() { _ = os.Setenv("PATH", oldPath) })
-	if err := os.Setenv("PATH", stubDir+string(os.PathListSeparator)+oldPath); err != nil {
-		t.Fatal(err)
-	}
+			oldPath := os.Getenv("PATH")
+			t.Cleanup(func() { _ = os.Setenv("PATH", oldPath) })
+			if err := os.Setenv("PATH", stubDir+string(os.PathListSeparator)+oldPath); err != nil {
+				t.Fatal(err)
+			}
 
-	const token = "super-secret-installation-token-xyz" // nosecret: test fixture, not a real credential
-	dir, cleanup, err := GitFetcher{}.Fetch(context.Background(), repo, token, "main", headSHA)
-	if err != nil {
-		t.Fatalf("Fetch: %v", err)
-	}
-	defer cleanup()
+			const token = "super-secret-installation-token-xyz" // nosecret: test fixture, not a real credential
+			dir, cleanup, err := GitFetcher{}.Fetch(context.Background(), repo, token, "main", headSHA)
+			if err != nil {
+				t.Fatalf("Fetch: %v", err)
+			}
+			defer cleanup()
 
-	logged, err := os.ReadFile(argvLog)
-	if err != nil {
-		t.Fatalf("reading argv log: %v", err)
-	}
-	// The raw token is never embedded directly in argv — it rides inside a
-	// base64-encoded "user:token" Basic-auth blob, which doesn't preserve
-	// the raw token as a substring, so checking for the raw token alone
-	// would miss the actual exposure. Check for the exact blob the Basic
-	// auth header carries instead.
-	authBlob := basicAuth("x-access-token", token)
-	if strings.Contains(string(logged), authBlob) {
-		t.Fatalf("auth header appeared in a git subprocess's argv:\n%s", logged)
-	}
-	if strings.Contains(string(logged), token) {
-		t.Fatalf("token appeared in a git subprocess's argv:\n%s", logged)
-	}
-	if !strings.Contains(string(logged), "fetch") {
-		t.Fatalf("stub does not appear to have been invoked for any fetch; log:\n%s", logged)
-	}
+			logged, err := os.ReadFile(argvLog)
+			if err != nil {
+				t.Fatalf("reading argv log: %v", err)
+			}
+			// The raw token is never embedded directly in argv — it rides inside a
+			// base64-encoded "user:token" Basic-auth blob, which doesn't preserve
+			// the raw token as a substring, so checking for the raw token alone
+			// would miss the actual exposure. Check for the exact blob the Basic
+			// auth header carries instead.
+			authBlob := basicAuth("x-access-token", token)
+			if strings.Contains(string(logged), authBlob) {
+				t.Fatalf("auth header appeared in a git subprocess's argv:\n%s", logged)
+			}
+			if strings.Contains(string(logged), token) {
+				t.Fatalf("token appeared in a git subprocess's argv:\n%s", logged)
+			}
+			if !strings.Contains(string(logged), "fetch") {
+				t.Fatalf("stub does not appear to have been invoked for any fetch; log:\n%s", logged)
+			}
 
-	if _, err := os.Stat(filepath.Join(dir, "new.txt")); err != nil {
-		t.Fatalf("expected the real clone to still succeed and contain new.txt: %v", err)
+			if _, err := os.Stat(filepath.Join(dir, "new.txt")); err != nil {
+				t.Fatalf("expected the real clone to still succeed and contain new.txt: %v", err)
+			}
+		})
 	}
 }
 
@@ -321,65 +326,70 @@ func TestGitFetcher_MaterializesBlobsForOfflineDiff(t *testing.T) {
 // rename needs BOTH the old path's base-side blob and the new path's
 // head-side blob, and `git checkout` only ever materializes the head side.
 func TestGitFetcher_MaterializesRenamedFileBlobs(t *testing.T) {
-	realGit, err := exec.LookPath("git")
-	if err != nil {
-		t.Skip("git not found in PATH")
-	}
+	tests := []struct{ name string }{{name: "renamed file blobs materialized"}}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			realGit, err := exec.LookPath("git")
+			if err != nil {
+				t.Skip("git not found in PATH")
+			}
 
-	// Built directly (not via gitRepo) so the large content lives on main
-	// itself: the three-dot diff below compares feature's tip against the
-	// merge-base (main's tip), so the rename's old and new content must be
-	// similar AT THAT COMPARISON, not merely similar to some intermediate
-	// commit on feature.
-	origin := t.TempDir()
-	runGit(t, origin, "init", "-q", "-b", "main")
-	runGit(t, origin, "config", "user.email", "t@t")
-	runGit(t, origin, "config", "user.name", "t")
-	var lines strings.Builder
-	for i := 0; i < 200; i++ {
-		fmt.Fprintf(&lines, "line %d\n", i)
-	}
-	if err := os.WriteFile(filepath.Join(origin, "README.md"), []byte(lines.String()), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	runGit(t, origin, "add", ".")
-	runGit(t, origin, "commit", "-q", "-m", "base")
-	runGit(t, origin, "checkout", "-q", "-b", "feature")
-	// A small edit alongside the rename: similar enough (>50%) that git's
-	// default rename detection fires, so this exercises the rename
-	// codepath specifically, not a plain add+delete.
-	if err := os.Rename(filepath.Join(origin, "README.md"), filepath.Join(origin, "renamed.md")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(origin, "renamed.md"), []byte(lines.String()+"one more line\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	runGit(t, origin, "add", "-A")
-	runGit(t, origin, "commit", "-q", "-m", "rename with small edit")
+			// Built directly (not via gitRepo) so the large content lives on main
+			// itself: the three-dot diff below compares feature's tip against the
+			// merge-base (main's tip), so the rename's old and new content must be
+			// similar AT THAT COMPARISON, not merely similar to some intermediate
+			// commit on feature.
+			origin := t.TempDir()
+			runGit(t, origin, "init", "-q", "-b", "main")
+			runGit(t, origin, "config", "user.email", "t@t")
+			runGit(t, origin, "config", "user.name", "t")
+			var lines strings.Builder
+			for i := 0; i < 200; i++ {
+				fmt.Fprintf(&lines, "line %d\n", i)
+			}
+			if err := os.WriteFile(filepath.Join(origin, "README.md"), []byte(lines.String()), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, origin, "add", ".")
+			runGit(t, origin, "commit", "-q", "-m", "base")
+			runGit(t, origin, "checkout", "-q", "-b", "feature")
+			// A small edit alongside the rename: similar enough (>50%) that git's
+			// default rename detection fires, so this exercises the rename
+			// codepath specifically, not a plain add+delete.
+			if err := os.Rename(filepath.Join(origin, "README.md"), filepath.Join(origin, "renamed.md")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(origin, "renamed.md"), []byte(lines.String()+"one more line\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, origin, "add", "-A")
+			runGit(t, origin, "commit", "-q", "-m", "rename with small edit")
 
-	runGit(t, origin, "config", "uploadpack.allowFilter", "true")
-	runGit(t, origin, "config", "uploadpack.allowAnySHA1InWant", "true")
-	headSHA := strings.TrimSpace(runGit(t, origin, "rev-parse", "feature"))
+			runGit(t, origin, "config", "uploadpack.allowFilter", "true")
+			runGit(t, origin, "config", "uploadpack.allowAnySHA1InWant", "true")
+			headSHA := strings.TrimSpace(runGit(t, origin, "rev-parse", "feature"))
 
-	const token = "regression-fixture-token" // nosecret: test fixture, not a real credential
-	dir, cleanup, err := GitFetcher{}.Fetch(context.Background(), "file://"+origin, token, "main", headSHA)
-	if err != nil {
-		t.Fatalf("Fetch: %v", err)
-	}
-	defer cleanup()
+			const token = "regression-fixture-token" // nosecret: test fixture, not a real credential
+			dir, cleanup, err := GitFetcher{}.Fetch(context.Background(), "file://"+origin, token, "main", headSHA)
+			if err != nil {
+				t.Fatalf("Fetch: %v", err)
+			}
+			defer cleanup()
 
-	runGit(t, dir, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "severed"))
+			runGit(t, dir, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "severed"))
 
-	cmd := exec.Command(realGit, "-C", dir, "diff", "--unified=0", BaseRefName+"...HEAD")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("offline diff after Fetch failed — renamed file's blobs were not materialized:\n%v\n%s", err, out)
-	}
-	if !strings.Contains(string(out), "rename from README.md") {
-		t.Fatalf("diff did not detect the rename as expected (so this test didn't exercise the rename codepath); got:\n%s", out)
-	}
-	if !strings.Contains(string(out), "one more line") {
-		t.Fatalf("diff missing the renamed file's edit; got:\n%s", out)
+			cmd := exec.Command(realGit, "-C", dir, "diff", "--unified=0", BaseRefName+"...HEAD")
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("offline diff after Fetch failed — renamed file's blobs were not materialized:\n%v\n%s", err, out)
+			}
+			if !strings.Contains(string(out), "rename from README.md") {
+				t.Fatalf("diff did not detect the rename as expected (so this test didn't exercise the rename codepath); got:\n%s", out)
+			}
+			if !strings.Contains(string(out), "one more line") {
+				t.Fatalf("diff missing the renamed file's edit; got:\n%s", out)
+			}
+		})
 	}
 }
 
@@ -389,20 +399,25 @@ func TestGitFetcher_MaterializesRenamedFileBlobs(t *testing.T) {
 // so a production log doesn't require mapping a bare git-command failure
 // back to which step of Fetch produced it.
 func TestGitFetcher_WarmUpFailureIsDistinctlyLabeled(t *testing.T) {
-	origin := gitRepo(t, nil, map[string]string{"added.txt": "x\n"})
-	headSHA := strings.TrimSpace(runGit(t, origin, "rev-parse", "feature"))
+	tests := []struct{ name string }{{name: "base fetch failure lacks warm-up label"}}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			origin := gitRepo(t, nil, map[string]string{"added.txt": "x\n"})
+			headSHA := strings.TrimSpace(runGit(t, origin, "rev-parse", "feature"))
 
-	const token = "regression-fixture-token" // nosecret: test fixture, not a real credential
-	// An invalid baseRef (neither a real branch nor a commit SHA) makes the
-	// base fetch step fail instead, which should NOT carry the warm-up
-	// label — confirming the label is specific to the warm-up step, not a
-	// blanket wrapper applied to every step.
-	_, _, err := GitFetcher{}.Fetch(context.Background(), "file://"+origin, token, "does-not-exist", headSHA)
-	if err == nil {
-		t.Fatal("expected Fetch to fail for a nonexistent base ref")
-	}
-	if strings.Contains(err.Error(), "warming blobs for diff-time checks") {
-		t.Fatalf("a base-fetch failure must not carry the warm-up step's label: %v", err)
+			const token = "regression-fixture-token" // nosecret: test fixture, not a real credential
+			// An invalid baseRef (neither a real branch nor a commit SHA) makes the
+			// base fetch step fail instead, which should NOT carry the warm-up
+			// label — confirming the label is specific to the warm-up step, not a
+			// blanket wrapper applied to every step.
+			_, _, err := GitFetcher{}.Fetch(context.Background(), "file://"+origin, token, "does-not-exist", headSHA)
+			if err == nil {
+				t.Fatal("expected Fetch to fail for a nonexistent base ref")
+			}
+			if strings.Contains(err.Error(), "warming blobs for diff-time checks") {
+				t.Fatalf("a base-fetch failure must not carry the warm-up step's label: %v", err)
+			}
+		})
 	}
 }
 
