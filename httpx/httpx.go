@@ -19,6 +19,13 @@ import (
 
 const defaultCheckTimeout = 5 * time.Second
 
+// Log attribute keys used by the health handlers.
+const (
+	logKeyCheck = "check"
+	logKeyPanic = "panic"
+	logKeyError = "error"
+)
+
 const (
 	// contentTypeHeader is the HTTP header name used to declare the response body's media type.
 	contentTypeHeader = "Content-Type"
@@ -104,7 +111,7 @@ func runChecks(ctx context.Context, checks map[string]func(context.Context) erro
 						result = fmt.Sprintf("panic: %v", r)
 					} else {
 						cfg.logger.Error("health check panicked",
-							slog.String("check", name), slog.Any("panic", r))
+							slog.String(logKeyCheck, name), slog.Any(logKeyPanic, r))
 					}
 					mu.Lock()
 					results[name] = result
@@ -130,7 +137,7 @@ func runChecks(ctx context.Context, checks map[string]func(context.Context) erro
 				} else {
 					result = genericCheckFailureMessage
 					cfg.logger.Error("health check failed",
-						slog.String("check", name), slog.Any("error", err))
+						slog.String(logKeyCheck, name), slog.Any(logKeyError, err))
 				}
 				passed = false
 			}

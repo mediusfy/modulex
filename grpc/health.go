@@ -29,10 +29,10 @@ const defaultWatchInterval = 5 * time.Second
 // at all, so a hung check would otherwise block the Watch loop forever
 // instead of promptly reporting NOT_SERVING.
 //
-// A package var, not a const, purely so tests can shrink it instead of
-// blocking for the full 5 seconds to prove a never-returning check is
-// still bounded; production code never changes it.
-var defaultCheckTimeout = 5 * time.Second
+// Each HealthServer carries its own checkTimeout field initialised from
+// this constant, so tests can shrink it per server instead of mutating
+// package state.
+const defaultCheckTimeout = 5 * time.Second
 
 // HealthChecker is the subset of modulex.Registry (and modulex.Manager, which
 // implements the full Registry) that HealthServer needs to answer
@@ -80,6 +80,7 @@ type HealthServer struct {
 
 	checker       HealthChecker
 	watchInterval time.Duration
+	checkTimeout  time.Duration
 }
 
 // HealthServerOption configures a HealthServer during construction.
@@ -95,7 +96,7 @@ func WithWatchInterval(d time.Duration) HealthServerOption {
 
 // NewHealthServer creates a HealthServer backed by checker.
 func NewHealthServer(checker HealthChecker, opts ...HealthServerOption) *HealthServer {
-	h := &HealthServer{checker: checker, watchInterval: defaultWatchInterval}
+	h := &HealthServer{checker: checker, watchInterval: defaultWatchInterval, checkTimeout: defaultCheckTimeout}
 	for _, opt := range opts {
 		opt(h)
 	}
@@ -111,7 +112,7 @@ func (h *HealthServer) Check(ctx context.Context, req *healthpb.HealthCheckReque
 	if err != nil {
 		return nil, err
 	}
-	return &healthpb.HealthCheckResponse{Status: servingStatus(evaluateChecks(ctx, checks))}, nil
+	return &healthpb.HealthCheckResponse{Status: servingStatus(h.evaluateChecks(ctx, checks))}, nil
 }
 
 // Watch implements grpc_health_v1.HealthServer. It sends the current status
@@ -129,7 +130,7 @@ func (h *HealthServer) Watch(req *healthpb.HealthCheckRequest, stream healthpb.H
 
 	lastStatus := healthpb.HealthCheckResponse_SERVICE_UNKNOWN
 	for {
-		current := servingStatus(evaluateChecks(stream.Context(), checks))
+		current := servingStatus(h.evaluateChecks(stream.Context(), checks))
 		if current != lastStatus {
 			if err := stream.Send(&healthpb.HealthCheckResponse{Status: current}); err != nil {
 				return err
@@ -168,7 +169,7 @@ func (h *HealthServer) checksFor(service string) (map[string]func(context.Contex
 // to N*defaultCheckTimeout in the worst case, which Check and Watch would
 // otherwise impose on every caller even though each check only needs its
 // own timeout budget, not an additive share of everyone else's.
-func evaluateChecks(ctx context.Context, checks map[string]func(context.Context) error) bool {
+func (h *HealthServer) evaluateChecks(ctx context.Context, checks map[string]func(context.Context) error) bool {
 	if len(checks) == 0 {
 		return true
 	}
@@ -191,7 +192,7 @@ func evaluateChecks(ctx context.Context, checks map[string]func(context.Context)
 				}
 			}()
 
-			ok := check != nil && runCheckWithTimeout(ctx, check)
+			ok := check != nil && runCheckWithTimeout(ctx, check, h.checkTimeout)
 			if !ok {
 				mu.Lock()
 				healthy = false
@@ -206,9 +207,9 @@ func evaluateChecks(ctx context.Context, checks map[string]func(context.Context)
 
 // runCheckWithTimeout runs check under a context derived from ctx via
 // WithTimeout, which automatically enforces whichever deadline is shorter
-// (ctx's own deadline, if any, or defaultCheckTimeout).
-func runCheckWithTimeout(ctx context.Context, check func(context.Context) error) bool {
-	checkCtx, cancel := context.WithTimeout(ctx, defaultCheckTimeout)
+// (ctx's own deadline, if any, or timeout).
+func runCheckWithTimeout(ctx context.Context, check func(context.Context) error, timeout time.Duration) bool {
+	checkCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	return check(checkCtx) == nil
 }

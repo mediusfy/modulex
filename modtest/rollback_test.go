@@ -3,46 +3,74 @@ package modtest
 import (
 	"context"
 	"testing"
+
+	"github.com/mediusfy/modulex"
 )
 
 func TestAssertRollbackOnInitFailure_Passes(t *testing.T) {
-	var stopped bool
-	mod := stopperFixture{
-		fixtureModule: &fixtureModule{name: "rollback-init-target"},
-		stopFn:        func(ctx context.Context) error { stopped = true; return nil },
+	tests := []struct {
+		name string
+	}{
+		{name: "Stop correctly ran during rollback"},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stopped bool
+			mod := stopperFixture{
+				fixtureModule: &fixtureModule{name: "rollback-init-target"},
+				stopFn:        func(ctx context.Context) error { stopped = true; return nil },
+			}
 
-	ft := runFake(func(t TB) { AssertRollbackOnInitFailure(t, mod) })
-	if ft.failed {
-		t.Fatalf("AssertRollbackOnInitFailure reported a failure for a module whose Stop correctly ran during rollback: %v", ft.logs)
-	}
-	if !stopped {
-		t.Fatalf("test setup error: module's Stop was never actually invoked")
+			ft := runFake(func(t TB) { AssertRollbackOnInitFailure(t, mod) })
+			if ft.failed {
+				t.Fatalf("AssertRollbackOnInitFailure reported a failure for a module whose Stop correctly ran during rollback: %v", ft.logs)
+			}
+			if !stopped {
+				t.Fatalf("test setup error: module's Stop was never actually invoked")
+			}
+		})
 	}
 }
 
 func TestAssertRollbackOnStartFailure_Passes(t *testing.T) {
-	var stopped bool
-	mod := fullFixture{
-		fixtureModule: &fixtureModule{name: "rollback-start-target"},
-		stopFn:        func(ctx context.Context) error { stopped = true; return nil },
+	tests := []struct {
+		name string
+	}{
+		{name: "Stop correctly ran during rollback"},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stopped bool
+			mod := fullFixture{
+				fixtureModule: &fixtureModule{name: "rollback-start-target"},
+				stopFn:        func(ctx context.Context) error { stopped = true; return nil },
+			}
 
-	ft := runFake(func(t TB) { AssertRollbackOnStartFailure(t, mod) })
-	if ft.failed {
-		t.Fatalf("AssertRollbackOnStartFailure reported a failure for a module whose Stop correctly ran during rollback: %v", ft.logs)
-	}
-	if !stopped {
-		t.Fatalf("test setup error: module's Stop was never actually invoked")
+			ft := runFake(func(t TB) { AssertRollbackOnStartFailure(t, mod) })
+			if ft.failed {
+				t.Fatalf("AssertRollbackOnStartFailure reported a failure for a module whose Stop correctly ran during rollback: %v", ft.logs)
+			}
+			if !stopped {
+				t.Fatalf("test setup error: module's Stop was never actually invoked")
+			}
+		})
 	}
 }
 
 func TestAssertRollback_NoStopperIsNotAFailure(t *testing.T) {
-	mod := &fixtureModule{name: "no-stopper"}
-
-	ft := runFake(func(t TB) { AssertRollbackOnInitFailure(t, mod) })
-	if ft.failed {
-		t.Fatalf("AssertRollbackOnInitFailure should not fail merely because the module under test does not implement modulex.Stopper: %v", ft.logs)
+	tests := []struct {
+		name string
+		mod  modulex.Module
+	}{
+		{name: "module without Stopper", mod: &fixtureModule{name: "no-stopper"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ft := runFake(func(t TB) { AssertRollbackOnInitFailure(t, tt.mod) })
+			if ft.failed {
+				t.Fatalf("AssertRollbackOnInitFailure should not fail merely because the module under test does not implement modulex.Stopper: %v", ft.logs)
+			}
+		})
 	}
 }
 
@@ -53,11 +81,20 @@ func TestAssertRollback_NoStopperIsNotAFailure(t *testing.T) {
 // It calls assertStoppedIfStopper directly against a deliberately
 // incomplete OrderRecorder rather than trying to force a real Manager bug.
 func TestAssertStoppedIfStopper_DetectsMissingStop(t *testing.T) {
-	mod := stopperFixture{fixtureModule: &fixtureModule{name: "leaky"}}
-	rec := NewOrderRecorder() // Stop deliberately never recorded.
+	tests := []struct {
+		name string
+		mod  modulex.Module
+	}{
+		{name: "Stop never recorded", mod: stopperFixture{fixtureModule: &fixtureModule{name: "leaky"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := NewOrderRecorder() // Stop deliberately never recorded.
 
-	ft := runFake(func(t TB) { assertStoppedIfStopper(t, mod, rec) })
-	if !ft.failed {
-		t.Fatalf("assertStoppedIfStopper did not detect that Stop was never recorded for a modulex.Stopper module")
+			ft := runFake(func(t TB) { assertStoppedIfStopper(t, tt.mod, rec) })
+			if !ft.failed {
+				t.Fatalf("assertStoppedIfStopper did not detect that Stop was never recorded for a modulex.Stopper module")
+			}
+		})
 	}
 }

@@ -6,21 +6,30 @@ import (
 	"github.com/mediusfy/modulex"
 )
 
-func TestAssertLifecycleOrder_WellBehaved(t *testing.T) {
-	base := fullFixture{fixtureModule: &fixtureModule{name: "base"}}
-	dependent := fullFixture{fixtureModule: &fixtureModule{name: "dependent", deps: []string{"base"}}}
-
-	ft := runFake(func(t TB) { AssertLifecycleOrder(t, base, dependent) })
-	if ft.failed {
-		t.Fatalf("AssertLifecycleOrder reported a failure for a well-behaved dependency graph: %v", ft.logs)
+func TestAssertLifecycleOrder(t *testing.T) {
+	tests := []struct {
+		name string
+		mods []modulex.Module
+	}{
+		{
+			name: "well-behaved dependency graph",
+			mods: []modulex.Module{
+				fullFixture{fixtureModule: &fixtureModule{name: "base"}},
+				fullFixture{fixtureModule: &fixtureModule{name: "dependent", deps: []string{"base"}}},
+			},
+		},
+		{
+			name: "single module with no Starter/Stopper",
+			mods: []modulex.Module{&fixtureModule{name: "solo"}},
+		},
 	}
-}
-
-func TestAssertLifecycleOrder_SingleModuleNoDeps(t *testing.T) {
-	mod := &fixtureModule{name: "solo"}
-	ft := runFake(func(t TB) { AssertLifecycleOrder(t, mod) })
-	if ft.failed {
-		t.Fatalf("AssertLifecycleOrder reported a failure for a single module with no Starter/Stopper: %v", ft.logs)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ft := runFake(func(t TB) { AssertLifecycleOrder(t, tt.mods...) })
+			if ft.failed {
+				t.Fatalf("AssertLifecycleOrder reported a failure for a well-behaved module set: %v", ft.logs)
+			}
+		})
 	}
 }
 
@@ -33,55 +42,48 @@ func TestAssertLifecycleOrder_SingleModuleNoDeps(t *testing.T) {
 func TestCheckLifecycleOrder_DetectsViolations(t *testing.T) {
 	dep := &fixtureModule{name: "dep"}
 	dependent := &fixtureModule{name: "dependent", deps: []string{"dep"}}
+	solo := []modulex.Module{&fixtureModule{name: "solo"}}
 
-	t.Run("start-before-init", func(t *testing.T) {
-		rec := NewOrderRecorder()
-		rec.record("solo", "Start")
-		rec.record("solo", "Init")
-		ft := runFake(func(t TB) { checkLifecycleOrder(t, rec, []modulex.Module{&fixtureModule{name: "solo"}}) })
-		if !ft.failed {
-			t.Fatalf("checkLifecycleOrder did not detect Start recorded before Init")
-		}
-	})
-
-	t.Run("stop-before-start", func(t *testing.T) {
-		rec := NewOrderRecorder()
-		rec.record("solo", "Init")
-		rec.record("solo", "Stop")
-		rec.record("solo", "Start")
-		ft := runFake(func(t TB) { checkLifecycleOrder(t, rec, []modulex.Module{&fixtureModule{name: "solo"}}) })
-		if !ft.failed {
-			t.Fatalf("checkLifecycleOrder did not detect Stop recorded before Start")
-		}
-	})
-
-	t.Run("dependency-initialized-after-dependent", func(t *testing.T) {
-		rec := NewOrderRecorder()
-		rec.record("dependent", "Init")
-		rec.record("dep", "Init")
-		ft := runFake(func(t TB) { checkLifecycleOrder(t, rec, []modulex.Module{dep, dependent}) })
-		if !ft.failed {
-			t.Fatalf("checkLifecycleOrder did not detect a dependency initialized after its dependent")
-		}
-	})
-
-	t.Run("dependency-stopped-before-dependent", func(t *testing.T) {
-		rec := NewOrderRecorder()
-		rec.record("dep", "Init")
-		rec.record("dependent", "Init")
-		rec.record("dep", "Stop")
-		rec.record("dependent", "Stop")
-		ft := runFake(func(t TB) { checkLifecycleOrder(t, rec, []modulex.Module{dep, dependent}) })
-		if !ft.failed {
-			t.Fatalf("checkLifecycleOrder did not detect a dependency stopped before its dependent (expected reverse teardown order)")
-		}
-	})
-
-	t.Run("init-never-recorded", func(t *testing.T) {
-		rec := NewOrderRecorder()
-		ft := runFake(func(t TB) { checkLifecycleOrder(t, rec, []modulex.Module{&fixtureModule{name: "solo"}}) })
-		if !ft.failed {
-			t.Fatalf("checkLifecycleOrder did not detect a module whose Init was never recorded")
-		}
-	})
+	tests := []struct {
+		name   string
+		events []Event
+		mods   []modulex.Module
+	}{
+		{
+			name:   "start-before-init",
+			events: []Event{{"solo", "Start"}, {"solo", "Init"}},
+			mods:   solo,
+		},
+		{
+			name:   "stop-before-start",
+			events: []Event{{"solo", "Init"}, {"solo", "Stop"}, {"solo", "Start"}},
+			mods:   solo,
+		},
+		{
+			name:   "dependency-initialized-after-dependent",
+			events: []Event{{"dependent", "Init"}, {"dep", "Init"}},
+			mods:   []modulex.Module{dep, dependent},
+		},
+		{
+			name:   "dependency-stopped-before-dependent",
+			events: []Event{{"dep", "Init"}, {"dependent", "Init"}, {"dep", "Stop"}, {"dependent", "Stop"}},
+			mods:   []modulex.Module{dep, dependent},
+		},
+		{
+			name: "init-never-recorded",
+			mods: solo,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := NewOrderRecorder()
+			for _, e := range tt.events {
+				rec.record(e.Module, e.Phase)
+			}
+			ft := runFake(func(t TB) { checkLifecycleOrder(t, rec, tt.mods) })
+			if !ft.failed {
+				t.Fatalf("checkLifecycleOrder did not detect violation %q", tt.name)
+			}
+		})
+	}
 }

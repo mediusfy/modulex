@@ -31,90 +31,95 @@ func ignoringStart(ctx context.Context) error {
 	return nil
 }
 
-func TestAssertRespectsCancellation_WellBehaved(t *testing.T) {
-	mod := starterFixture{
-		fixtureModule: &fixtureModule{name: "cancel-well-behaved"},
-		startFn:       respectingStart,
-	}
-
-	ft := runFake(func(t TB) { AssertRespectsCancellation(t, mod, PhaseStart, 100*time.Millisecond) })
-	if ft.failed {
-		t.Fatalf("AssertRespectsCancellation reported a failure for a module that promptly honors ctx.Done(): %v", ft.logs)
-	}
-}
-
-// TestAssertRespectsCancellation_DetectsRegression proves
-// AssertRespectsCancellation correctly fails against a real module that
-// ignores context cancellation, not just against synthetic data.
-func TestAssertRespectsCancellation_DetectsRegression(t *testing.T) {
-	mod := starterFixture{
-		fixtureModule: &fixtureModule{name: "cancel-broken"},
-		startFn:       ignoringStart,
-	}
-
-	ft := runFake(func(t TB) { AssertRespectsCancellation(t, mod, PhaseStart, 30*time.Millisecond) })
-	if !ft.failed {
-		t.Fatalf("AssertRespectsCancellation did not detect a module that ignores context cancellation")
-	}
-}
-
-func TestAssertRespectsDeadline_WellBehaved(t *testing.T) {
-	mod := starterFixture{
-		fixtureModule: &fixtureModule{name: "deadline-well-behaved"},
-		startFn:       respectingStart,
-	}
-
-	ft := runFake(func(t TB) { AssertRespectsDeadline(t, mod, PhaseStart, 20*time.Millisecond, 100*time.Millisecond) })
-	if ft.failed {
-		t.Fatalf("AssertRespectsDeadline reported a failure for a module that promptly honors its context deadline: %v", ft.logs)
-	}
-}
-
-// TestAssertRespectsDeadline_DetectsRegression proves AssertRespectsDeadline
-// correctly fails against a real module that ignores its context deadline.
-func TestAssertRespectsDeadline_DetectsRegression(t *testing.T) {
-	mod := starterFixture{
-		fixtureModule: &fixtureModule{name: "deadline-broken"},
-		startFn:       ignoringStart,
-	}
-
-	ft := runFake(func(t TB) { AssertRespectsDeadline(t, mod, PhaseStart, 10*time.Millisecond, 20*time.Millisecond) })
-	if !ft.failed {
-		t.Fatalf("AssertRespectsDeadline did not detect a module that ignores its context deadline")
-	}
-}
-
-func TestAssertRespectsCancellation_InitPhase(t *testing.T) {
-	mod := &fixtureModule{
-		name: "cancel-init-well-behaved",
-		initFn: func(ctx context.Context, reg modulex.Registry) error {
-			return respectingStart(ctx)
+func TestAssertRespectsCancellation(t *testing.T) {
+	tests := []struct {
+		name     string
+		mod      modulex.Module
+		phase    Phase
+		grace    time.Duration
+		wantFail bool
+	}{
+		{
+			name:  "well-behaved Start honors ctx.Done",
+			mod:   starterFixture{fixtureModule: &fixtureModule{name: "cancel-well-behaved"}, startFn: respectingStart},
+			phase: PhaseStart,
+			grace: 100 * time.Millisecond,
+		},
+		{
+			// Proves the helper fails against a real module that ignores
+			// context cancellation, not just against synthetic data.
+			name:     "Start ignoring cancellation is detected",
+			mod:      starterFixture{fixtureModule: &fixtureModule{name: "cancel-broken"}, startFn: ignoringStart},
+			phase:    PhaseStart,
+			grace:    30 * time.Millisecond,
+			wantFail: true,
+		},
+		{
+			name: "well-behaved Init honors ctx.Done",
+			mod: &fixtureModule{
+				name: "cancel-init-well-behaved",
+				initFn: func(ctx context.Context, reg modulex.Registry) error {
+					return respectingStart(ctx)
+				},
+			},
+			phase: PhaseInit,
+			grace: 100 * time.Millisecond,
+		},
+		{
+			name: "well-behaved Stop honors ctx.Done",
+			mod: fullFixture{
+				fixtureModule: &fixtureModule{name: "cancel-stop-well-behaved"},
+				stopFn:        respectingStart,
+			},
+			phase: PhaseStop,
+			grace: 100 * time.Millisecond,
+		},
+		{
+			name:     "PhaseStart against a module with no Starter fails",
+			mod:      &fixtureModule{name: "no-starter"},
+			phase:    PhaseStart,
+			grace:    50 * time.Millisecond,
+			wantFail: true,
 		},
 	}
-
-	ft := runFake(func(t TB) { AssertRespectsCancellation(t, mod, PhaseInit, 100*time.Millisecond) })
-	if ft.failed {
-		t.Fatalf("AssertRespectsCancellation reported a failure for an Init that promptly honors ctx.Done(): %v", ft.logs)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ft := runFake(func(t TB) { AssertRespectsCancellation(t, tt.mod, tt.phase, tt.grace) })
+			if ft.failed != tt.wantFail {
+				t.Fatalf("AssertRespectsCancellation failed = %v, want %v: %v", ft.failed, tt.wantFail, ft.logs)
+			}
+		})
 	}
 }
 
-func TestAssertRespectsCancellation_StopPhase(t *testing.T) {
-	mod := fullFixture{
-		fixtureModule: &fixtureModule{name: "cancel-stop-well-behaved"},
-		stopFn:        respectingStart,
+func TestAssertRespectsDeadline(t *testing.T) {
+	tests := []struct {
+		name     string
+		mod      modulex.Module
+		deadline time.Duration
+		grace    time.Duration
+		wantFail bool
+	}{
+		{
+			name:     "well-behaved Start honors its deadline",
+			mod:      starterFixture{fixtureModule: &fixtureModule{name: "deadline-well-behaved"}, startFn: respectingStart},
+			deadline: 20 * time.Millisecond,
+			grace:    100 * time.Millisecond,
+		},
+		{
+			name:     "Start ignoring its deadline is detected",
+			mod:      starterFixture{fixtureModule: &fixtureModule{name: "deadline-broken"}, startFn: ignoringStart},
+			deadline: 10 * time.Millisecond,
+			grace:    20 * time.Millisecond,
+			wantFail: true,
+		},
 	}
-
-	ft := runFake(func(t TB) { AssertRespectsCancellation(t, mod, PhaseStop, 100*time.Millisecond) })
-	if ft.failed {
-		t.Fatalf("AssertRespectsCancellation reported a failure for a Stop that promptly honors ctx.Done(): %v", ft.logs)
-	}
-}
-
-func TestAssertRespectsCancellation_RequiresSupportedPhase(t *testing.T) {
-	mod := &fixtureModule{name: "no-starter"}
-
-	ft := runFake(func(t TB) { AssertRespectsCancellation(t, mod, PhaseStart, 50*time.Millisecond) })
-	if !ft.failed {
-		t.Fatalf("AssertRespectsCancellation should fail when asked to test PhaseStart against a module with no Starter")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ft := runFake(func(t TB) { AssertRespectsDeadline(t, tt.mod, PhaseStart, tt.deadline, tt.grace) })
+			if ft.failed != tt.wantFail {
+				t.Fatalf("AssertRespectsDeadline failed = %v, want %v: %v", ft.failed, tt.wantFail, ft.logs)
+			}
+		})
 	}
 }

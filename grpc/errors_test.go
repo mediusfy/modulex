@@ -64,92 +64,84 @@ func TestUnaryServerErrorInterceptorMapsDomainErrors(t *testing.T) {
 	}
 }
 
-func TestUnaryServerErrorInterceptorPassesThroughExistingStatus(t *testing.T) {
-	interceptor := grpcadapter.UnaryServerErrorInterceptor(widgetMapping)
-	original := status.Error(codes.PermissionDenied, "already a status error")
+// TestUnaryServerErrorInterceptorStatusAndMessage covers the status code and
+// message sent to the caller:
+//   - an error that already carries a status is passed through unchanged
+//     (the mapping must not be consulted);
+//   - a handler error mapping to codes.Internal is hidden by default (M9),
+//     with the real text logged server-side instead;
+//   - WithExposeInternalErrors restores sending the real text;
+//   - a client-safe code such as codes.NotFound keeps its real message;
+//   - a nil mapping falls back to DefaultErrorMapping.
+func TestUnaryServerErrorInterceptorStatusAndMessage(t *testing.T) {
+	const sensitive = "dial tcp 10.0.0.5:5432: connection refused (dsn=postgres://user:pw@10.0.0.5/db)"
 
-	handler := func(ctx context.Context, req any) (any, error) {
-		return nil, original
+	tests := []struct {
+		name           string
+		mapping        grpcadapter.ErrorMapping
+		opts           []grpcadapter.ServerErrorInterceptorOption
+		handlerErr     error
+		wantCode       codes.Code
+		wantMessage    string // checked only when non-empty
+		wantNotContain string // checked only when non-empty
+	}{
+		{
+			name:       "passes through existing status",
+			mapping:    widgetMapping,
+			handlerErr: status.Error(codes.PermissionDenied, "already a status error"),
+			wantCode:   codes.PermissionDenied,
+		},
+		{
+			name:           "hides internal error detail by default",
+			mapping:        widgetMapping,
+			handlerErr:     errors.New(sensitive),
+			wantCode:       codes.Internal,
+			wantMessage:    "internal error",
+			wantNotContain: sensitive,
+		},
+		{
+			name:        "WithExposeInternalErrors sends real text",
+			mapping:     widgetMapping,
+			opts:        []grpcadapter.ServerErrorInterceptorOption{grpcadapter.WithExposeInternalErrors()},
+			handlerErr:  errors.New("boom"),
+			wantCode:    codes.Internal,
+			wantMessage: "boom",
+		},
+		{
+			name:        "keeps client-safe error detail",
+			mapping:     widgetMapping,
+			handlerErr:  errDomainNotFound,
+			wantCode:    codes.NotFound,
+			wantMessage: errDomainNotFound.Error(),
+		},
+		{
+			name:       "defaults mapping when nil",
+			mapping:    nil,
+			handlerErr: errors.New("boom"),
+			wantCode:   codes.Internal,
+		},
 	}
-	_, err := interceptor(context.Background(), nil, &googlegrpc.UnaryServerInfo{}, handler)
 
-	require.Error(t, err)
-	st, ok := status.FromError(err)
-	require.True(t, ok)
-	// The mapping function must not be consulted for an error that already
-	// carries a status: its code must be preserved exactly.
-	assert.Equal(t, codes.PermissionDenied, st.Code())
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			interceptor := grpcadapter.UnaryServerErrorInterceptor(tt.mapping, tt.opts...)
+			handler := func(ctx context.Context, req any) (any, error) {
+				return nil, tt.handlerErr
+			}
+			_, err := interceptor(context.Background(), nil, &googlegrpc.UnaryServerInfo{}, handler)
 
-// TestUnaryServerErrorInterceptorHidesInternalErrorDetailByDefault proves
-// the fix for M9: a handler error that maps to codes.Internal (the usual
-// catch-all for an error ErrorMapping doesn't specifically recognize, and
-// so exactly where a wrapped driver/library error commonly ends up) is not
-// sent to the caller verbatim by default. The real text is logged
-// server-side instead.
-func TestUnaryServerErrorInterceptorHidesInternalErrorDetailByDefault(t *testing.T) {
-	interceptor := grpcadapter.UnaryServerErrorInterceptor(widgetMapping)
-	sensitive := "dial tcp 10.0.0.5:5432: connection refused (dsn=postgres://user:pw@10.0.0.5/db)"
-	handler := func(ctx context.Context, req any) (any, error) {
-		return nil, errors.New(sensitive)
+			require.Error(t, err)
+			st, ok := status.FromError(err)
+			require.True(t, ok)
+			assert.Equal(t, tt.wantCode, st.Code())
+			if tt.wantNotContain != "" {
+				assert.NotContains(t, st.Message(), tt.wantNotContain)
+			}
+			if tt.wantMessage != "" {
+				assert.Equal(t, tt.wantMessage, st.Message())
+			}
+		})
 	}
-	_, err := interceptor(context.Background(), nil, &googlegrpc.UnaryServerInfo{}, handler)
-
-	require.Error(t, err)
-	st, ok := status.FromError(err)
-	require.True(t, ok)
-	assert.Equal(t, codes.Internal, st.Code())
-	assert.NotContains(t, st.Message(), sensitive)
-	assert.Equal(t, "internal error", st.Message())
-}
-
-// TestUnaryServerErrorInterceptorWithExposeInternalErrors proves the
-// opt-in escape hatch added alongside the M9 fix: WithExposeInternalErrors
-// restores the previous behavior of sending the handler error's real text
-// even for codes.Internal.
-func TestUnaryServerErrorInterceptorWithExposeInternalErrors(t *testing.T) {
-	interceptor := grpcadapter.UnaryServerErrorInterceptor(widgetMapping, grpcadapter.WithExposeInternalErrors())
-	handler := func(ctx context.Context, req any) (any, error) {
-		return nil, errors.New("boom")
-	}
-	_, err := interceptor(context.Background(), nil, &googlegrpc.UnaryServerInfo{}, handler)
-
-	require.Error(t, err)
-	st, ok := status.FromError(err)
-	require.True(t, ok)
-	assert.Equal(t, codes.Internal, st.Code())
-	assert.Equal(t, "boom", st.Message())
-}
-
-// TestUnaryServerErrorInterceptorKeepsClientSafeErrorDetail proves M9's
-// fix is scoped to codes.Internal/Unknown only: a domain error mapped to a
-// genuinely client-actionable code (e.g. codes.NotFound, deliberately
-// classified by the service's own ErrorMapping rather than falling back
-// to "anything else") still carries its real message by default.
-func TestUnaryServerErrorInterceptorKeepsClientSafeErrorDetail(t *testing.T) {
-	interceptor := grpcadapter.UnaryServerErrorInterceptor(widgetMapping)
-	handler := func(ctx context.Context, req any) (any, error) {
-		return nil, errDomainNotFound
-	}
-	_, err := interceptor(context.Background(), nil, &googlegrpc.UnaryServerInfo{}, handler)
-
-	require.Error(t, err)
-	st, ok := status.FromError(err)
-	require.True(t, ok)
-	assert.Equal(t, codes.NotFound, st.Code())
-	assert.Equal(t, errDomainNotFound.Error(), st.Message())
-}
-
-func TestUnaryServerErrorInterceptorDefaultsMappingWhenNil(t *testing.T) {
-	interceptor := grpcadapter.UnaryServerErrorInterceptor(nil)
-	handler := func(ctx context.Context, req any) (any, error) {
-		return nil, errors.New("boom")
-	}
-	_, err := interceptor(context.Background(), nil, &googlegrpc.UnaryServerInfo{}, handler)
-	require.Error(t, err)
-	st, ok := status.FromError(err)
-	require.True(t, ok)
-	assert.Equal(t, codes.Internal, st.Code())
 }
 
 func TestTranslateError(t *testing.T) {
@@ -190,54 +182,83 @@ func TestTranslateError(t *testing.T) {
 	}
 }
 
-// TestTranslateErrorPreservesStatusCode proves the fix for L6: the error
+// TestTranslateErrorPreservesStatus proves the fix for L6: the error
 // TranslateError returns must still report its original status code via
-// status.Code/status.FromError, not codes.Unknown (what a plain
-// fmt.Errorf("%w")-wrapped error with no GRPCStatus method would report).
-func TestTranslateErrorPreservesStatusCode(t *testing.T) {
-	original := status.Error(codes.NotFound, "widget missing")
-	got := grpcadapter.TranslateError(original)
-
-	require.Error(t, got)
-	assert.ErrorIs(t, got, grpcadapter.ErrNotFound)
-
-	// status.Code must report the original code, not codes.Unknown.
-	assert.Equal(t, codes.NotFound, status.Code(got))
-
-	st, ok := status.FromError(got)
-	require.True(t, ok, "status.FromError must still recognize the translated error")
-	assert.Equal(t, codes.NotFound, st.Code())
-	assert.Equal(t, "widget missing", st.Message())
-}
-
-// TestTranslateErrorPreservesStatusDetails proves the fix for L6: any
-// status Details attached to the original error survive translation and
-// remain reachable via status.FromError on the result.
-func TestTranslateErrorPreservesStatusDetails(t *testing.T) {
-	st := status.New(codes.InvalidArgument, "bad name")
-	stWithDetails, err := st.WithDetails(&durationpb.Duration{Seconds: 5})
+// status.Code/status.FromError (not codes.Unknown, what a plain
+// fmt.Errorf("%w")-wrapped error would report), and any status Details
+// attached to the original error remain reachable.
+func TestTranslateErrorPreservesStatus(t *testing.T) {
+	withDetails, err := status.New(codes.InvalidArgument, "bad name").
+		WithDetails(&durationpb.Duration{Seconds: 5})
 	require.NoError(t, err)
 
-	got := grpcadapter.TranslateError(stWithDetails.Err())
+	tests := []struct {
+		name         string
+		original     error
+		wantSentinel error
+		wantCode     codes.Code
+		wantMessage  string
+		wantSeconds  []int64 // expected durationpb details, in order
+	}{
+		{
+			name:         "status code and message preserved",
+			original:     status.Error(codes.NotFound, "widget missing"),
+			wantSentinel: grpcadapter.ErrNotFound,
+			wantCode:     codes.NotFound,
+			wantMessage:  "widget missing",
+		},
+		{
+			name:         "status details preserved",
+			original:     withDetails.Err(),
+			wantSentinel: grpcadapter.ErrInvalidInput,
+			wantCode:     codes.InvalidArgument,
+			wantMessage:  "bad name",
+			wantSeconds:  []int64{5},
+		},
+	}
 
-	require.Error(t, got)
-	assert.ErrorIs(t, got, grpcadapter.ErrInvalidInput)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := grpcadapter.TranslateError(tt.original)
 
-	gotSt, ok := status.FromError(got)
-	require.True(t, ok)
-	details := gotSt.Details()
-	require.Len(t, details, 1)
-	gotDuration, ok := details[0].(*durationpb.Duration)
-	require.True(t, ok)
-	assert.Equal(t, int64(5), gotDuration.GetSeconds())
+			require.Error(t, got)
+			assert.ErrorIs(t, got, tt.wantSentinel)
+			assert.Equal(t, tt.wantCode, status.Code(got))
+
+			st, ok := status.FromError(got)
+			require.True(t, ok, "status.FromError must still recognize the translated error")
+			assert.Equal(t, tt.wantCode, st.Code())
+			assert.Equal(t, tt.wantMessage, st.Message())
+
+			details := st.Details()
+			require.Len(t, details, len(tt.wantSeconds))
+			for i, want := range tt.wantSeconds {
+				d, ok := details[i].(*durationpb.Duration)
+				require.True(t, ok)
+				assert.Equal(t, want, d.GetSeconds())
+			}
+		})
+	}
 }
 
 func TestUnaryClientErrorInterceptorTranslatesError(t *testing.T) {
-	interceptor := grpcadapter.UnaryClientErrorInterceptor()
-	invoker := func(ctx context.Context, method string, req, reply any, cc *googlegrpc.ClientConn, opts ...googlegrpc.CallOption) error {
-		return status.Error(codes.NotFound, "widget missing")
+	tests := []struct {
+		name       string
+		invokerErr error
+		wantIs     error
+	}{
+		{name: "not found status is translated", invokerErr: status.Error(codes.NotFound, "widget missing"), wantIs: grpcadapter.ErrNotFound},
 	}
-	err := interceptor(context.Background(), "/svc/Method", nil, nil, nil, invoker)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, grpcadapter.ErrNotFound)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			interceptor := grpcadapter.UnaryClientErrorInterceptor()
+			invoker := func(ctx context.Context, method string, req, reply any, cc *googlegrpc.ClientConn, opts ...googlegrpc.CallOption) error {
+				return tt.invokerErr
+			}
+			err := interceptor(context.Background(), "/svc/Method", nil, nil, nil, invoker)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, tt.wantIs)
+		})
+	}
 }

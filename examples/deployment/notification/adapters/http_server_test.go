@@ -16,82 +16,49 @@ import (
 )
 
 func TestHTTPServerSendHandler(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	svc := service.New(logger)
-	server := adapters.NewHTTPServer(svc, logger)
+	discard := slog.New(slog.NewTextHandler(io.Discard, nil))
+	jsonBody := func(msg string) []byte {
+		b, err := json.Marshal(adapters.SendRequest{Message: msg})
+		require.NoError(t, err)
+		return b
+	}
+	tests := []struct {
+		name       string
+		logger     *slog.Logger
+		method     string
+		body       []byte
+		wantStatus int
+		wantAccept bool
+	}{
+		{name: "accepts message", logger: discard, method: http.MethodPost, body: jsonBody("hello"), wantStatus: http.StatusAccepted, wantAccept: true},
+		{name: "nil logger", logger: nil, method: http.MethodPost, body: jsonBody("hello"), wantStatus: http.StatusAccepted},
+		{name: "empty message", logger: discard, method: http.MethodPost, body: jsonBody(""), wantStatus: http.StatusBadRequest},
+		{name: "invalid method", logger: discard, method: http.MethodGet, wantStatus: http.StatusMethodNotAllowed},
+		{name: "invalid body", logger: discard, method: http.MethodPost, body: []byte("not-json"), wantStatus: http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := adapters.NewHTTPServer(service.New(tt.logger), tt.logger)
 
-	body, err := json.Marshal(adapters.SendRequest{Message: "hello"})
-	require.NoError(t, err)
+			var reader io.Reader
+			if tt.body != nil {
+				reader = bytes.NewReader(tt.body)
+			}
+			req := httptest.NewRequest(tt.method, "/notify", reader)
+			if tt.body != nil {
+				req.Header.Set("Content-Type", "application/json")
+			}
+			rec := httptest.NewRecorder()
 
-	req := httptest.NewRequest(http.MethodPost, "/notify", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
+			server.SendHandler()(rec, req)
 
-	server.SendHandler()(rec, req)
-
-	assert.Equal(t, http.StatusAccepted, rec.Code)
-	assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
-	var resp adapters.SendResponse
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	assert.Equal(t, "accepted", resp.Status)
-}
-
-func TestHTTPServerSendHandlerNilLogger(t *testing.T) {
-	svc := service.New(nil)
-	server := adapters.NewHTTPServer(svc, nil)
-
-	body, err := json.Marshal(adapters.SendRequest{Message: "hello"})
-	require.NoError(t, err)
-
-	req := httptest.NewRequest(http.MethodPost, "/notify", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-
-	server.SendHandler()(rec, req)
-
-	assert.Equal(t, http.StatusAccepted, rec.Code)
-}
-
-func TestHTTPServerSendHandlerEmptyMessage(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	svc := service.New(logger)
-	server := adapters.NewHTTPServer(svc, logger)
-
-	body, err := json.Marshal(adapters.SendRequest{Message: ""})
-	require.NoError(t, err)
-
-	req := httptest.NewRequest(http.MethodPost, "/notify", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-
-	server.SendHandler()(rec, req)
-
-	assert.Equal(t, http.StatusBadRequest, rec.Code)
-}
-
-func TestHTTPServerSendHandlerInvalidMethod(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	svc := service.New(logger)
-	server := adapters.NewHTTPServer(svc, logger)
-
-	req := httptest.NewRequest(http.MethodGet, "/notify", nil)
-	rec := httptest.NewRecorder()
-
-	server.SendHandler()(rec, req)
-
-	assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
-}
-
-func TestHTTPServerSendHandlerInvalidBody(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	svc := service.New(logger)
-	server := adapters.NewHTTPServer(svc, logger)
-
-	req := httptest.NewRequest(http.MethodPost, "/notify", bytes.NewReader([]byte("not-json")))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-
-	server.SendHandler()(rec, req)
-
-	assert.Equal(t, http.StatusBadRequest, rec.Code)
+			assert.Equal(t, tt.wantStatus, rec.Code)
+			if tt.wantAccept {
+				assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+				var resp adapters.SendResponse
+				require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+				assert.Equal(t, "accepted", resp.Status)
+			}
+		})
+	}
 }

@@ -71,43 +71,58 @@ func checkLifecycleOrder(t TB, rec *OrderRecorder, mods []modulex.Module) {
 	t.Helper()
 
 	for _, mod := range mods {
-		name := mod.Name()
-		initIdx := rec.Index(name, PhaseInit.String())
-		startIdx := rec.Index(name, PhaseStart.String())
-		stopIdx := rec.Index(name, PhaseStop.String())
-
-		if initIdx == -1 {
-			t.Errorf("modtest: module %q: Init was never recorded", name)
-			continue
-		}
-		if startIdx != -1 && startIdx < initIdx {
-			t.Errorf("modtest: module %q: Start (event #%d) happened before its own Init (event #%d)", name, startIdx, initIdx)
-		}
-		if stopIdx != -1 {
-			switch {
-			case startIdx != -1 && stopIdx < startIdx:
-				t.Errorf("modtest: module %q: Stop (event #%d) happened before its own Start (event #%d)", name, stopIdx, startIdx)
-			case startIdx == -1 && stopIdx < initIdx:
-				t.Errorf("modtest: module %q: Stop (event #%d) happened before its own Init (event #%d)", name, stopIdx, initIdx)
-			}
-		}
+		checkOwnPhaseOrder(t, rec, mod.Name())
 	}
-
 	for _, mod := range mods {
-		name := mod.Name()
-		modInit := rec.Index(name, PhaseInit.String())
-		modStop := rec.Index(name, PhaseStop.String())
+		checkDependencyOrder(t, rec, mod)
+	}
+}
 
-		for _, dep := range mod.DependsOn() {
-			depInit := rec.Index(dep, PhaseInit.String())
-			if depInit != -1 && modInit != -1 && depInit > modInit {
-				t.Errorf("modtest: dependency %q (Init event #%d) initialized after its dependent %q (Init event #%d); expected dependency-first ordering", dep, depInit, name, modInit)
-			}
+// checkOwnPhaseOrder verifies that a single module's recorded Init, Start
+// and Stop events appear in that order.
+func checkOwnPhaseOrder(t TB, rec *OrderRecorder, name string) {
+	t.Helper()
 
-			depStop := rec.Index(dep, PhaseStop.String())
-			if depStop != -1 && modStop != -1 && depStop < modStop {
-				t.Errorf("modtest: dependency %q (Stop event #%d) stopped before its dependent %q (Stop event #%d); expected reverse (dependent-first) teardown ordering", dep, depStop, name, modStop)
-			}
+	initIdx := rec.Index(name, PhaseInit.String())
+	startIdx := rec.Index(name, PhaseStart.String())
+	stopIdx := rec.Index(name, PhaseStop.String())
+
+	if initIdx == -1 {
+		t.Errorf("modtest: module %q: Init was never recorded", name)
+		return
+	}
+	if startIdx != -1 && startIdx < initIdx {
+		t.Errorf("modtest: module %q: Start (event #%d) happened before its own Init (event #%d)", name, startIdx, initIdx)
+	}
+	if stopIdx == -1 {
+		return
+	}
+	switch {
+	case startIdx != -1 && stopIdx < startIdx:
+		t.Errorf("modtest: module %q: Stop (event #%d) happened before its own Start (event #%d)", name, stopIdx, startIdx)
+	case startIdx == -1 && stopIdx < initIdx:
+		t.Errorf("modtest: module %q: Stop (event #%d) happened before its own Init (event #%d)", name, stopIdx, initIdx)
+	}
+}
+
+// checkDependencyOrder verifies that every dependency of mod initialized
+// before, and stopped after, mod itself.
+func checkDependencyOrder(t TB, rec *OrderRecorder, mod modulex.Module) {
+	t.Helper()
+
+	name := mod.Name()
+	modInit := rec.Index(name, PhaseInit.String())
+	modStop := rec.Index(name, PhaseStop.String())
+
+	for _, dep := range mod.DependsOn() {
+		depInit := rec.Index(dep, PhaseInit.String())
+		if depInit != -1 && modInit != -1 && depInit > modInit {
+			t.Errorf("modtest: dependency %q (Init event #%d) initialized after its dependent %q (Init event #%d); expected dependency-first ordering", dep, depInit, name, modInit)
+		}
+
+		depStop := rec.Index(dep, PhaseStop.String())
+		if depStop != -1 && modStop != -1 && depStop < modStop {
+			t.Errorf("modtest: dependency %q (Stop event #%d) stopped before its dependent %q (Stop event #%d); expected reverse (dependent-first) teardown ordering", dep, depStop, name, modStop)
 		}
 	}
 }
