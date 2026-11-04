@@ -237,7 +237,7 @@ already binds locally vs. remotely. The gRPC variant sits alongside it:
 | `remote/notification-grpc-server/main.go` | Standalone process: registers `notification.NewModule()` (the local implementation) and `notification.NewGRPCServerModule(addr)`, and lets the `Manager` own starting/stopping the gRPC listener. |
 | `remote/grpc-consumer/main.go` | Standalone process: registers `notification.NewGRPCRemoteModule(target)` and `consumer.NewModule()` — the same `consumer.Module` the HTTP remote example uses, unchanged, because it only ever depends on `ports.ServiceKey`. |
 
-`examples/deployment/integration_test.go`'s `TestRemoteGRPCComposition` runs
+`examples/deployment/integration_test.go`'s `TestComposition/remote_grpc` row runs
 both processes' wiring in-test against a real TCP loopback connection,
 proving the monolith and the remote-adapter example bind the same
 `ports.Sender`/`ports.ServiceKey` — one locally, one over gRPC — without
