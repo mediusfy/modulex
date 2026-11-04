@@ -31,7 +31,7 @@ func TestMain(m *testing.M) {
 	// ignore the manager's task-spawning goroutine rather than the specific
 	// test helper closures, which all share the same runtime function name.
 	goleak.VerifyTestMain(m,
-		goleak.IgnoreAnyFunction("github.com/mediusfy/modulex.(*Manager).Go.func1"),
+		goleak.IgnoreAnyFunction("github.com/mediusfy/modulex.(*Manager).superviseTask"),
 	)
 }
 
@@ -184,164 +184,202 @@ func newTestManager(eb modulex.EventBus) *modulex.Manager {
 func TestNewManagerConstructorValidation(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	t.Run("nil event bus defaults to a no-op implementation", func(t *testing.T) {
-		manager, err := modulex.NewManager(modulex.WithLogger(logger))
-		require.NoError(t, err)
-		require.NotNil(t, manager)
-
-		eb := manager.EventBus()
-		require.NotNil(t, eb)
-		assert.NoError(t, eb.Publish(context.Background(), "topic", []byte("payload")))
-		assert.NoError(t, eb.Subscribe(context.Background(), "topic", func(context.Context, []byte) error { return nil }))
-		assert.NoError(t, eb.Close(context.Background()))
-	})
-
-	t.Run("valid explicit event bus is retained", func(t *testing.T) {
-		mockEB := mocks.NewMockEventBus(t)
-		manager, err := modulex.NewManager(modulex.WithEventBus(mockEB), modulex.WithLogger(logger))
-		require.NoError(t, err)
-		assert.Same(t, mockEB, manager.EventBus())
-	})
-
-	t.Run("nil logger falls back to slog.Default", func(t *testing.T) {
-		manager, err := modulex.NewManager()
-		require.NoError(t, err)
-		require.NotNil(t, manager.Logger())
-	})
-
-	t.Run("invalid panic policy is rejected", func(t *testing.T) {
-		manager, err := modulex.NewManager(modulex.WithLogger(logger), modulex.WithPanicPolicy(modulex.PanicPolicy(99)))
-		require.Nil(t, manager)
-		require.ErrorIs(t, err, modulex.ErrInvalidPanicPolicy)
-	})
-
-	t.Run("valid panic policies are accepted", func(t *testing.T) {
-		for _, policy := range []modulex.PanicPolicy{modulex.PanicPolicyLog, modulex.PanicPolicyPropagate} {
-			manager, err := modulex.NewManager(modulex.WithLogger(logger), modulex.WithPanicPolicy(policy))
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "nil event bus defaults to a no-op implementation", run: func(t *testing.T) {
+			manager, err := modulex.NewManager(modulex.WithLogger(logger))
 			require.NoError(t, err)
 			require.NotNil(t, manager)
-		}
-	})
+
+			eb := manager.EventBus()
+			require.NotNil(t, eb)
+			assert.NoError(t, eb.Publish(context.Background(), "topic", []byte("payload")))
+			assert.NoError(t, eb.Subscribe(context.Background(), "topic", func(context.Context, []byte) error { return nil }))
+			assert.NoError(t, eb.Close(context.Background()))
+		}},
+
+		{name: "valid explicit event bus is retained", run: func(t *testing.T) {
+			mockEB := mocks.NewMockEventBus(t)
+			manager, err := modulex.NewManager(modulex.WithEventBus(mockEB), modulex.WithLogger(logger))
+			require.NoError(t, err)
+			assert.Same(t, mockEB, manager.EventBus())
+		}},
+
+		{name: "nil logger falls back to slog.Default", run: func(t *testing.T) {
+			manager, err := modulex.NewManager()
+			require.NoError(t, err)
+			require.NotNil(t, manager.Logger())
+		}},
+
+		{name: "invalid panic policy is rejected", run: func(t *testing.T) {
+			manager, err := modulex.NewManager(modulex.WithLogger(logger), modulex.WithPanicPolicy(modulex.PanicPolicy(99)))
+			require.Nil(t, manager)
+			require.ErrorIs(t, err, modulex.ErrInvalidPanicPolicy)
+		}},
+
+		{name: "valid panic policies are accepted", run: func(t *testing.T) {
+			for _, policy := range []modulex.PanicPolicy{modulex.PanicPolicyLog, modulex.PanicPolicyPropagate} {
+				manager, err := modulex.NewManager(modulex.WithLogger(logger), modulex.WithPanicPolicy(policy))
+				require.NoError(t, err)
+				require.NotNil(t, manager)
+			}
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestManagerLifecycleAndWiring(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "manager lifecycle and wiring", run: func(t *testing.T) {
+			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	configLoader := func(target interface{}) error {
-		cfg, ok := target.(*MockConfig)
-		if !ok {
-			return errors.New("invalid config type")
-		}
-		cfg.Value = "test-value"
-		return nil
+			configLoader := func(target interface{}) error {
+				cfg, ok := target.(*MockConfig)
+				if !ok {
+					return errors.New("invalid config type")
+				}
+				cfg.Value = "test-value"
+				return nil
+			}
+
+			mockEB := mocks.NewMockEventBus(t)
+			mockEB.On("Close", mock.Anything).Return(nil).Maybe()
+
+			manager, err := modulex.NewManager(modulex.WithEventBus(mockEB), modulex.WithLogger(logger), modulex.WithConfigLoader(configLoader))
+			require.NoError(t, err)
+
+			var initSeq, startSeq, stopSeq []string
+			modA := newMockModule(t, mockModuleConfig{
+				name: "module-a",
+				onInit: func(reg modulex.Registry) {
+					initSeq = append(initSeq, "module-a")
+					_ = reg.RegisterService("module-a.Service", &MockServiceImpl{})
+				},
+				onStart: func() { startSeq = append(startSeq, "module-a") },
+				onStop:  func() { stopSeq = append(stopSeq, "module-a") },
+			})
+			modB := newMockModule(t, mockModuleConfig{
+				name: "module-b",
+				deps: []string{"module-a"},
+				onInit: func(reg modulex.Registry) {
+					initSeq = append(initSeq, "module-b")
+				},
+				onStart: func() { startSeq = append(startSeq, "module-b") },
+				onStop:  func() { stopSeq = append(stopSeq, "module-b") },
+			})
+
+			require.NoError(t, manager.RegisterModule(modB))
+			require.NoError(t, manager.RegisterModule(modA))
+
+			// 1. Initialize modules
+			ctx := context.Background()
+			err = manager.InitModules(ctx)
+			require.NoError(t, err)
+
+			assert.Equal(t, []string{"module-a", "module-b"}, initSeq)
+
+			// Verify service registration and resolution
+			svc, err := manager.ResolveService("module-a.Service")
+			require.NoError(t, err)
+			mockSvc, ok := svc.(MockDoer)
+			require.True(t, ok)
+			assert.Equal(t, "mocked", mockSvc.DoSomething())
+
+			// Verify service not found error
+			_, err = manager.ResolveService("non-existent")
+			assert.ErrorIs(t, err, modulex.ErrServiceNotFound)
+
+			// Verify registry locking after initialization
+			err = manager.RegisterService("late.Service", &MockServiceImpl{})
+			assert.ErrorIs(t, err, modulex.ErrRegistryLocked)
+
+			// 2. Start modules
+			err = manager.StartModules(ctx)
+			require.NoError(t, err)
+			assert.Equal(t, []string{"module-a", "module-b"}, startSeq)
+
+			// 3. Stop modules
+			err = manager.StopModules(ctx)
+			require.NoError(t, err)
+			assert.Equal(t, []string{"module-b", "module-a"}, stopSeq)
+		}},
 	}
-
-	mockEB := mocks.NewMockEventBus(t)
-	mockEB.On("Close", mock.Anything).Return(nil).Maybe()
-
-	manager, err := modulex.NewManager(modulex.WithEventBus(mockEB), modulex.WithLogger(logger), modulex.WithConfigLoader(configLoader))
-	require.NoError(t, err)
-
-	var initSeq, startSeq, stopSeq []string
-	modA := newMockModule(t, mockModuleConfig{
-		name: "module-a",
-		onInit: func(reg modulex.Registry) {
-			initSeq = append(initSeq, "module-a")
-			_ = reg.RegisterService("module-a.Service", &MockServiceImpl{})
-		},
-		onStart: func() { startSeq = append(startSeq, "module-a") },
-		onStop:  func() { stopSeq = append(stopSeq, "module-a") },
-	})
-	modB := newMockModule(t, mockModuleConfig{
-		name: "module-b",
-		deps: []string{"module-a"},
-		onInit: func(reg modulex.Registry) {
-			initSeq = append(initSeq, "module-b")
-		},
-		onStart: func() { startSeq = append(startSeq, "module-b") },
-		onStop:  func() { stopSeq = append(stopSeq, "module-b") },
-	})
-
-	require.NoError(t, manager.RegisterModule(modB))
-	require.NoError(t, manager.RegisterModule(modA))
-
-	// 1. Initialize modules
-	ctx := context.Background()
-	err = manager.InitModules(ctx)
-	require.NoError(t, err)
-
-	assert.Equal(t, []string{"module-a", "module-b"}, initSeq)
-
-	// Verify service registration and resolution
-	svc, err := manager.ResolveService("module-a.Service")
-	require.NoError(t, err)
-	mockSvc, ok := svc.(MockDoer)
-	require.True(t, ok)
-	assert.Equal(t, "mocked", mockSvc.DoSomething())
-
-	// Verify service not found error
-	_, err = manager.ResolveService("non-existent")
-	assert.ErrorIs(t, err, modulex.ErrServiceNotFound)
-
-	// Verify registry locking after initialization
-	err = manager.RegisterService("late.Service", &MockServiceImpl{})
-	assert.ErrorIs(t, err, modulex.ErrRegistryLocked)
-
-	// 2. Start modules
-	err = manager.StartModules(ctx)
-	require.NoError(t, err)
-	assert.Equal(t, []string{"module-a", "module-b"}, startSeq)
-
-	// 3. Stop modules
-	err = manager.StopModules(ctx)
-	require.NoError(t, err)
-	assert.Equal(t, []string{"module-b", "module-a"}, stopSeq)
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestManagerImplementsCapabilityInterfaces(t *testing.T) {
-	manager := newTestManager(nil)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "manager implements capability interfaces", run: func(t *testing.T) {
+			manager := newTestManager(nil)
 
-	// Compile-time assertions that Manager implements the narrower capability
-	// interfaces as well as the full Registry composite.
-	var _ modulex.ServiceRegisterer = manager
-	var _ modulex.ServiceResolver = manager
-	var _ modulex.ServiceRegistry = manager
-	var _ modulex.EventBusProvider = manager
-	var _ modulex.ConfigProvider = manager
-	var _ modulex.LoggerProvider = manager
-	var _ modulex.TaskSpawner = manager
-	var _ modulex.HealthCheckRegisterer = manager
-	var _ modulex.HealthCheckProvider = manager
-	var _ modulex.ReadinessRegisterer = manager
-	var _ modulex.ReadinessProvider = manager
-	var _ modulex.Registry = manager
+			// Compile-time assertions that Manager implements the narrower capability
+			// interfaces as well as the full Registry composite.
+			var _ modulex.ServiceRegisterer = manager
+			var _ modulex.ServiceResolver = manager
+			var _ modulex.ServiceRegistry = manager
+			var _ modulex.EventBusProvider = manager
+			var _ modulex.ConfigProvider = manager
+			var _ modulex.LoggerProvider = manager
+			var _ modulex.TaskSpawner = manager
+			var _ modulex.HealthCheckRegisterer = manager
+			var _ modulex.HealthCheckProvider = manager
+			var _ modulex.ReadinessRegisterer = manager
+			var _ modulex.ReadinessProvider = manager
+			var _ modulex.Registry = manager
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestManager_GetConfigConcurrentAccess(t *testing.T) {
-	configLoader := func(target interface{}) error {
-		cfg, ok := target.(*MockConfig)
-		if !ok {
-			return errors.New("invalid config type")
-		}
-		cfg.Value = "concurrent-value"
-		return nil
-	}
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "manager  get config concurrent access", run: func(t *testing.T) {
+			configLoader := func(target interface{}) error {
+				cfg, ok := target.(*MockConfig)
+				if !ok {
+					return errors.New("invalid config type")
+				}
+				cfg.Value = "concurrent-value"
+				return nil
+			}
 
-	manager, err := modulex.NewManager(modulex.WithConfigLoader(configLoader))
-	require.NoError(t, err)
+			manager, err := modulex.NewManager(modulex.WithConfigLoader(configLoader))
+			require.NoError(t, err)
 
-	const n = 100
-	var wg sync.WaitGroup
-	wg.Add(n)
-	for i := 0; i < n; i++ {
-		go func() {
-			defer wg.Done()
-			var cfg MockConfig
-			require.NoError(t, manager.GetConfig(&cfg))
-			assert.Equal(t, "concurrent-value", cfg.Value)
-		}()
+			const n = 100
+			var wg sync.WaitGroup
+			wg.Add(n)
+			for i := 0; i < n; i++ {
+				go func() {
+					defer wg.Done()
+					var cfg MockConfig
+					require.NoError(t, manager.GetConfig(&cfg))
+					assert.Equal(t, "concurrent-value", cfg.Value)
+				}()
+			}
+			wg.Wait()
+		}},
 	}
-	wg.Wait()
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestRegisterHealthCheckValidation(t *testing.T) {
@@ -387,52 +425,92 @@ func TestRegisterHealthCheckValidation(t *testing.T) {
 // with no error at all -- httpx worked around this defensively, but any
 // consumer that did not would panic when invoking a stored nil check.
 func TestRegisterHealthCheckNilRejectedNeverStored(t *testing.T) {
-	manager := newTestManager(nil)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "register health check nil rejected never stored", run: func(t *testing.T) {
+			manager := newTestManager(nil)
 
-	err := manager.RegisterHealthCheck("db", nil)
-	require.ErrorIs(t, err, modulex.ErrHealthCheckNil)
+			err := manager.RegisterHealthCheck("db", nil)
+			require.ErrorIs(t, err, modulex.ErrHealthCheckNil)
 
-	checks := manager.HealthChecks()
-	_, exists := checks["db"]
-	assert.False(t, exists, "a rejected nil health check must not appear in HealthChecks()")
+			checks := manager.HealthChecks()
+			_, exists := checks["db"]
+			assert.False(t, exists, "a rejected nil health check must not appear in HealthChecks()")
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestHealthChecksDefaultsToEmptyMap(t *testing.T) {
-	manager := newTestManager(nil)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "health checks defaults to empty map", run: func(t *testing.T) {
+			manager := newTestManager(nil)
 
-	checks := manager.HealthChecks()
-	assert.NotNil(t, checks)
-	assert.Empty(t, checks)
+			checks := manager.HealthChecks()
+			assert.NotNil(t, checks)
+			assert.Empty(t, checks)
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestHealthChecksReturnsDefensiveCopy(t *testing.T) {
-	manager := newTestManager(nil)
-	require.NoError(t, manager.RegisterHealthCheck("db", func(context.Context) error { return nil }))
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "health checks returns defensive copy", run: func(t *testing.T) {
+			manager := newTestManager(nil)
+			require.NoError(t, manager.RegisterHealthCheck("db", func(context.Context) error { return nil }))
 
-	checks := manager.HealthChecks()
-	checks["injected"] = func(context.Context) error { return nil }
+			checks := manager.HealthChecks()
+			checks["injected"] = func(context.Context) error { return nil }
 
-	assert.Len(t, manager.HealthChecks(), 1)
+			assert.Len(t, manager.HealthChecks(), 1)
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestConcurrentHealthCheckRegistration(t *testing.T) {
-	manager := newTestManager(nil)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "concurrent health check registration", run: func(t *testing.T) {
+			manager := newTestManager(nil)
 
-	const n = 100
-	var wg sync.WaitGroup
-	wg.Add(n)
+			const n = 100
+			var wg sync.WaitGroup
+			wg.Add(n)
 
-	for i := 0; i < n; i++ {
-		go func(i int) {
-			defer wg.Done()
-			name := fmt.Sprintf("check-%d", i)
-			require.NoError(t, manager.RegisterHealthCheck(name, func(context.Context) error { return nil }))
-		}(i)
+			for i := 0; i < n; i++ {
+				go func(i int) {
+					defer wg.Done()
+					name := fmt.Sprintf("check-%d", i)
+					require.NoError(t, manager.RegisterHealthCheck(name, func(context.Context) error { return nil }))
+				}(i)
+			}
+
+			wg.Wait()
+
+			assert.Len(t, manager.HealthChecks(), n)
+		}},
 	}
-
-	wg.Wait()
-
-	assert.Len(t, manager.HealthChecks(), n)
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestRegisterReadinessCheckValidation(t *testing.T) {
@@ -475,52 +553,92 @@ func TestRegisterReadinessCheckValidation(t *testing.T) {
 // TestRegisterReadinessCheckNilRejectedNeverStored mirrors
 // TestRegisterHealthCheckNilRejectedNeverStored for RegisterReadinessCheck.
 func TestRegisterReadinessCheckNilRejectedNeverStored(t *testing.T) {
-	manager := newTestManager(nil)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "register readiness check nil rejected never stored", run: func(t *testing.T) {
+			manager := newTestManager(nil)
 
-	err := manager.RegisterReadinessCheck("cache", nil)
-	require.ErrorIs(t, err, modulex.ErrReadinessCheckNil)
+			err := manager.RegisterReadinessCheck("cache", nil)
+			require.ErrorIs(t, err, modulex.ErrReadinessCheckNil)
 
-	checks := manager.ReadinessChecks()
-	_, exists := checks["cache"]
-	assert.False(t, exists, "a rejected nil readiness check must not appear in ReadinessChecks()")
+			checks := manager.ReadinessChecks()
+			_, exists := checks["cache"]
+			assert.False(t, exists, "a rejected nil readiness check must not appear in ReadinessChecks()")
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestReadinessChecksDefaultsToEmptyMap(t *testing.T) {
-	manager := newTestManager(nil)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "readiness checks defaults to empty map", run: func(t *testing.T) {
+			manager := newTestManager(nil)
 
-	checks := manager.ReadinessChecks()
-	assert.NotNil(t, checks)
-	assert.Empty(t, checks)
+			checks := manager.ReadinessChecks()
+			assert.NotNil(t, checks)
+			assert.Empty(t, checks)
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestReadinessChecksReturnsDefensiveCopy(t *testing.T) {
-	manager := newTestManager(nil)
-	require.NoError(t, manager.RegisterReadinessCheck("cache", func(context.Context) error { return nil }))
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "readiness checks returns defensive copy", run: func(t *testing.T) {
+			manager := newTestManager(nil)
+			require.NoError(t, manager.RegisterReadinessCheck("cache", func(context.Context) error { return nil }))
 
-	checks := manager.ReadinessChecks()
-	checks["injected"] = func(context.Context) error { return nil }
+			checks := manager.ReadinessChecks()
+			checks["injected"] = func(context.Context) error { return nil }
 
-	assert.Len(t, manager.ReadinessChecks(), 1)
+			assert.Len(t, manager.ReadinessChecks(), 1)
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestConcurrentReadinessCheckRegistration(t *testing.T) {
-	manager := newTestManager(nil)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "concurrent readiness check registration", run: func(t *testing.T) {
+			manager := newTestManager(nil)
 
-	const n = 100
-	var wg sync.WaitGroup
-	wg.Add(n)
+			const n = 100
+			var wg sync.WaitGroup
+			wg.Add(n)
 
-	for i := 0; i < n; i++ {
-		go func(i int) {
-			defer wg.Done()
-			name := fmt.Sprintf("check-%d", i)
-			require.NoError(t, manager.RegisterReadinessCheck(name, func(context.Context) error { return nil }))
-		}(i)
+			for i := 0; i < n; i++ {
+				go func(i int) {
+					defer wg.Done()
+					name := fmt.Sprintf("check-%d", i)
+					require.NoError(t, manager.RegisterReadinessCheck(name, func(context.Context) error { return nil }))
+				}(i)
+			}
+
+			wg.Wait()
+
+			assert.Len(t, manager.ReadinessChecks(), n)
+		}},
 	}
-
-	wg.Wait()
-
-	assert.Len(t, manager.ReadinessChecks(), n)
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 // TestHealthAndReadinessChecksAreIndependent asserts that registering a check
@@ -528,66 +646,106 @@ func TestConcurrentReadinessCheckRegistration(t *testing.T) {
 // collide - they are tracked separately because they answer different
 // questions (liveness vs readiness).
 func TestHealthAndReadinessChecksAreIndependent(t *testing.T) {
-	manager := newTestManager(nil)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "health and readiness checks are independent", run: func(t *testing.T) {
+			manager := newTestManager(nil)
 
-	require.NoError(t, manager.RegisterHealthCheck("db", func(context.Context) error { return nil }))
-	require.NoError(t, manager.RegisterReadinessCheck("db", func(context.Context) error { return nil }))
+			require.NoError(t, manager.RegisterHealthCheck("db", func(context.Context) error { return nil }))
+			require.NoError(t, manager.RegisterReadinessCheck("db", func(context.Context) error { return nil }))
 
-	assert.Len(t, manager.HealthChecks(), 1)
-	assert.Len(t, manager.ReadinessChecks(), 1)
+			assert.Len(t, manager.HealthChecks(), 1)
+			assert.Len(t, manager.ReadinessChecks(), 1)
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestCircularDependencyDetection(t *testing.T) {
-	manager := newTestManager(nil)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "circular dependency detection", run: func(t *testing.T) {
+			manager := newTestManager(nil)
 
-	modA := newMockModule(t, mockModuleConfig{name: "module-a", deps: []string{"module-b"}})
-	modB := newMockModule(t, mockModuleConfig{name: "module-b", deps: []string{"module-a"}})
+			modA := newMockModule(t, mockModuleConfig{name: "module-a", deps: []string{"module-b"}})
+			modB := newMockModule(t, mockModuleConfig{name: "module-b", deps: []string{"module-a"}})
 
-	require.NoError(t, manager.RegisterModule(modA))
-	require.NoError(t, manager.RegisterModule(modB))
+			require.NoError(t, manager.RegisterModule(modA))
+			require.NoError(t, manager.RegisterModule(modB))
 
-	err := manager.InitModules(context.Background())
-	assert.ErrorIs(t, err, modulex.ErrCircularDependency)
+			err := manager.InitModules(context.Background())
+			assert.ErrorIs(t, err, modulex.ErrCircularDependency)
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestEventBusIntegration(t *testing.T) {
-	manager := newTestManager(NewInMemoryEventBus())
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "event bus integration", run: func(t *testing.T) {
+			manager := newTestManager(NewInMemoryEventBus())
 
-	var received []byte
-	err := manager.EventBus().Subscribe(context.Background(), "test.topic", func(ctx context.Context, payload []byte) error {
-		received = payload
-		return nil
-	})
-	require.NoError(t, err)
+			var received []byte
+			err := manager.EventBus().Subscribe(context.Background(), "test.topic", func(ctx context.Context, payload []byte) error {
+				received = payload
+				return nil
+			})
+			require.NoError(t, err)
 
-	err = manager.EventBus().Publish(context.Background(), "test.topic", []byte("hello"))
-	require.NoError(t, err)
+			err = manager.EventBus().Publish(context.Background(), "test.topic", []byte("hello"))
+			require.NoError(t, err)
 
-	assert.Equal(t, []byte("hello"), received)
+			assert.Equal(t, []byte("hello"), received)
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestWatermillEventBusIntegration(t *testing.T) {
-	eb := watermilladapter.NewEventBus(10, false, false)
-	defer func() { _ = eb.Close(context.Background()) }()
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "watermill event bus integration", run: func(t *testing.T) {
+			eb := watermilladapter.NewEventBus(10, false, false)
+			defer func() { _ = eb.Close(context.Background()) }()
 
-	manager := newTestManager(eb)
+			manager := newTestManager(eb)
 
-	var wg sync.WaitGroup
-	wg.Add(1)
+			var wg sync.WaitGroup
+			wg.Add(1)
 
-	var received []byte
-	err := manager.EventBus().Subscribe(context.Background(), "watermill.topic", func(ctx context.Context, payload []byte) error {
-		received = payload
-		wg.Done()
-		return nil
-	})
-	require.NoError(t, err)
+			var received []byte
+			err := manager.EventBus().Subscribe(context.Background(), "watermill.topic", func(ctx context.Context, payload []byte) error {
+				received = payload
+				wg.Done()
+				return nil
+			})
+			require.NoError(t, err)
 
-	err = manager.EventBus().Publish(context.Background(), "watermill.topic", []byte("watermill-data"))
-	require.NoError(t, err)
+			err = manager.EventBus().Publish(context.Background(), "watermill.topic", []byte("watermill-data"))
+			require.NoError(t, err)
 
-	wg.Wait()
-	assert.Equal(t, []byte("watermill-data"), received)
+			wg.Wait()
+			assert.Equal(t, []byte("watermill-data"), received)
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestRegisterModuleValidation(t *testing.T) {
@@ -751,100 +909,150 @@ func TestRegisterServiceValidation(t *testing.T) {
 }
 
 func TestSelfDependencyDetection(t *testing.T) {
-	manager := newTestManager(nil)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "self dependency detection", run: func(t *testing.T) {
+			manager := newTestManager(nil)
 
-	modA := newMockModule(t, mockModuleConfig{name: "module-a", deps: []string{"module-a"}})
-	require.NoError(t, manager.RegisterModule(modA))
+			modA := newMockModule(t, mockModuleConfig{name: "module-a", deps: []string{"module-a"}})
+			require.NoError(t, manager.RegisterModule(modA))
 
-	err := manager.InitModules(context.Background())
-	assert.ErrorIs(t, err, modulex.ErrSelfDependency)
+			err := manager.InitModules(context.Background())
+			assert.ErrorIs(t, err, modulex.ErrSelfDependency)
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestUnknownDependencyDetection(t *testing.T) {
-	manager := newTestManager(nil)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "unknown dependency detection", run: func(t *testing.T) {
+			manager := newTestManager(nil)
 
-	modA := newMockModule(t, mockModuleConfig{name: "module-a", deps: []string{"missing-module"}})
-	require.NoError(t, manager.RegisterModule(modA))
+			modA := newMockModule(t, mockModuleConfig{name: "module-a", deps: []string{"missing-module"}})
+			require.NoError(t, manager.RegisterModule(modA))
 
-	err := manager.InitModules(context.Background())
-	assert.ErrorIs(t, err, modulex.ErrDependencyNotFound)
-	assert.ErrorContains(t, err, "missing-module")
+			err := manager.InitModules(context.Background())
+			assert.ErrorIs(t, err, modulex.ErrDependencyNotFound)
+			assert.ErrorContains(t, err, "missing-module")
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestCircularDependencyReportsPath(t *testing.T) {
-	manager := newTestManager(nil)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "circular dependency reports path", run: func(t *testing.T) {
+			manager := newTestManager(nil)
 
-	modA := newMockModule(t, mockModuleConfig{name: "module-a", deps: []string{"module-b"}})
-	modB := newMockModule(t, mockModuleConfig{name: "module-b", deps: []string{"module-c"}})
-	modC := newMockModule(t, mockModuleConfig{name: "module-c", deps: []string{"module-a"}})
+			modA := newMockModule(t, mockModuleConfig{name: "module-a", deps: []string{"module-b"}})
+			modB := newMockModule(t, mockModuleConfig{name: "module-b", deps: []string{"module-c"}})
+			modC := newMockModule(t, mockModuleConfig{name: "module-c", deps: []string{"module-a"}})
 
-	require.NoError(t, manager.RegisterModule(modA))
-	require.NoError(t, manager.RegisterModule(modB))
-	require.NoError(t, manager.RegisterModule(modC))
+			require.NoError(t, manager.RegisterModule(modA))
+			require.NoError(t, manager.RegisterModule(modB))
+			require.NoError(t, manager.RegisterModule(modC))
 
-	err := manager.InitModules(context.Background())
-	require.ErrorIs(t, err, modulex.ErrCircularDependency)
-	assert.ErrorContains(t, err, "module-a")
-	assert.ErrorContains(t, err, "module-b")
-	assert.ErrorContains(t, err, "module-c")
+			err := manager.InitModules(context.Background())
+			require.ErrorIs(t, err, modulex.ErrCircularDependency)
+			assert.ErrorContains(t, err, "module-a")
+			assert.ErrorContains(t, err, "module-b")
+			assert.ErrorContains(t, err, "module-c")
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestRegistrationOrderTieBreak(t *testing.T) {
-	manager := newTestManager(nil)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "registration order tie break", run: func(t *testing.T) {
+			manager := newTestManager(nil)
 
-	var order []string
-	modA := newMockModule(t, mockModuleConfig{
-		name:    "module-a",
-		onInit:  func(reg modulex.Registry) { order = append(order, "module-a") },
-		onStart: func() { order = append(order, "module-a") },
-		onStop:  func() { order = append(order, "module-a") },
-	})
-	modB := newMockModule(t, mockModuleConfig{
-		name:    "module-b",
-		onInit:  func(reg modulex.Registry) { order = append(order, "module-b") },
-		onStart: func() { order = append(order, "module-b") },
-		onStop:  func() { order = append(order, "module-b") },
-	})
-	modC := newMockModule(t, mockModuleConfig{
-		name:    "module-c",
-		onInit:  func(reg modulex.Registry) { order = append(order, "module-c") },
-		onStart: func() { order = append(order, "module-c") },
-		onStop:  func() { order = append(order, "module-c") },
-	})
+			var order []string
+			modA := newMockModule(t, mockModuleConfig{
+				name:    "module-a",
+				onInit:  func(reg modulex.Registry) { order = append(order, "module-a") },
+				onStart: func() { order = append(order, "module-a") },
+				onStop:  func() { order = append(order, "module-a") },
+			})
+			modB := newMockModule(t, mockModuleConfig{
+				name:    "module-b",
+				onInit:  func(reg modulex.Registry) { order = append(order, "module-b") },
+				onStart: func() { order = append(order, "module-b") },
+				onStop:  func() { order = append(order, "module-b") },
+			})
+			modC := newMockModule(t, mockModuleConfig{
+				name:    "module-c",
+				onInit:  func(reg modulex.Registry) { order = append(order, "module-c") },
+				onStart: func() { order = append(order, "module-c") },
+				onStop:  func() { order = append(order, "module-c") },
+			})
 
-	// Register in a specific order; independent modules should initialize in that order.
-	require.NoError(t, manager.RegisterModule(modC))
-	require.NoError(t, manager.RegisterModule(modA))
-	require.NoError(t, manager.RegisterModule(modB))
+			// Register in a specific order; independent modules should initialize in that order.
+			require.NoError(t, manager.RegisterModule(modC))
+			require.NoError(t, manager.RegisterModule(modA))
+			require.NoError(t, manager.RegisterModule(modB))
 
-	require.NoError(t, manager.InitModules(context.Background()))
-	assert.Equal(t, []string{"module-c", "module-a", "module-b"}, order)
+			require.NoError(t, manager.InitModules(context.Background()))
+			assert.Equal(t, []string{"module-c", "module-a", "module-b"}, order)
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestDependencyOrderOverridesRegistrationOrder(t *testing.T) {
-	manager := newTestManager(nil)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "dependency order overrides registration order", run: func(t *testing.T) {
+			manager := newTestManager(nil)
 
-	var order []string
-	modA := newMockModule(t, mockModuleConfig{
-		name:    "module-a",
-		onInit:  func(reg modulex.Registry) { order = append(order, "module-a") },
-		onStart: func() { order = append(order, "module-a") },
-		onStop:  func() { order = append(order, "module-a") },
-	})
-	modB := newMockModule(t, mockModuleConfig{
-		name:    "module-b",
-		deps:    []string{"module-a"},
-		onInit:  func(reg modulex.Registry) { order = append(order, "module-b") },
-		onStart: func() { order = append(order, "module-b") },
-		onStop:  func() { order = append(order, "module-b") },
-	})
+			var order []string
+			modA := newMockModule(t, mockModuleConfig{
+				name:    "module-a",
+				onInit:  func(reg modulex.Registry) { order = append(order, "module-a") },
+				onStart: func() { order = append(order, "module-a") },
+				onStop:  func() { order = append(order, "module-a") },
+			})
+			modB := newMockModule(t, mockModuleConfig{
+				name:    "module-b",
+				deps:    []string{"module-a"},
+				onInit:  func(reg modulex.Registry) { order = append(order, "module-b") },
+				onStart: func() { order = append(order, "module-b") },
+				onStop:  func() { order = append(order, "module-b") },
+			})
 
-	// Register dependent module first.
-	require.NoError(t, manager.RegisterModule(modB))
-	require.NoError(t, manager.RegisterModule(modA))
+			// Register dependent module first.
+			require.NoError(t, manager.RegisterModule(modB))
+			require.NoError(t, manager.RegisterModule(modA))
 
-	require.NoError(t, manager.InitModules(context.Background()))
-	assert.Equal(t, []string{"module-a", "module-b"}, order)
+			require.NoError(t, manager.InitModules(context.Background()))
+			assert.Equal(t, []string{"module-a", "module-b"}, order)
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestGraphValidationTable(t *testing.T) {
@@ -1089,26 +1297,36 @@ func FuzzGraphValidation(f *testing.F) {
 }
 
 func TestConcurrentRegistration(t *testing.T) {
-	manager := newTestManager(nil)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "concurrent registration", run: func(t *testing.T) {
+			manager := newTestManager(nil)
 
-	const n = 100
-	var wg sync.WaitGroup
-	wg.Add(n)
+			const n = 100
+			var wg sync.WaitGroup
+			wg.Add(n)
 
-	for i := 0; i < n; i++ {
-		go func(i int) {
-			defer wg.Done()
-			name := fmt.Sprintf("module-%d", i)
-			mod := newMockModule(t, mockModuleConfig{name: name})
-			require.NoError(t, manager.RegisterModule(mod))
-		}(i)
+			for i := 0; i < n; i++ {
+				go func(i int) {
+					defer wg.Done()
+					name := fmt.Sprintf("module-%d", i)
+					mod := newMockModule(t, mockModuleConfig{name: name})
+					require.NoError(t, manager.RegisterModule(mod))
+				}(i)
+			}
+
+			wg.Wait()
+
+			// Initializing with many independent modules should succeed and preserve registration order.
+			err := manager.InitModules(context.Background())
+			require.NoError(t, err)
+		}},
 	}
-
-	wg.Wait()
-
-	// Initializing with many independent modules should succeed and preserve registration order.
-	err := manager.InitModules(context.Background())
-	require.NoError(t, err)
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestLifecycleStateTransitions(t *testing.T) {
@@ -1236,37 +1454,47 @@ func TestLifecycleStateTransitions(t *testing.T) {
 // progress, and the manager's state must not be corrupted once StartModules
 // completes.
 func TestStopModulesRejectedDuringConcurrentStartModules(t *testing.T) {
-	manager := newTestManager(nil)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "stop modules rejected during concurrent start modules", run: func(t *testing.T) {
+			manager := newTestManager(nil)
 
-	started := make(chan struct{})
-	resume := make(chan struct{})
+			started := make(chan struct{})
+			resume := make(chan struct{})
 
-	mod := newMockModule(t, mockModuleConfig{
-		name: "module-a",
-		onStart: func() {
-			close(started)
-			<-resume
-		},
-	})
-	require.NoError(t, manager.RegisterModule(mod))
-	require.NoError(t, manager.InitModules(context.Background()))
+			mod := newMockModule(t, mockModuleConfig{
+				name: "module-a",
+				onStart: func() {
+					close(started)
+					<-resume
+				},
+			})
+			require.NoError(t, manager.RegisterModule(mod))
+			require.NoError(t, manager.InitModules(context.Background()))
 
-	startDone := make(chan error, 1)
-	go func() {
-		startDone <- manager.StartModules(context.Background())
-	}()
+			startDone := make(chan error, 1)
+			go func() {
+				startDone <- manager.StartModules(context.Background())
+			}()
 
-	<-started // StartModules is now inside module-a's Start(); state == StateStarting
+			<-started // StartModules is now inside module-a's Start(); state == StateStarting
 
-	stopErr := manager.StopModules(context.Background())
-	assert.ErrorIs(t, stopErr, modulex.ErrInvalidLifecycleState)
+			stopErr := manager.StopModules(context.Background())
+			assert.ErrorIs(t, stopErr, modulex.ErrInvalidLifecycleState)
 
-	close(resume)
-	require.NoError(t, <-startDone)
+			close(resume)
+			require.NoError(t, <-startDone)
 
-	assert.Equal(t, modulex.StateRunning, manager.State())
-	require.NoError(t, manager.StopModules(context.Background()))
-	assert.Equal(t, modulex.StateStopped, manager.State())
+			assert.Equal(t, modulex.StateRunning, manager.State())
+			require.NoError(t, manager.StopModules(context.Background()))
+			assert.Equal(t, modulex.StateStopped, manager.State())
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 // TestStopModulesRejectedDuringConcurrentInitModules is the InitModules
@@ -1275,117 +1503,147 @@ func TestStopModulesRejectedDuringConcurrentStartModules(t *testing.T) {
 // goroutine (StateInitializing) rather than racing its own shutdown against
 // the in-flight init.
 func TestStopModulesRejectedDuringConcurrentInitModules(t *testing.T) {
-	manager := newTestManager(nil)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "stop modules rejected during concurrent init modules", run: func(t *testing.T) {
+			manager := newTestManager(nil)
 
-	initializing := make(chan struct{})
-	resume := make(chan struct{})
+			initializing := make(chan struct{})
+			resume := make(chan struct{})
 
-	mod := newMockModule(t, mockModuleConfig{
-		name: "module-a",
-		onInit: func(reg modulex.Registry) {
-			close(initializing)
-			<-resume
-		},
-	})
-	require.NoError(t, manager.RegisterModule(mod))
+			mod := newMockModule(t, mockModuleConfig{
+				name: "module-a",
+				onInit: func(reg modulex.Registry) {
+					close(initializing)
+					<-resume
+				},
+			})
+			require.NoError(t, manager.RegisterModule(mod))
 
-	initDone := make(chan error, 1)
-	go func() {
-		initDone <- manager.InitModules(context.Background())
-	}()
+			initDone := make(chan error, 1)
+			go func() {
+				initDone <- manager.InitModules(context.Background())
+			}()
 
-	<-initializing // InitModules is now inside module-a's Init(); state == StateInitializing
+			<-initializing // InitModules is now inside module-a's Init(); state == StateInitializing
 
-	stopErr := manager.StopModules(context.Background())
-	assert.ErrorIs(t, stopErr, modulex.ErrInvalidLifecycleState)
+			stopErr := manager.StopModules(context.Background())
+			assert.ErrorIs(t, stopErr, modulex.ErrInvalidLifecycleState)
 
-	close(resume)
-	require.NoError(t, <-initDone)
+			close(resume)
+			require.NoError(t, <-initDone)
 
-	assert.Equal(t, modulex.StateInitialized, manager.State())
-	require.NoError(t, manager.StopModules(context.Background()))
-	assert.Equal(t, modulex.StateStopped, manager.State())
+			assert.Equal(t, modulex.StateInitialized, manager.State())
+			require.NoError(t, manager.StopModules(context.Background()))
+			assert.Equal(t, modulex.StateStopped, manager.State())
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestInitFailureRollback(t *testing.T) {
-	manager := newTestManager(nil)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "init failure rollback", run: func(t *testing.T) {
+			manager := newTestManager(nil)
 
-	var initCalls, stopCalls []string
-	modA := newMockModule(t, mockModuleConfig{
-		name:   "module-a",
-		onInit: func(reg modulex.Registry) { initCalls = append(initCalls, "module-a") },
-		onStop: func() { stopCalls = append(stopCalls, "module-a") },
-	})
-	modB := newMockModule(t, mockModuleConfig{
-		name:    "module-b",
-		deps:    []string{"module-a"},
-		initErr: errors.New("module-b init failed"),
-		onInit:  func(reg modulex.Registry) { initCalls = append(initCalls, "module-b") },
-	})
-	modC := newMockModule(t, mockModuleConfig{
-		name:   "module-c",
-		deps:   []string{"module-b"},
-		onInit: func(reg modulex.Registry) { initCalls = append(initCalls, "module-c") },
-	})
+			var initCalls, stopCalls []string
+			modA := newMockModule(t, mockModuleConfig{
+				name:   "module-a",
+				onInit: func(reg modulex.Registry) { initCalls = append(initCalls, "module-a") },
+				onStop: func() { stopCalls = append(stopCalls, "module-a") },
+			})
+			modB := newMockModule(t, mockModuleConfig{
+				name:    "module-b",
+				deps:    []string{"module-a"},
+				initErr: errors.New("module-b init failed"),
+				onInit:  func(reg modulex.Registry) { initCalls = append(initCalls, "module-b") },
+			})
+			modC := newMockModule(t, mockModuleConfig{
+				name:   "module-c",
+				deps:   []string{"module-b"},
+				onInit: func(reg modulex.Registry) { initCalls = append(initCalls, "module-c") },
+			})
 
-	require.NoError(t, manager.RegisterModule(modA))
-	require.NoError(t, manager.RegisterModule(modB))
-	require.NoError(t, manager.RegisterModule(modC))
+			require.NoError(t, manager.RegisterModule(modA))
+			require.NoError(t, manager.RegisterModule(modB))
+			require.NoError(t, manager.RegisterModule(modC))
 
-	err := manager.InitModules(context.Background())
-	require.Error(t, err)
-	assert.ErrorContains(t, err, "module-b init failed")
+			err := manager.InitModules(context.Background())
+			require.Error(t, err)
+			assert.ErrorContains(t, err, "module-b init failed")
 
-	// module-a initialized successfully and should be stopped during rollback.
-	assert.Equal(t, []string{"module-a", "module-b"}, initCalls)
-	assert.Equal(t, []string{"module-a"}, stopCalls)
+			// module-a initialized successfully and should be stopped during rollback.
+			assert.Equal(t, []string{"module-a", "module-b"}, initCalls)
+			assert.Equal(t, []string{"module-a"}, stopCalls)
 
-	// Manager should be in stopped state.
-	assert.Equal(t, modulex.StateStopped, manager.State())
+			// Manager should be in stopped state.
+			assert.Equal(t, modulex.StateStopped, manager.State())
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestStartFailureReverseStop(t *testing.T) {
-	manager := newTestManager(nil)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "start failure reverse stop", run: func(t *testing.T) {
+			manager := newTestManager(nil)
 
-	var startCalls, stopCalls []string
-	modA := newMockModule(t, mockModuleConfig{
-		name:    "module-a",
-		onStart: func() { startCalls = append(startCalls, "module-a") },
-		onStop:  func() { stopCalls = append(stopCalls, "module-a") },
-	})
-	modB := newMockModule(t, mockModuleConfig{
-		name:     "module-b",
-		deps:     []string{"module-a"},
-		startErr: errors.New("module-b start failed"),
-		onStart:  func() { startCalls = append(startCalls, "module-b") },
-		onStop:   func() { stopCalls = append(stopCalls, "module-b") },
-	})
-	modC := newMockModule(t, mockModuleConfig{
-		name:    "module-c",
-		deps:    []string{"module-b"},
-		onStart: func() { startCalls = append(startCalls, "module-c") },
-	})
+			var startCalls, stopCalls []string
+			modA := newMockModule(t, mockModuleConfig{
+				name:    "module-a",
+				onStart: func() { startCalls = append(startCalls, "module-a") },
+				onStop:  func() { stopCalls = append(stopCalls, "module-a") },
+			})
+			modB := newMockModule(t, mockModuleConfig{
+				name:     "module-b",
+				deps:     []string{"module-a"},
+				startErr: errors.New("module-b start failed"),
+				onStart:  func() { startCalls = append(startCalls, "module-b") },
+				onStop:   func() { stopCalls = append(stopCalls, "module-b") },
+			})
+			modC := newMockModule(t, mockModuleConfig{
+				name:    "module-c",
+				deps:    []string{"module-b"},
+				onStart: func() { startCalls = append(startCalls, "module-c") },
+			})
 
-	require.NoError(t, manager.RegisterModule(modA))
-	require.NoError(t, manager.RegisterModule(modB))
-	require.NoError(t, manager.RegisterModule(modC))
-	require.NoError(t, manager.InitModules(context.Background()))
+			require.NoError(t, manager.RegisterModule(modA))
+			require.NoError(t, manager.RegisterModule(modB))
+			require.NoError(t, manager.RegisterModule(modC))
+			require.NoError(t, manager.InitModules(context.Background()))
 
-	err := manager.StartModules(context.Background())
-	require.Error(t, err)
-	assert.ErrorContains(t, err, "module-b start failed")
+			err := manager.StartModules(context.Background())
+			require.Error(t, err)
+			assert.ErrorContains(t, err, "module-b start failed")
 
-	// module-a started successfully and should be stopped during rollback.
-	assert.Equal(t, []string{"module-a", "module-b"}, startCalls)
+			// module-a started successfully and should be stopped during rollback.
+			assert.Equal(t, []string{"module-a", "module-b"}, startCalls)
 
-	// module-b's own Start call is the one that failed, but it may have
-	// partially acquired a resource (a goroutine, a listener) before
-	// returning its error, so it must be stopped too -- in reverse order,
-	// so module-b (the failing module) is stopped before module-a.
-	assert.Equal(t, []string{"module-b", "module-a"}, stopCalls)
+			// module-b's own Start call is the one that failed, but it may have
+			// partially acquired a resource (a goroutine, a listener) before
+			// returning its error, so it must be stopped too -- in reverse order,
+			// so module-b (the failing module) is stopped before module-a.
+			assert.Equal(t, []string{"module-b", "module-a"}, stopCalls)
 
-	// Manager should be in stopped state.
-	assert.Equal(t, modulex.StateStopped, manager.State())
+			// Manager should be in stopped state.
+			assert.Equal(t, modulex.StateStopped, manager.State())
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 // TestStartFailureDoesNotStopUnattemptedModule is a regression test for a
@@ -1395,58 +1653,78 @@ func TestStartFailureReverseStop(t *testing.T) {
 // failed) must never have Stop called on it, since its Start was never
 // attempted and it never acquired anything to release.
 func TestStartFailureDoesNotStopUnattemptedModule(t *testing.T) {
-	manager := newTestManager(nil)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "start failure does not stop unattempted module", run: func(t *testing.T) {
+			manager := newTestManager(nil)
 
-	var stopCalls []string
-	modA := newMockModule(t, mockModuleConfig{
-		name:     "module-a",
-		startErr: errors.New("module-a start failed"),
-		onStop:   func() { stopCalls = append(stopCalls, "module-a") },
-	})
-	modB := newMockModule(t, mockModuleConfig{
-		name:   "module-b",
-		deps:   []string{"module-a"},
-		onStop: func() { stopCalls = append(stopCalls, "module-b") },
-	})
+			var stopCalls []string
+			modA := newMockModule(t, mockModuleConfig{
+				name:     "module-a",
+				startErr: errors.New("module-a start failed"),
+				onStop:   func() { stopCalls = append(stopCalls, "module-a") },
+			})
+			modB := newMockModule(t, mockModuleConfig{
+				name:   "module-b",
+				deps:   []string{"module-a"},
+				onStop: func() { stopCalls = append(stopCalls, "module-b") },
+			})
 
-	require.NoError(t, manager.RegisterModule(modA))
-	require.NoError(t, manager.RegisterModule(modB))
-	require.NoError(t, manager.InitModules(context.Background()))
+			require.NoError(t, manager.RegisterModule(modA))
+			require.NoError(t, manager.RegisterModule(modB))
+			require.NoError(t, manager.InitModules(context.Background()))
 
-	err := manager.StartModules(context.Background())
-	require.Error(t, err)
-	assert.ErrorContains(t, err, "module-a start failed")
+			err := manager.StartModules(context.Background())
+			require.Error(t, err)
+			assert.ErrorContains(t, err, "module-a start failed")
 
-	// module-a's own Start failed, so it is stopped (it may have partially
-	// acquired something); module-b's Start was never reached and must not
-	// be stopped.
-	assert.Equal(t, []string{"module-a"}, stopCalls)
-	assert.Equal(t, modulex.StateStopped, manager.State())
+			// module-a's own Start failed, so it is stopped (it may have partially
+			// acquired something); module-b's Start was never reached and must not
+			// be stopped.
+			assert.Equal(t, []string{"module-a"}, stopCalls)
+			assert.Equal(t, modulex.StateStopped, manager.State())
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestStopModulesAggregatesErrors(t *testing.T) {
-	manager := newTestManager(nil)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "stop modules aggregates errors", run: func(t *testing.T) {
+			manager := newTestManager(nil)
 
-	modA := newMockModule(t, mockModuleConfig{
-		name:    "module-a",
-		stopErr: errors.New("module-a stop failed"),
-	})
-	modB := newMockModule(t, mockModuleConfig{
-		name:    "module-b",
-		deps:    []string{"module-a"},
-		stopErr: errors.New("module-b stop failed"),
-	})
+			modA := newMockModule(t, mockModuleConfig{
+				name:    "module-a",
+				stopErr: errors.New("module-a stop failed"),
+			})
+			modB := newMockModule(t, mockModuleConfig{
+				name:    "module-b",
+				deps:    []string{"module-a"},
+				stopErr: errors.New("module-b stop failed"),
+			})
 
-	require.NoError(t, manager.RegisterModule(modA))
-	require.NoError(t, manager.RegisterModule(modB))
-	require.NoError(t, manager.InitModules(context.Background()))
-	require.NoError(t, manager.StartModules(context.Background()))
+			require.NoError(t, manager.RegisterModule(modA))
+			require.NoError(t, manager.RegisterModule(modB))
+			require.NoError(t, manager.InitModules(context.Background()))
+			require.NoError(t, manager.StartModules(context.Background()))
 
-	err := manager.StopModules(context.Background())
-	require.Error(t, err)
-	assert.ErrorContains(t, err, "module-a stop failed")
-	assert.ErrorContains(t, err, "module-b stop failed")
-	assert.Equal(t, modulex.StateStopped, manager.State())
+			err := manager.StopModules(context.Background())
+			require.Error(t, err)
+			assert.ErrorContains(t, err, "module-a stop failed")
+			assert.ErrorContains(t, err, "module-b stop failed")
+			assert.Equal(t, modulex.StateStopped, manager.State())
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 // orderTrackingEventBus wraps InMemoryEventBus to record when Close is
@@ -1531,215 +1809,325 @@ func (eb *orderTrackingEventBus) Close(ctx context.Context) error {
 // the shared EventBus only after every module in reverse topological order
 // has stopped, so a module's Stop can still safely use the EventBus.
 func TestEventBusClosedAfterAllModulesStop(t *testing.T) {
-	var mu sync.Mutex
-	var order []string
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "event bus closed after all modules stop", run: func(t *testing.T) {
+			var mu sync.Mutex
+			var order []string
 
-	eb := &orderTrackingEventBus{InMemoryEventBus: NewInMemoryEventBus(), mu: &mu, order: &order}
-	manager := newTestManager(eb)
+			eb := &orderTrackingEventBus{InMemoryEventBus: NewInMemoryEventBus(), mu: &mu, order: &order}
+			manager := newTestManager(eb)
 
-	modA := newMockModule(t, mockModuleConfig{
-		name: "module-a",
-		onStop: func() {
+			modA := newMockModule(t, mockModuleConfig{
+				name: "module-a",
+				onStop: func() {
+					mu.Lock()
+					order = append(order, "module-a")
+					mu.Unlock()
+				},
+			})
+			modB := newMockModule(t, mockModuleConfig{
+				name: "module-b",
+				deps: []string{"module-a"},
+				onStop: func() {
+					mu.Lock()
+					order = append(order, "module-b")
+					mu.Unlock()
+				},
+			})
+
+			require.NoError(t, manager.RegisterModule(modA))
+			require.NoError(t, manager.RegisterModule(modB))
+			require.NoError(t, manager.InitModules(context.Background()))
+			require.NoError(t, manager.StartModules(context.Background()))
+			require.NoError(t, manager.StopModules(context.Background()))
+
 			mu.Lock()
-			order = append(order, "module-a")
-			mu.Unlock()
-		},
-	})
-	modB := newMockModule(t, mockModuleConfig{
-		name: "module-b",
-		deps: []string{"module-a"},
-		onStop: func() {
-			mu.Lock()
-			order = append(order, "module-b")
-			mu.Unlock()
-		},
-	})
-
-	require.NoError(t, manager.RegisterModule(modA))
-	require.NoError(t, manager.RegisterModule(modB))
-	require.NoError(t, manager.InitModules(context.Background()))
-	require.NoError(t, manager.StartModules(context.Background()))
-	require.NoError(t, manager.StopModules(context.Background()))
-
-	mu.Lock()
-	defer mu.Unlock()
-	// module-b started after module-a (dependency order) so it stops first;
-	// the event bus is a shared resource and must close last.
-	assert.Equal(t, []string{"module-b", "module-a", "eventbus"}, order)
+			defer mu.Unlock()
+			// module-b started after module-a (dependency order) so it stops first;
+			// the event bus is a shared resource and must close last.
+			assert.Equal(t, []string{"module-b", "module-a", "eventbus"}, order)
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestInitContextCancellation(t *testing.T) {
-	manager := newTestManager(nil)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "init context cancellation", run: func(t *testing.T) {
+			manager := newTestManager(nil)
 
-	modA := newMockModule(t, mockModuleConfig{name: "module-a"})
-	modB := newMockModule(t, mockModuleConfig{name: "module-b", deps: []string{"module-a"}})
-	require.NoError(t, manager.RegisterModule(modA))
-	require.NoError(t, manager.RegisterModule(modB))
+			modA := newMockModule(t, mockModuleConfig{name: "module-a"})
+			modB := newMockModule(t, mockModuleConfig{name: "module-b", deps: []string{"module-a"}})
+			require.NoError(t, manager.RegisterModule(modA))
+			require.NoError(t, manager.RegisterModule(modB))
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
 
-	err := manager.InitModules(ctx)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, context.Canceled)
-	assert.Equal(t, modulex.StateStopped, manager.State())
+			err := manager.InitModules(ctx)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, context.Canceled)
+			assert.Equal(t, modulex.StateStopped, manager.State())
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestStartContextCancellation(t *testing.T) {
-	manager := newTestManager(nil)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "start context cancellation", run: func(t *testing.T) {
+			manager := newTestManager(nil)
 
-	modA := newMockModule(t, mockModuleConfig{name: "module-a"})
-	modB := newMockModule(t, mockModuleConfig{name: "module-b", deps: []string{"module-a"}})
-	require.NoError(t, manager.RegisterModule(modA))
-	require.NoError(t, manager.RegisterModule(modB))
-	require.NoError(t, manager.InitModules(context.Background()))
+			modA := newMockModule(t, mockModuleConfig{name: "module-a"})
+			modB := newMockModule(t, mockModuleConfig{name: "module-b", deps: []string{"module-a"}})
+			require.NoError(t, manager.RegisterModule(modA))
+			require.NoError(t, manager.RegisterModule(modB))
+			require.NoError(t, manager.InitModules(context.Background()))
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
 
-	err := manager.StartModules(ctx)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, context.Canceled)
-	assert.Equal(t, modulex.StateStopped, manager.State())
+			err := manager.StartModules(ctx)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, context.Canceled)
+			assert.Equal(t, modulex.StateStopped, manager.State())
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestRollbackStopErrorsAreJoined(t *testing.T) {
-	manager := newTestManager(nil)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "rollback stop errors are joined", run: func(t *testing.T) {
+			manager := newTestManager(nil)
 
-	modA := newMockModule(t, mockModuleConfig{
-		name:    "module-a",
-		stopErr: errors.New("rollback stop failed"),
-	})
-	modB := newMockModule(t, mockModuleConfig{
-		name:    "module-b",
-		deps:    []string{"module-a"},
-		initErr: errors.New("module-b init failed"),
-	})
+			modA := newMockModule(t, mockModuleConfig{
+				name:    "module-a",
+				stopErr: errors.New("rollback stop failed"),
+			})
+			modB := newMockModule(t, mockModuleConfig{
+				name:    "module-b",
+				deps:    []string{"module-a"},
+				initErr: errors.New("module-b init failed"),
+			})
 
-	require.NoError(t, manager.RegisterModule(modA))
-	require.NoError(t, manager.RegisterModule(modB))
+			require.NoError(t, manager.RegisterModule(modA))
+			require.NoError(t, manager.RegisterModule(modB))
 
-	err := manager.InitModules(context.Background())
-	require.Error(t, err)
-	assert.ErrorContains(t, err, "module-b init failed")
-	assert.ErrorContains(t, err, "rollback stop failed")
+			err := manager.InitModules(context.Background())
+			require.Error(t, err)
+			assert.ErrorContains(t, err, "module-b init failed")
+			assert.ErrorContains(t, err, "rollback stop failed")
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestStartRollbackStopErrorsAreJoined(t *testing.T) {
-	manager := newTestManager(nil)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "start rollback stop errors are joined", run: func(t *testing.T) {
+			manager := newTestManager(nil)
 
-	var stopCalls []string
-	modA := newMockModule(t, mockModuleConfig{
-		name:    "module-a",
-		stopErr: errors.New("rollback stop failed"),
-		onStop:  func() { stopCalls = append(stopCalls, "module-a") },
-	})
-	modB := newMockModule(t, mockModuleConfig{
-		name:     "module-b",
-		deps:     []string{"module-a"},
-		startErr: errors.New("module-b start failed"),
-	})
+			var stopCalls []string
+			modA := newMockModule(t, mockModuleConfig{
+				name:    "module-a",
+				stopErr: errors.New("rollback stop failed"),
+				onStop:  func() { stopCalls = append(stopCalls, "module-a") },
+			})
+			modB := newMockModule(t, mockModuleConfig{
+				name:     "module-b",
+				deps:     []string{"module-a"},
+				startErr: errors.New("module-b start failed"),
+			})
 
-	require.NoError(t, manager.RegisterModule(modA))
-	require.NoError(t, manager.RegisterModule(modB))
-	require.NoError(t, manager.InitModules(context.Background()))
+			require.NoError(t, manager.RegisterModule(modA))
+			require.NoError(t, manager.RegisterModule(modB))
+			require.NoError(t, manager.InitModules(context.Background()))
 
-	err := manager.StartModules(context.Background())
-	require.Error(t, err)
-	assert.ErrorContains(t, err, "module-b start failed")
-	assert.ErrorContains(t, err, "rollback stop failed")
-	assert.Equal(t, modulex.StateStopped, manager.State())
-	assert.Equal(t, []string{"module-a"}, stopCalls)
+			err := manager.StartModules(context.Background())
+			require.Error(t, err)
+			assert.ErrorContains(t, err, "module-b start failed")
+			assert.ErrorContains(t, err, "rollback stop failed")
+			assert.Equal(t, modulex.StateStopped, manager.State())
+			assert.Equal(t, []string{"module-a"}, stopCalls)
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestInitOnlyModuleSkipsStartAndStop(t *testing.T) {
-	manager := newTestManager(nil)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "init only module skips start and stop", run: func(t *testing.T) {
+			manager := newTestManager(nil)
 
-	mod := &initOnlyModule{name: "init-only"}
-	require.NoError(t, manager.RegisterModule(mod))
-	require.NoError(t, manager.InitModules(context.Background()))
-	require.NoError(t, manager.StartModules(context.Background()))
-	require.NoError(t, manager.StopModules(context.Background()))
-	assert.Equal(t, modulex.StateStopped, manager.State())
+			mod := &initOnlyModule{name: "init-only"}
+			require.NoError(t, manager.RegisterModule(mod))
+			require.NoError(t, manager.InitModules(context.Background()))
+			require.NoError(t, manager.StartModules(context.Background()))
+			require.NoError(t, manager.StopModules(context.Background()))
+			assert.Equal(t, modulex.StateStopped, manager.State())
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestStartOnlyModuleStartsButIsNotStopped(t *testing.T) {
-	manager := newTestManager(nil)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "start only module starts but is not stopped", run: func(t *testing.T) {
+			manager := newTestManager(nil)
 
-	mod := &startOnlyModule{name: "start-only"}
-	require.NoError(t, manager.RegisterModule(mod))
-	require.NoError(t, manager.InitModules(context.Background()))
-	require.NoError(t, manager.StartModules(context.Background()))
-	require.NoError(t, manager.StopModules(context.Background()))
-	assert.True(t, mod.started)
-	assert.Equal(t, modulex.StateStopped, manager.State())
+			mod := &startOnlyModule{name: "start-only"}
+			require.NoError(t, manager.RegisterModule(mod))
+			require.NoError(t, manager.InitModules(context.Background()))
+			require.NoError(t, manager.StartModules(context.Background()))
+			require.NoError(t, manager.StopModules(context.Background()))
+			assert.True(t, mod.started)
+			assert.Equal(t, modulex.StateStopped, manager.State())
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestStopOnlyModuleStopsButDoesNotStart(t *testing.T) {
-	manager := newTestManager(nil)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "stop only module stops but does not start", run: func(t *testing.T) {
+			manager := newTestManager(nil)
 
-	mod := &stopOnlyModule{name: "stop-only"}
-	require.NoError(t, manager.RegisterModule(mod))
-	require.NoError(t, manager.InitModules(context.Background()))
-	require.NoError(t, manager.StartModules(context.Background()))
-	require.NoError(t, manager.StopModules(context.Background()))
-	assert.True(t, mod.stopped)
-	assert.Equal(t, modulex.StateStopped, manager.State())
+			mod := &stopOnlyModule{name: "stop-only"}
+			require.NoError(t, manager.RegisterModule(mod))
+			require.NoError(t, manager.InitModules(context.Background()))
+			require.NoError(t, manager.StartModules(context.Background()))
+			require.NoError(t, manager.StopModules(context.Background()))
+			assert.True(t, mod.stopped)
+			assert.Equal(t, modulex.StateStopped, manager.State())
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestInitRollbackSkipsModulesWithoutStopper(t *testing.T) {
-	manager := newTestManager(nil)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "init rollback skips modules without stopper", run: func(t *testing.T) {
+			manager := newTestManager(nil)
 
-	initOnly := &initOnlyModule{name: "init-only"}
-	modB := newMockModule(t, mockModuleConfig{
-		name:    "module-b",
-		deps:    []string{"init-only"},
-		initErr: errors.New("module-b init failed"),
-	})
+			initOnly := &initOnlyModule{name: "init-only"}
+			modB := newMockModule(t, mockModuleConfig{
+				name:    "module-b",
+				deps:    []string{"init-only"},
+				initErr: errors.New("module-b init failed"),
+			})
 
-	require.NoError(t, manager.RegisterModule(initOnly))
-	require.NoError(t, manager.RegisterModule(modB))
+			require.NoError(t, manager.RegisterModule(initOnly))
+			require.NoError(t, manager.RegisterModule(modB))
 
-	err := manager.InitModules(context.Background())
-	require.Error(t, err)
-	assert.Equal(t, modulex.StateStopped, manager.State())
+			err := manager.InitModules(context.Background())
+			require.Error(t, err)
+			assert.Equal(t, modulex.StateStopped, manager.State())
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestStartRollbackSkipsModulesWithoutStopper(t *testing.T) {
-	manager := newTestManager(nil)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "start rollback skips modules without stopper", run: func(t *testing.T) {
+			manager := newTestManager(nil)
 
-	startOnly := &startOnlyModule{name: "start-only"}
-	modB := newMockModule(t, mockModuleConfig{
-		name:     "module-b",
-		deps:     []string{"start-only"},
-		startErr: errors.New("module-b start failed"),
-	})
+			startOnly := &startOnlyModule{name: "start-only"}
+			modB := newMockModule(t, mockModuleConfig{
+				name:     "module-b",
+				deps:     []string{"start-only"},
+				startErr: errors.New("module-b start failed"),
+			})
 
-	require.NoError(t, manager.RegisterModule(startOnly))
-	require.NoError(t, manager.RegisterModule(modB))
-	require.NoError(t, manager.InitModules(context.Background()))
+			require.NoError(t, manager.RegisterModule(startOnly))
+			require.NoError(t, manager.RegisterModule(modB))
+			require.NoError(t, manager.InitModules(context.Background()))
 
-	err := manager.StartModules(context.Background())
-	require.Error(t, err)
-	assert.True(t, startOnly.started)
-	assert.Equal(t, modulex.StateStopped, manager.State())
+			err := manager.StartModules(context.Background())
+			require.Error(t, err)
+			assert.True(t, startOnly.started)
+			assert.Equal(t, modulex.StateStopped, manager.State())
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestStopModulesContextCancellation(t *testing.T) {
-	manager := newTestManager(nil)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "stop modules context cancellation", run: func(t *testing.T) {
+			manager := newTestManager(nil)
 
-	modA := newMockModule(t, mockModuleConfig{name: "module-a"})
-	require.NoError(t, manager.RegisterModule(modA))
-	require.NoError(t, manager.InitModules(context.Background()))
-	require.NoError(t, manager.StartModules(context.Background()))
+			modA := newMockModule(t, mockModuleConfig{name: "module-a"})
+			require.NoError(t, manager.RegisterModule(modA))
+			require.NoError(t, manager.InitModules(context.Background()))
+			require.NoError(t, manager.StartModules(context.Background()))
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
 
-	err := manager.StopModules(ctx)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, context.Canceled)
-	assert.Equal(t, modulex.StateStopped, manager.State())
+			err := manager.StopModules(ctx)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, context.Canceled)
+			assert.Equal(t, modulex.StateStopped, manager.State())
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 // TestStopModulesFromInitializedStopsInitializedModules is a regression test
@@ -1751,30 +2139,40 @@ func TestStopModulesContextCancellation(t *testing.T) {
 // every module that reached at least StateInitialized, in reverse order,
 // regardless of whether StartModules ever ran.
 func TestStopModulesFromInitializedStopsInitializedModules(t *testing.T) {
-	manager := newTestManager(nil)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "stop modules from initialized stops initialized modules", run: func(t *testing.T) {
+			manager := newTestManager(nil)
 
-	var stopCalls []string
-	modA := newMockModule(t, mockModuleConfig{
-		name:   "module-a",
-		onStop: func() { stopCalls = append(stopCalls, "module-a") },
-	})
-	modB := newMockModule(t, mockModuleConfig{
-		name:   "module-b",
-		deps:   []string{"module-a"},
-		onStop: func() { stopCalls = append(stopCalls, "module-b") },
-	})
+			var stopCalls []string
+			modA := newMockModule(t, mockModuleConfig{
+				name:   "module-a",
+				onStop: func() { stopCalls = append(stopCalls, "module-a") },
+			})
+			modB := newMockModule(t, mockModuleConfig{
+				name:   "module-b",
+				deps:   []string{"module-a"},
+				onStop: func() { stopCalls = append(stopCalls, "module-b") },
+			})
 
-	require.NoError(t, manager.RegisterModule(modA))
-	require.NoError(t, manager.RegisterModule(modB))
-	require.NoError(t, manager.InitModules(context.Background()))
-	require.Equal(t, modulex.StateInitialized, manager.State())
+			require.NoError(t, manager.RegisterModule(modA))
+			require.NoError(t, manager.RegisterModule(modB))
+			require.NoError(t, manager.InitModules(context.Background()))
+			require.Equal(t, modulex.StateInitialized, manager.State())
 
-	require.NoError(t, manager.StopModules(context.Background()))
+			require.NoError(t, manager.StopModules(context.Background()))
 
-	// Both initialized modules must be stopped, in reverse dependency order,
-	// even though StartModules was never called.
-	assert.Equal(t, []string{"module-b", "module-a"}, stopCalls)
-	assert.Equal(t, modulex.StateStopped, manager.State())
+			// Both initialized modules must be stopped, in reverse dependency order,
+			// even though StartModules was never called.
+			assert.Equal(t, []string{"module-b", "module-a"}, stopCalls)
+			assert.Equal(t, modulex.StateStopped, manager.State())
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 // TestStopModulesContinuesStoppingAfterCancelledContext is a regression test
@@ -1787,66 +2185,96 @@ func TestStopModulesFromInitializedStopsInitializedModules(t *testing.T) {
 // through so each Stop implementation can fast-path/no-op on it if it
 // chooses.
 func TestStopModulesContinuesStoppingAfterCancelledContext(t *testing.T) {
-	manager := newTestManager(nil)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "stop modules continues stopping after cancelled context", run: func(t *testing.T) {
+			manager := newTestManager(nil)
 
-	var stopCalls []string
-	modA := newMockModule(t, mockModuleConfig{
-		name:   "module-a",
-		onStop: func() { stopCalls = append(stopCalls, "module-a") },
-	})
-	modB := newMockModule(t, mockModuleConfig{
-		name:   "module-b",
-		deps:   []string{"module-a"},
-		onStop: func() { stopCalls = append(stopCalls, "module-b") },
-	})
+			var stopCalls []string
+			modA := newMockModule(t, mockModuleConfig{
+				name:   "module-a",
+				onStop: func() { stopCalls = append(stopCalls, "module-a") },
+			})
+			modB := newMockModule(t, mockModuleConfig{
+				name:   "module-b",
+				deps:   []string{"module-a"},
+				onStop: func() { stopCalls = append(stopCalls, "module-b") },
+			})
 
-	require.NoError(t, manager.RegisterModule(modA))
-	require.NoError(t, manager.RegisterModule(modB))
-	require.NoError(t, manager.InitModules(context.Background()))
-	require.NoError(t, manager.StartModules(context.Background()))
+			require.NoError(t, manager.RegisterModule(modA))
+			require.NoError(t, manager.RegisterModule(modB))
+			require.NoError(t, manager.InitModules(context.Background()))
+			require.NoError(t, manager.StartModules(context.Background()))
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
 
-	err := manager.StopModules(ctx)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, context.Canceled)
+			err := manager.StopModules(ctx)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, context.Canceled)
 
-	// Both modules must still be stopped, in reverse order, despite the
-	// context already being cancelled before the stop loop started.
-	assert.Equal(t, []string{"module-b", "module-a"}, stopCalls)
-	assert.Equal(t, modulex.StateStopped, manager.State())
+			// Both modules must still be stopped, in reverse order, despite the
+			// context already being cancelled before the stop loop started.
+			assert.Equal(t, []string{"module-b", "module-a"}, stopCalls)
+			assert.Equal(t, modulex.StateStopped, manager.State())
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestStartModulesAfterInitFailure(t *testing.T) {
-	manager := newTestManager(nil)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "start modules after init failure", run: func(t *testing.T) {
+			manager := newTestManager(nil)
 
-	modA := newMockModule(t, mockModuleConfig{
-		name:    "module-a",
-		initErr: errors.New("init failed"),
-	})
-	require.NoError(t, manager.RegisterModule(modA))
+			modA := newMockModule(t, mockModuleConfig{
+				name:    "module-a",
+				initErr: errors.New("init failed"),
+			})
+			require.NoError(t, manager.RegisterModule(modA))
 
-	require.Error(t, manager.InitModules(context.Background()))
+			require.Error(t, manager.InitModules(context.Background()))
 
-	err := manager.StartModules(context.Background())
-	assert.ErrorIs(t, err, modulex.ErrInvalidLifecycleState)
+			err := manager.StartModules(context.Background())
+			assert.ErrorIs(t, err, modulex.ErrInvalidLifecycleState)
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestStopModulesAfterInitFailure(t *testing.T) {
-	manager := newTestManager(nil)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "stop modules after init failure", run: func(t *testing.T) {
+			manager := newTestManager(nil)
 
-	modA := newMockModule(t, mockModuleConfig{
-		name:    "module-a",
-		initErr: errors.New("init failed"),
-	})
-	require.NoError(t, manager.RegisterModule(modA))
+			modA := newMockModule(t, mockModuleConfig{
+				name:    "module-a",
+				initErr: errors.New("init failed"),
+			})
+			require.NoError(t, manager.RegisterModule(modA))
 
-	require.Error(t, manager.InitModules(context.Background()))
+			require.Error(t, manager.InitModules(context.Background()))
 
-	// StopModules should be idempotent even after a failed init.
-	require.NoError(t, manager.StopModules(context.Background()))
-	assert.Equal(t, modulex.StateStopped, manager.State())
+			// StopModules should be idempotent even after a failed init.
+			require.NoError(t, manager.StopModules(context.Background()))
+			assert.Equal(t, modulex.StateStopped, manager.State())
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestSupervisedTaskGo(t *testing.T) {
@@ -2207,32 +2635,42 @@ func assertStopModulesTimedOutWithTaskError(t *testing.T, err error, taskErr err
 }
 
 func TestStopModulesCollectsTaskErrorDespiteTimeout(t *testing.T) {
-	manager := newTestManager(nil)
-	taskErr := errors.New("task failed around deadline")
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "stop modules collects task error despite timeout", run: func(t *testing.T) {
+			manager := newTestManager(nil)
+			taskErr := errors.New("task failed around deadline")
 
-	mod := newMockModule(t, mockModuleConfig{
-		name: "mod-a",
-		onStart: func() {
-			spawnNeverReturningTask(t, manager)
+			mod := newMockModule(t, mockModuleConfig{
+				name: "mod-a",
+				onStart: func() {
+					spawnNeverReturningTask(t, manager)
 
-			// Finish with an error immediately so the error is collected before
-			// the deadline is reached.
-			_, err := manager.Go(context.Background(), "failing-task", func(ctx context.Context) error {
-				return taskErr
+					// Finish with an error immediately so the error is collected before
+					// the deadline is reached.
+					_, err := manager.Go(context.Background(), "failing-task", func(ctx context.Context) error {
+						return taskErr
+					})
+					require.NoError(t, err)
+				},
 			})
-			require.NoError(t, err)
-		},
-	})
 
-	require.NoError(t, manager.RegisterModule(mod))
-	require.NoError(t, manager.InitModules(context.Background()))
-	require.NoError(t, manager.StartModules(context.Background()))
+			require.NoError(t, manager.RegisterModule(mod))
+			require.NoError(t, manager.InitModules(context.Background()))
+			require.NoError(t, manager.StartModules(context.Background()))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	err := manager.StopModules(ctx)
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+			err := manager.StopModules(ctx)
 
-	assertStopModulesTimedOutWithTaskError(t, err, taskErr, "failing-task")
+			assertStopModulesTimedOutWithTaskError(t, err, taskErr, "failing-task")
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 // TestStopModulesCollectsAlreadyFinishedTaskErrorDespiteTimeout is a
@@ -2245,31 +2683,41 @@ func TestStopModulesCollectsTaskErrorDespiteTimeout(t *testing.T) {
 // silently losing errors from tasks that had already finished before
 // StopModules was even called.
 func TestStopModulesCollectsAlreadyFinishedTaskErrorDespiteTimeout(t *testing.T) {
-	manager := newTestManager(nil)
-	taskErr := errors.New("task failed before shutdown began")
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "stop modules collects already finished task error despite timeout", run: func(t *testing.T) {
+			manager := newTestManager(nil)
+			taskErr := errors.New("task failed before shutdown began")
 
-	mod := newMockModule(t, mockModuleConfig{
-		name: "mod-a",
-		onStart: func() {
-			handle, err := manager.Go(context.Background(), "already-finished-task", func(ctx context.Context) error {
-				return taskErr
+			mod := newMockModule(t, mockModuleConfig{
+				name: "mod-a",
+				onStart: func() {
+					handle, err := manager.Go(context.Background(), "already-finished-task", func(ctx context.Context) error {
+						return taskErr
+					})
+					require.NoError(t, err)
+					require.ErrorIs(t, handle.Wait(), taskErr)
+
+					spawnNeverReturningTask(t, manager)
+				},
 			})
-			require.NoError(t, err)
-			require.ErrorIs(t, handle.Wait(), taskErr)
 
-			spawnNeverReturningTask(t, manager)
-		},
-	})
+			require.NoError(t, manager.RegisterModule(mod))
+			require.NoError(t, manager.InitModules(context.Background()))
+			require.NoError(t, manager.StartModules(context.Background()))
 
-	require.NoError(t, manager.RegisterModule(mod))
-	require.NoError(t, manager.InitModules(context.Background()))
-	require.NoError(t, manager.StartModules(context.Background()))
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+			err := manager.StopModules(ctx)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	err := manager.StopModules(ctx)
-
-	assertStopModulesTimedOutWithTaskError(t, err, taskErr, "already-finished-task")
+			assertStopModulesTimedOutWithTaskError(t, err, taskErr, "already-finished-task")
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 // TestStopModulesReportsMidWaitTaskErrorExactlyOnce reproduces a real bug
@@ -2278,44 +2726,64 @@ func TestStopModulesCollectsAlreadyFinishedTaskErrorDespiteTimeout(t *testing.T)
 // post-wait loop, and again via the m.taskErrs the same task had already
 // recorded before signalling completion.
 func TestStopModulesReportsMidWaitTaskErrorExactlyOnce(t *testing.T) {
-	manager := newTestManager(nil)
-	taskErr := errors.New("task failed mid-wait")
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "stop modules reports mid wait task error exactly once", run: func(t *testing.T) {
+			manager := newTestManager(nil)
+			taskErr := errors.New("task failed mid-wait")
 
-	mod := newMockModule(t, mockModuleConfig{
-		name: "mod-a",
-		onStart: func() {
-			_, err := manager.Go(context.Background(), "mid-wait-task", func(ctx context.Context) error {
-				time.Sleep(20 * time.Millisecond)
-				return taskErr
+			mod := newMockModule(t, mockModuleConfig{
+				name: "mod-a",
+				onStart: func() {
+					_, err := manager.Go(context.Background(), "mid-wait-task", func(ctx context.Context) error {
+						time.Sleep(20 * time.Millisecond)
+						return taskErr
+					})
+					require.NoError(t, err)
+				},
 			})
-			require.NoError(t, err)
-		},
-	})
 
-	require.NoError(t, manager.RegisterModule(mod))
-	require.NoError(t, manager.InitModules(context.Background()))
-	require.NoError(t, manager.StartModules(context.Background()))
+			require.NoError(t, manager.RegisterModule(mod))
+			require.NoError(t, manager.InitModules(context.Background()))
+			require.NoError(t, manager.StartModules(context.Background()))
 
-	err := manager.StopModules(context.Background())
+			err := manager.StopModules(context.Background())
 
-	require.Error(t, err)
-	assert.ErrorIs(t, err, taskErr)
-	assert.Equal(t, 1, strings.Count(err.Error(), "mid-wait-task"),
-		"task error must be reported exactly once, got: %v", err)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, taskErr)
+			assert.Equal(t, 1, strings.Count(err.Error(), "mid-wait-task"),
+				"task error must be reported exactly once, got: %v", err)
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestTaskHandleErrAndDoneAreConsistent(t *testing.T) {
-	manager := newTestManager(nil)
-	sentinelErr := errors.New("task failed")
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "task handle err and done are consistent", run: func(t *testing.T) {
+			manager := newTestManager(nil)
+			sentinelErr := errors.New("task failed")
 
-	handle, err := manager.Go(context.Background(), "consistent-task", func(ctx context.Context) error {
-		return sentinelErr
-	})
-	require.NoError(t, err)
+			handle, err := manager.Go(context.Background(), "consistent-task", func(ctx context.Context) error {
+				return sentinelErr
+			})
+			require.NoError(t, err)
 
-	require.Eventually(t, handle.Done, time.Second, 10*time.Millisecond)
-	assert.ErrorIs(t, handle.Err(), sentinelErr)
-	assert.ErrorIs(t, handle.Wait(), sentinelErr)
+			require.Eventually(t, handle.Done, time.Second, 10*time.Millisecond)
+			assert.ErrorIs(t, handle.Err(), sentinelErr)
+			assert.ErrorIs(t, handle.Wait(), sentinelErr)
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 // TestTaskHandleZeroValueWaitDoesNotBlockForever is a regression test for a
@@ -2325,21 +2793,31 @@ func TestTaskHandleErrAndDoneAreConsistent(t *testing.T) {
 // channel receive instead of reporting there was never a backing task to
 // wait for.
 func TestTaskHandleZeroValueWaitDoesNotBlockForever(t *testing.T) {
-	handle := &modulex.TaskHandle{}
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "task handle zero value wait does not block forever", run: func(t *testing.T) {
+			handle := &modulex.TaskHandle{}
 
-	// Done and Err must report the obvious zero-value answers without
-	// blocking.
-	assert.False(t, handle.Done())
-	assert.NoError(t, handle.Err())
+			// Done and Err must report the obvious zero-value answers without
+			// blocking.
+			assert.False(t, handle.Done())
+			assert.NoError(t, handle.Err())
 
-	waitDone := make(chan error, 1)
-	go func() { waitDone <- handle.Wait() }()
+			waitDone := make(chan error, 1)
+			go func() { waitDone <- handle.Wait() }()
 
-	select {
-	case err := <-waitDone:
-		assert.ErrorIs(t, err, modulex.ErrTaskHandleNotStarted)
-	case <-time.After(time.Second):
-		t.Fatal("Wait blocked forever on a zero-value TaskHandle")
+			select {
+			case err := <-waitDone:
+				assert.ErrorIs(t, err, modulex.ErrTaskHandleNotStarted)
+			case <-time.After(time.Second):
+				t.Fatal("Wait blocked forever on a zero-value TaskHandle")
+			}
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
 	}
 }
 
@@ -2353,64 +2831,84 @@ func TestTaskHandleZeroValueWaitDoesNotBlockForever(t *testing.T) {
 // task's own completion goroutine once it actually finishes) and names it
 // in the timeout error instead of discarding it.
 func TestStopModulesTimeoutRetainsUnfinishedTaskForDiagnostics(t *testing.T) {
-	manager := newTestManager(nil)
-	taskUnblocked := make(chan struct{})
-	var handle *modulex.TaskHandle
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "stop modules timeout retains unfinished task for diagnostics", run: func(t *testing.T) {
+			manager := newTestManager(nil)
+			taskUnblocked := make(chan struct{})
+			var handle *modulex.TaskHandle
 
-	mod := newMockModule(t, mockModuleConfig{
-		name: "mod-a",
-		onStart: func() {
-			h, err := manager.Go(context.Background(), "blocking-task", func(ctx context.Context) error {
-				// Deliberately ignore ctx.Done() to force StopModules to time out.
-				<-taskUnblocked
-				return nil
+			mod := newMockModule(t, mockModuleConfig{
+				name: "mod-a",
+				onStart: func() {
+					h, err := manager.Go(context.Background(), "blocking-task", func(ctx context.Context) error {
+						// Deliberately ignore ctx.Done() to force StopModules to time out.
+						<-taskUnblocked
+						return nil
+					})
+					require.NoError(t, err)
+					handle = h
+				},
 			})
-			require.NoError(t, err)
-			handle = h
-		},
-	})
 
-	require.NoError(t, manager.RegisterModule(mod))
-	require.NoError(t, manager.InitModules(context.Background()))
-	require.NoError(t, manager.StartModules(context.Background()))
+			require.NoError(t, manager.RegisterModule(mod))
+			require.NoError(t, manager.InitModules(context.Background()))
+			require.NoError(t, manager.StartModules(context.Background()))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	err := manager.StopModules(ctx)
-	require.Error(t, err)
-	assert.ErrorContains(t, err, "timed out")
-	assert.ErrorContains(t, err, "blocking-task", "the timeout error should name the still-running task")
+			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			defer cancel()
+			err := manager.StopModules(ctx)
+			require.Error(t, err)
+			assert.ErrorContains(t, err, "timed out")
+			assert.ErrorContains(t, err, "blocking-task", "the timeout error should name the still-running task")
 
-	// The internal task map must still contain the still-running task's
-	// handle after the timeout, not an empty map, so Diagnostics keeps
-	// reporting it.
-	tasks := reflect.ValueOf(manager).Elem().FieldByName("tasks")
-	require.True(t, tasks.IsValid())
-	require.Equal(t, 1, tasks.Len(), "task map should retain the still-running task's handle after a timeout")
+			// The internal task map must still contain the still-running task's
+			// handle after the timeout, not an empty map, so Diagnostics keeps
+			// reporting it.
+			tasks := reflect.ValueOf(manager).Elem().FieldByName("tasks")
+			require.True(t, tasks.IsValid())
+			require.Equal(t, 1, tasks.Len(), "task map should retain the still-running task's handle after a timeout")
 
-	close(taskUnblocked)
-	require.NoError(t, handle.Wait())
+			close(taskUnblocked)
+			require.NoError(t, handle.Wait())
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestSupervisedTasksConcurrentGo(t *testing.T) {
-	manager := newTestManager(nil)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "supervised tasks concurrent go", run: func(t *testing.T) {
+			manager := newTestManager(nil)
 
-	const n = 100
-	var started sync.WaitGroup
-	started.Add(n)
+			const n = 100
+			var started sync.WaitGroup
+			started.Add(n)
 
-	for i := 0; i < n; i++ {
-		name := fmt.Sprintf("concurrent-task-%d", i)
-		_, err := manager.Go(context.Background(), name, func(ctx context.Context) error {
-			started.Done()
-			<-ctx.Done()
-			return nil
-		})
-		require.NoError(t, err)
+			for i := 0; i < n; i++ {
+				name := fmt.Sprintf("concurrent-task-%d", i)
+				_, err := manager.Go(context.Background(), name, func(ctx context.Context) error {
+					started.Done()
+					<-ctx.Done()
+					return nil
+				})
+				require.NoError(t, err)
+			}
+
+			started.Wait()
+			require.NoError(t, manager.StopModules(context.Background()))
+		}},
 	}
-
-	started.Wait()
-	require.NoError(t, manager.StopModules(context.Background()))
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func newTestManagerWithPanicPolicy(policy modulex.PanicPolicy) *modulex.Manager {
@@ -2494,27 +2992,37 @@ func TestSupervisedTaskLifecycleFailures(t *testing.T) {
 }
 
 func TestPanicPolicyPropagate(t *testing.T) {
-	if os.Getenv("MODULEX_PANIC_PROPAGATE_HELPER") == "1" {
-		manager := newTestManagerWithPanicPolicy(modulex.PanicPolicyPropagate)
-		handle, err := manager.Go(context.Background(), "panic-propagate-task", func(ctx context.Context) error {
-			panic("propagated panic")
-		})
-		require.NoError(t, err)
-		// Wait until the panic has been recorded; the task goroutine will then
-		// re-panic and crash the helper process.
-		_ = handle.Wait()
-		<-time.After(2 * time.Second)
-		t.Fatal("expected panic did not occur")
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "panic policy propagate", run: func(t *testing.T) {
+			if os.Getenv("MODULEX_PANIC_PROPAGATE_HELPER") == "1" {
+				manager := newTestManagerWithPanicPolicy(modulex.PanicPolicyPropagate)
+				handle, err := manager.Go(context.Background(), "panic-propagate-task", func(ctx context.Context) error {
+					panic("propagated panic")
+				})
+				require.NoError(t, err)
+				// Wait until the panic has been recorded; the task goroutine will then
+				// re-panic and crash the helper process.
+				_ = handle.Wait()
+				<-time.After(2 * time.Second)
+				t.Fatal("expected panic did not occur")
+			}
+
+			cmd := exec.Command(os.Args[0], "-test.run=^TestPanicPolicyPropagate$", "-test.v")
+			cmd.Env = append(os.Environ(), "MODULEX_PANIC_PROPAGATE_HELPER=1")
+			cmd.Dir = "."
+
+			out, err := cmd.CombinedOutput()
+			t.Logf("subprocess output:\n%s", out)
+			require.Error(t, err, "expected subprocess to exit because of an unrecovered panic")
+			assert.Contains(t, string(out), "propagated panic")
+		}},
 	}
-
-	cmd := exec.Command(os.Args[0], "-test.run=^TestPanicPolicyPropagate$", "-test.v")
-	cmd.Env = append(os.Environ(), "MODULEX_PANIC_PROPAGATE_HELPER=1")
-	cmd.Dir = "."
-
-	out, err := cmd.CombinedOutput()
-	t.Logf("subprocess output:\n%s", out)
-	require.Error(t, err, "expected subprocess to exit because of an unrecovered panic")
-	assert.Contains(t, string(out), "propagated panic")
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestSupervisedTaskErrorCollectedAfterEarlyFinish(t *testing.T) {
@@ -2579,25 +3087,35 @@ func TestSupervisedTaskErrorCollectedAfterEarlyFinish(t *testing.T) {
 // commits to source control (see rufkis-platform's `make module-dag`) would
 // churn on every regeneration even with no real topology change.
 func TestExportDAGDeterministic(t *testing.T) {
-	t.Parallel()
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "export dag deterministic", run: func(t *testing.T) {
+			t.Parallel()
 
-	manager := newTestManager(NewInMemoryEventBus())
+			manager := newTestManager(NewInMemoryEventBus())
 
-	require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "zeta"})))
-	require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "alpha", deps: []string{"zeta", "mu"}})))
-	require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "mu"})))
+			require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "zeta"})))
+			require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "alpha", deps: []string{"zeta", "mu"}})))
+			require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "mu"})))
 
-	want := manager.ExportDAG()
-	for i := 0; i < 10; i++ {
-		require.Equal(t, want, manager.ExportDAG())
+			want := manager.ExportDAG()
+			for i := 0; i < 10; i++ {
+				require.Equal(t, want, manager.ExportDAG())
+			}
+
+			require.Equal(t, "graph TD\n"+
+				"    alpha[alpha]\n"+
+				"    alpha --> mu\n"+
+				"    alpha --> zeta\n"+
+				"    mu[mu]\n"+
+				"    zeta[zeta]\n", want)
+		}},
 	}
-
-	require.Equal(t, "graph TD\n"+
-		"    alpha[alpha]\n"+
-		"    alpha --> mu\n"+
-		"    alpha --> zeta\n"+
-		"    mu[mu]\n"+
-		"    zeta[zeta]\n", want)
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 // TestExportDAGEscapesMermaidSignificantModuleNames is a regression test:
@@ -2610,23 +3128,33 @@ func TestExportDAGDeterministic(t *testing.T) {
 // asserts such a name is rendered via a synthetic node ID with its content
 // safely quoted and escaped, never as a raw, unescaped node ID or label.
 func TestExportDAGEscapesMermaidSignificantModuleNames(t *testing.T) {
-	t.Parallel()
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "export dag escapes mermaid significant module names", run: func(t *testing.T) {
+			t.Parallel()
 
-	manager := newTestManager(NewInMemoryEventBus())
+			manager := newTestManager(NewInMemoryEventBus())
 
-	evilName := `evil"] --> click evil "javascript:alert(1)`
-	require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: evilName})))
-	require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "normal", deps: []string{evilName}})))
+			evilName := `evil"] --> click evil "javascript:alert(1)`
+			require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: evilName})))
+			require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "normal", deps: []string{evilName}})))
 
-	dag := manager.ExportDAG()
+			dag := manager.ExportDAG()
 
-	require.NotContains(t, dag, evilName, "the raw, unescaped module name must never appear verbatim in the output")
+			require.NotContains(t, dag, evilName, "the raw, unescaped module name must never appear verbatim in the output")
 
-	quotedNode := regexp.MustCompile(`(?m)^    n\d+\["[^"]*"\]$`)
-	require.True(t, quotedNode.MatchString(dag), "expected a synthetic-ID node with a well-formed, fully-quoted label, got:\n%s", dag)
+			quotedNode := regexp.MustCompile(`(?m)^    n\d+\["[^"]*"\]$`)
+			require.True(t, quotedNode.MatchString(dag), "expected a synthetic-ID node with a well-formed, fully-quoted label, got:\n%s", dag)
 
-	require.Contains(t, dag, "normal --> n0", "the edge to the Mermaid-significant dependency name must reference its synthetic ID")
-	require.NotContains(t, dag, `"`+evilName, "no raw double-quote from the module name should survive escaping")
+			require.Contains(t, dag, "normal --> n0", "the edge to the Mermaid-significant dependency name must reference its synthetic ID")
+			require.NotContains(t, dag, `"`+evilName, "no raw double-quote from the module name should survive escaping")
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 // TestExportDAGSyntheticIDsNeverCollideWithALiteralSafeName is a regression
@@ -2637,20 +3165,30 @@ func TestExportDAGEscapesMermaidSignificantModuleNames(t *testing.T) {
 // render as the same Mermaid node, silently merging two distinct entities
 // in the diagram.
 func TestExportDAGSyntheticIDsNeverCollideWithALiteralSafeName(t *testing.T) {
-	t.Parallel()
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "export dag synthetic ids never collide with a literal safe name", run: func(t *testing.T) {
+			t.Parallel()
 
-	manager := newTestManager(NewInMemoryEventBus())
+			manager := newTestManager(NewInMemoryEventBus())
 
-	require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "n0"})))
-	require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "normal", deps: []string{"bad name"}})))
+			require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "n0"})))
+			require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "normal", deps: []string{"bad name"}})))
 
-	dag := manager.ExportDAG()
+			dag := manager.ExportDAG()
 
-	require.Contains(t, dag, "    n0[n0]\n", "the module literally named \"n0\" must keep its own name as its node ID/label")
-	require.NotContains(t, dag, "normal --> n0", "the dangling unsafe dependency must not collide with the \"n0\"-named module's ID")
+			require.Contains(t, dag, "    n0[n0]\n", "the module literally named \"n0\" must keep its own name as its node ID/label")
+			require.NotContains(t, dag, "normal --> n0", "the dangling unsafe dependency must not collide with the \"n0\"-named module's ID")
 
-	edgePattern := regexp.MustCompile(`(?m)^    normal --> (n\d+)$`)
-	m := edgePattern.FindStringSubmatch(dag)
-	require.NotNil(t, m, "expected an edge from normal to a synthetic ID, got:\n%s", dag)
-	require.NotEqual(t, "n0", m[1], "the synthetic ID assigned to the unsafe dependency must not be \"n0\"")
+			edgePattern := regexp.MustCompile(`(?m)^    normal --> (n\d+)$`)
+			m := edgePattern.FindStringSubmatch(dag)
+			require.NotNil(t, m, "expected an edge from normal to a synthetic ID, got:\n%s", dag)
+			require.NotEqual(t, "n0", m[1], "the synthetic ID assigned to the unsafe dependency must not be \"n0\"")
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }

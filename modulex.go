@@ -13,50 +13,52 @@ import (
 	"time"
 
 	"golang.org/x/sync/errgroup"
+
+	"github.com/mediusfy/modulex/apperrors"
 )
 
-var (
+const (
 	// ErrCircularDependency is returned when registered modules contain a circular dependency.
-	ErrCircularDependency = errors.New("circular dependency detected")
+	ErrCircularDependency apperrors.Error = "circular dependency detected"
 
 	// ErrServiceNotFound is returned when a requested service is not registered in the locator.
-	ErrServiceNotFound = errors.New("service not found")
+	ErrServiceNotFound apperrors.Error = "service not found"
 
 	// ErrRegistryLocked is returned when a module attempts to register a service after registry initialization has completed.
-	ErrRegistryLocked = errors.New("registry is locked: cannot register services after initialization")
+	ErrRegistryLocked apperrors.Error = "registry is locked: cannot register services after initialization"
 
 	// ErrModuleNil is returned when a nil module is passed to RegisterModule.
-	ErrModuleNil = errors.New("module must not be nil")
+	ErrModuleNil apperrors.Error = "module must not be nil"
 
 	// ErrInvalidModuleName is returned when a module name is empty or whitespace-only.
-	ErrInvalidModuleName = errors.New("module name must not be empty")
+	ErrInvalidModuleName apperrors.Error = "module name must not be empty"
 
 	// ErrDuplicateModule is returned when RegisterModule is called with a module name that is already registered.
-	ErrDuplicateModule = errors.New("module already registered")
+	ErrDuplicateModule apperrors.Error = "module already registered"
 
 	// ErrDuplicateService is returned when RegisterService is called with a service key that is already registered.
-	ErrDuplicateService = errors.New("service already registered")
+	ErrDuplicateService apperrors.Error = "service already registered"
 
 	// ErrDuplicateTask is returned when Go is called with a task name that is already in use.
-	ErrDuplicateTask = errors.New("task already exists")
+	ErrDuplicateTask apperrors.Error = "task already exists"
 
 	// ErrInvalidTaskName is returned when Go is called with an empty or whitespace-only task name.
-	ErrInvalidTaskName = errors.New("task name must not be empty")
+	ErrInvalidTaskName apperrors.Error = "task name must not be empty"
 
 	// ErrDependencyNotFound is returned when a module depends on a module that has not been registered.
-	ErrDependencyNotFound = errors.New("module dependency not found")
+	ErrDependencyNotFound apperrors.Error = "module dependency not found"
 
 	// ErrSelfDependency is returned when a module declares itself as a dependency.
-	ErrSelfDependency = errors.New("module cannot depend on itself")
+	ErrSelfDependency apperrors.Error = "module cannot depend on itself"
 
 	// ErrInvalidDependencyName is returned when a module declares a dependency with an empty or whitespace-only name.
-	ErrInvalidDependencyName = errors.New("module dependency name must not be empty")
+	ErrInvalidDependencyName apperrors.Error = "module dependency name must not be empty"
 
 	// ErrInvalidServiceName is returned when a service is registered with an empty or whitespace-only key.
-	ErrInvalidServiceName = errors.New("service name must not be empty")
+	ErrInvalidServiceName apperrors.Error = "service name must not be empty"
 
 	// ErrServiceTypeMismatch is returned when a resolved service cannot be type-asserted to the requested type.
-	ErrServiceTypeMismatch = errors.New("service type mismatch")
+	ErrServiceTypeMismatch apperrors.Error = "service type mismatch"
 
 	// ErrServiceNil is returned when RegisterService is given a nil service
 	// instance. A nil service would panic if ResolveService returned it and a
@@ -65,36 +67,36 @@ var (
 	// in the interface{} parameter (e.g. RegisterService("x", (*T)(nil))),
 	// which a literal `svc == nil` comparison would miss because a non-nil
 	// interface value can wrap a nil concrete value — see isNilServiceValue.
-	ErrServiceNil = errors.New("service must not be nil")
+	ErrServiceNil apperrors.Error = "service must not be nil"
 
 	// ErrInvalidLifecycleState is returned when a lifecycle operation is requested while the manager is in an incompatible state.
-	ErrInvalidLifecycleState = errors.New("invalid lifecycle state")
+	ErrInvalidLifecycleState apperrors.Error = "invalid lifecycle state"
 
 	// ErrNoConfigLoader is returned by GetConfig when no config loader was
 	// configured at construction time or via WithConfigLoader.
-	ErrNoConfigLoader = errors.New("no config loader configured")
+	ErrNoConfigLoader apperrors.Error = "no config loader configured"
 
 	// ErrInvalidPanicPolicy is returned by NewManager when WithPanicPolicy is
 	// given a value outside the defined PanicPolicy enum.
-	ErrInvalidPanicPolicy = errors.New("invalid panic policy")
+	ErrInvalidPanicPolicy apperrors.Error = "invalid panic policy"
 
 	// ErrInvalidHealthCheckName is returned when a health check name is empty.
-	ErrInvalidHealthCheckName = errors.New("health check name must not be empty")
+	ErrInvalidHealthCheckName apperrors.Error = "health check name must not be empty"
 
 	// ErrInvalidReadinessCheckName is returned when a readiness check name is empty.
-	ErrInvalidReadinessCheckName = errors.New("readiness check name must not be empty")
+	ErrInvalidReadinessCheckName apperrors.Error = "readiness check name must not be empty"
 
 	// ErrHealthCheckNil is returned when RegisterHealthCheck is given a nil
 	// check function. A registered nil check would panic if any caller
 	// invoked it directly rather than defensively nil-checking first (as
 	// the httpx package does); rejecting it at registration means a nil
 	// check function can never reach that map in the first place.
-	ErrHealthCheckNil = errors.New("health check function must not be nil")
+	ErrHealthCheckNil apperrors.Error = "health check function must not be nil"
 
 	// ErrReadinessCheckNil is returned when RegisterReadinessCheck is given
 	// a nil check function. See ErrHealthCheckNil for why this is rejected
 	// at registration rather than left to each caller to guard against.
-	ErrReadinessCheckNil = errors.New("readiness check function must not be nil")
+	ErrReadinessCheckNil apperrors.Error = "readiness check function must not be nil"
 )
 
 // LifecycleState represents the current phase of the Manager's lifecycle.
@@ -184,7 +186,7 @@ func (h *TaskHandle) Name() string { return h.name }
 // than one returned by Manager.Go. The zero value has no underlying done
 // channel, so without this check Wait would block forever instead of
 // reporting that there is no backing task to wait for.
-var ErrTaskHandleNotStarted = errors.New("modulex: task handle has no backing task to wait for")
+const ErrTaskHandleNotStarted apperrors.Error = "modulex: task handle has no backing task to wait for"
 
 // Wait blocks until the task finishes and returns its final error. Calling
 // Wait on a zero-value TaskHandle (one not obtained from Manager.Go) returns
@@ -964,7 +966,7 @@ func (m *Manager) RegisterService(name string, svc interface{}) error {
 	}
 
 	m.services[name] = svc
-	m.loggerCtx.Info("registered service", slog.String("service", name))
+	m.loggerCtx.Info("registered service", slog.String(logKeyService, name))
 	return nil
 }
 
@@ -1011,10 +1013,10 @@ func (m *Manager) startSpan(ctx context.Context, spanName string, attrs map[stri
 	if childSC.IsValid() {
 		if m.loggerCtx.Enabled(childCtx, slog.LevelDebug) {
 			m.loggerCtx.DebugContext(childCtx, "span started",
-				slog.String("span_name", spanName),
-				slog.String("trace_id", childSC.TraceID()),
-				slog.String("span_id", childSC.SpanID()),
-				slog.String("parent_span_id", parentSC.SpanID()),
+				slog.String(logKeySpanName, spanName),
+				slog.String(logKeyTraceID, childSC.TraceID()),
+				slog.String(logKeySpanID, childSC.SpanID()),
+				slog.String(logKeyParentSpanID, parentSC.SpanID()),
 			)
 		}
 	}
@@ -1101,54 +1103,60 @@ func (m *Manager) Go(ctx context.Context, taskName string, fn func(ctx context.C
 	spanCtx := m.tracer.SpanContextFromContext(ctx)
 	bgCtx := m.tracer.ContextWithSpanContext(taskCtx, spanCtx)
 
-	go func() {
-		var taskErr error
-		defer func() {
-			m.taskMu.Lock()
-			if taskErr != nil {
-				m.taskErrs = append(m.taskErrs, fmt.Errorf("task %q failed: %w", taskName, taskErr))
-			}
-			delete(m.tasks, taskName)
-			// handle.finish must happen before taskMu is released, while
-			// this task's removal from m.tasks is still part of the same
-			// critical section. Calling it after Unlock (as a prior version
-			// of this code did) left a window where a concurrent
-			// waitForTasks snapshot could observe the task already gone
-			// from m.tasks — and so correctly take its zero-tasks fast path
-			// and let StopModules return — before this goroutine reached
-			// handle.finish, so the handle could still report Done() ==
-			// false for a brief window after StopModules had already
-			// returned. Finishing the handle here, before the map write's
-			// visibility is released, closes that window: any observer
-			// that sees the task gone from m.tasks (via taskMu) is
-			// guaranteed to also see handle.Done() == true.
-			handle.finish(taskErr)
-			m.taskMu.Unlock()
-			taskCancel()
-		}()
-
-		execCtx, span := m.startSpan(bgCtx, taskName, nil)
-		defer span.End()
-
-		defer func() {
-			if r := recover(); r != nil {
-				err := fmt.Errorf("panic in background task %q: %v", taskName, r)
-				span.RecordError(err)
-				m.loggerCtx.ErrorContext(execCtx, "recovered from background task panic",
-					slog.String("task", taskName),
-					slog.Any("panic", r),
-				)
-				taskErr = err
-				if m.panicPolicy == PanicPolicyPropagate {
-					panic(r)
-				}
-			}
-		}()
-
-		taskErr = fn(execCtx)
-	}()
+	go m.superviseTask(bgCtx, taskName, handle, taskCancel, fn)
 
 	return handle, nil
+}
+
+// superviseTask runs fn as the body of a task started by Go. It records the
+// outcome on handle, removes the task from the registry, applies the panic
+// policy, and finally cancels the task context via taskCancel.
+func (m *Manager) superviseTask(bgCtx context.Context, taskName string, handle *TaskHandle, taskCancel context.CancelFunc, fn func(ctx context.Context) error) {
+	var taskErr error
+	defer func() {
+		m.taskMu.Lock()
+		if taskErr != nil {
+			m.taskErrs = append(m.taskErrs, fmt.Errorf("task %q failed: %w", taskName, taskErr))
+		}
+		delete(m.tasks, taskName)
+		// handle.finish must happen before taskMu is released, while
+		// this task's removal from m.tasks is still part of the same
+		// critical section. Calling it after Unlock (as a prior version
+		// of this code did) left a window where a concurrent
+		// waitForTasks snapshot could observe the task already gone
+		// from m.tasks — and so correctly take its zero-tasks fast path
+		// and let StopModules return — before this goroutine reached
+		// handle.finish, so the handle could still report Done() ==
+		// false for a brief window after StopModules had already
+		// returned. Finishing the handle here, before the map write's
+		// visibility is released, closes that window: any observer
+		// that sees the task gone from m.tasks (via taskMu) is
+		// guaranteed to also see handle.Done() == true.
+		handle.finish(taskErr)
+		m.taskMu.Unlock()
+		taskCancel()
+	}()
+
+	execCtx, span := m.startSpan(bgCtx, taskName, nil)
+	defer span.End()
+
+	defer func() {
+		if r := recover(); r != nil {
+			err := fmt.Errorf("panic in background task %q: %v", taskName, r)
+			span.RecordError(err)
+			m.loggerCtx.ErrorContext(execCtx, "recovered from background task panic",
+				slog.String(logKeyTask, taskName),
+				slog.Any(logKeyPanic, r),
+			)
+			taskErr = err
+			if m.panicPolicy == PanicPolicyPropagate {
+				panic(r)
+			}
+		}
+	}()
+
+	taskErr = fn(execCtx)
+
 }
 
 // mermaidSafeIDPattern matches a module name that is already safe to use
@@ -1551,9 +1559,9 @@ func (m *Manager) stopModule(ctx context.Context, mod Module, phase string) erro
 	if s, ok := mod.(Stopper); ok {
 		if err := s.Stop(ctx); err != nil {
 			m.loggerCtx.ErrorContext(ctx, "failed to stop module",
-				slog.String("module", mod.Name()),
-				slog.String("phase", phase),
-				slog.Any("error", err),
+				slog.String(logKeyModule, mod.Name()),
+				slog.String(logKeyPhase, phase),
+				slog.Any(logKeyError, err),
 			)
 			return fmt.Errorf("failed to stop module %q during %s: %w", mod.Name(), phase, err)
 		}
@@ -1591,7 +1599,7 @@ func (m *Manager) waitForTasks(ctx context.Context) error {
 		return errors.Join(errs...)
 	}
 
-	m.loggerCtx.InfoContext(ctx, "waiting for supervised tasks to finish", slog.Int("task_count", len(tasks)))
+	m.loggerCtx.InfoContext(ctx, "waiting for supervised tasks to finish", slog.Int(logKeyTaskCount, len(tasks)))
 
 	g, gCtx := errgroup.WithContext(ctx)
 
@@ -1771,74 +1779,90 @@ func (m *Manager) StopModules(ctx context.Context) error {
 // Independent modules are processed in registration order, which provides a
 // deterministic tie-break when multiple valid orderings exist.
 func (m *Manager) sortModules() ([]Module, error) {
-	const (
-		unvisited = 0
-		visiting  = 1
-		visited   = 2
-	)
-
-	state := make(map[string]int)
-	var order []Module
-	var path []string
-
-	var visit func(name string) error
-	visit = func(name string) error {
-		switch state[name] {
-		case visiting:
-			// Build the cycle path from the first occurrence of this node in path.
-			cycleStart := 0
-			for i, n := range path {
-				if n == name {
-					cycleStart = i
-					break
-				}
-			}
-			cycle := append(path[cycleStart:], name)
-			return fmt.Errorf("%w: %s", ErrCircularDependency, strings.Join(cycle, " -> "))
-		case visited:
-			return nil
-		}
-
-		mod, exists := m.modules[name]
-		if !exists {
-			return fmt.Errorf("%w: %q", ErrDependencyNotFound, name)
-		}
-
-		state[name] = visiting
-		path = append(path, name)
-
-		for _, depName := range mod.DependsOn() {
-			depName = strings.TrimSpace(depName)
-			if depName == "" {
-				path = path[:len(path)-1]
-				state[name] = visited
-				return fmt.Errorf("%w: module %q has an empty dependency name", ErrInvalidDependencyName, name)
-			}
-			if depName == name {
-				path = path[:len(path)-1]
-				state[name] = visited
-				return fmt.Errorf("%w: %q", ErrSelfDependency, name)
-			}
-			if err := visit(depName); err != nil {
-				path = path[:len(path)-1]
-				state[name] = visited
-				return err
-			}
-		}
-
-		order = append(order, mod)
-		path = path[:len(path)-1]
-		state[name] = visited
-		return nil
+	ts := &topoSorter{
+		modules: m.modules,
+		state:   make(map[string]visitState),
 	}
-
 	for _, name := range m.moduleOrder {
-		if state[name] == unvisited {
-			if err := visit(name); err != nil {
+		if ts.state[name] == stateUnvisited {
+			if err := ts.visit(name); err != nil {
 				return nil, err
 			}
 		}
 	}
+	return ts.order, nil
+}
 
-	return order, nil
+// visitState tracks a module's progress through the depth-first traversal
+// performed by topoSorter.
+type visitState int
+
+const (
+	stateUnvisited visitState = iota
+	stateVisiting
+	stateVisited
+)
+
+// topoSorter is the depth-first traversal state for Manager.sortModules.
+type topoSorter struct {
+	modules map[string]Module
+	state   map[string]visitState
+	order   []Module
+	path    []string
+}
+
+// cycleError builds the circular-dependency error for name, which is already
+// on the current path.
+func (ts *topoSorter) cycleError(name string) error {
+	cycleStart := 0
+	for i, n := range ts.path {
+		if n == name {
+			cycleStart = i
+			break
+		}
+	}
+	cycle := append(append([]string(nil), ts.path[cycleStart:]...), name)
+	return fmt.Errorf("%w: %s", ErrCircularDependency, strings.Join(cycle, " -> "))
+}
+
+// visit emits name's dependencies and then name itself into ts.order.
+func (ts *topoSorter) visit(name string) error {
+	switch ts.state[name] {
+	case stateVisiting:
+		return ts.cycleError(name)
+	case stateVisited:
+		return nil
+	}
+
+	mod, exists := ts.modules[name]
+	if !exists {
+		return fmt.Errorf("%w: %q", ErrDependencyNotFound, name)
+	}
+
+	ts.state[name] = stateVisiting
+	ts.path = append(ts.path, name)
+	defer func() {
+		ts.path = ts.path[:len(ts.path)-1]
+		ts.state[name] = stateVisited
+	}()
+
+	for _, depName := range mod.DependsOn() {
+		if err := ts.visitDependency(name, strings.TrimSpace(depName)); err != nil {
+			return err
+		}
+	}
+
+	ts.order = append(ts.order, mod)
+	return nil
+}
+
+// visitDependency validates one declared dependency of name and visits it.
+func (ts *topoSorter) visitDependency(name, depName string) error {
+	switch depName {
+	case "":
+		return fmt.Errorf("%w: module %q has an empty dependency name", ErrInvalidDependencyName, name)
+	case name:
+		return fmt.Errorf("%w: %q", ErrSelfDependency, name)
+	}
+	return ts.visit(depName)
 }
