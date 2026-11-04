@@ -254,37 +254,54 @@ func addedLines(diff string) []addedLine {
 		case strings.HasPrefix(line, "+++ "):
 			file = strings.TrimPrefix(strings.TrimPrefix(line, "+++ "), "b/")
 		case strings.HasPrefix(line, "@@ "):
-			m := hunkHeaderPattern.FindStringSubmatch(line)
-			if m == nil {
+			bodyLen, newStart, ok := parseHunkHeader(line)
+			if !ok {
 				continue
 			}
-			oldCount := 1
-			if m[1] != "" {
-				oldCount, _ = strconv.Atoi(m[1])
-			}
-			newStart, _ := strconv.Atoi(m[2])
-			newCount := 1
-			if m[3] != "" {
-				newCount, _ = strconv.Atoi(m[3])
-			}
-			nextLine := newStart
-			// Consume exactly oldCount+newCount following lines as this
-			// hunk's body, by position, regardless of what they look like.
-			bodyLen := oldCount + newCount
-			for n := 0; n < bodyLen && i+1 < len(lines); n++ {
-				i++
-				body := lines[i]
-				if strings.HasPrefix(body, "+") {
-					if file != "" && file != "/dev/null" {
-						out = append(out, addedLine{file: file, line: nextLine, text: body[1:]})
-					}
-					nextLine++
-				}
-				// "-" body lines are removed (old-side only); they never
-				// occupy a new-side line number, so nextLine does not
-				// advance for them.
-			}
+			// Consume exactly bodyLen following lines as this hunk's body,
+			// by position, regardless of what they look like.
+			end := min(i+1+bodyLen, len(lines))
+			out = appendHunkAdds(out, file, newStart, lines[i+1:end])
+			i = end - 1
 		}
+	}
+	return out
+}
+
+// parseHunkHeader parses a "@@ -a,b +c,d @@" header, returning the hunk
+// body length (b+d, with omitted counts defaulting to 1) and the new-side
+// start line c. ok is false when line is not a well-formed hunk header.
+func parseHunkHeader(line string) (bodyLen, newStart int, ok bool) {
+	m := hunkHeaderPattern.FindStringSubmatch(line)
+	if m == nil {
+		return 0, 0, false
+	}
+	oldCount := 1
+	if m[1] != "" {
+		oldCount, _ = strconv.Atoi(m[1])
+	}
+	newStart, _ = strconv.Atoi(m[2])
+	newCount := 1
+	if m[3] != "" {
+		newCount, _ = strconv.Atoi(m[3])
+	}
+	return oldCount + newCount, newStart, true
+}
+
+// appendHunkAdds appends every added ("+") line of one hunk body to out,
+// numbering them from newStart. "-" body lines are removed (old-side only);
+// they never occupy a new-side line number, so the counter does not advance
+// for them. Added lines under no file, or under "/dev/null", are dropped.
+func appendHunkAdds(out []addedLine, file string, newStart int, body []string) []addedLine {
+	nextLine := newStart
+	for _, b := range body {
+		if !strings.HasPrefix(b, "+") {
+			continue
+		}
+		if file != "" && file != "/dev/null" {
+			out = append(out, addedLine{file: file, line: nextLine, text: b[1:]})
+		}
+		nextLine++
 	}
 	return out
 }
