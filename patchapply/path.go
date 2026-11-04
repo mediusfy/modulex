@@ -1,21 +1,22 @@
 package patchapply
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/mediusfy/modulex/apperrors"
 )
 
 // ErrEmptyPath is returned (wrapped) when a FileChange.Path is empty.
-var ErrEmptyPath = errors.New("patchapply: path must not be empty")
+const ErrEmptyPath apperrors.Error = "patchapply: path must not be empty"
 
 // ErrAbsolutePath is returned (wrapped) when a FileChange.Path is absolute.
 // Every path this package accepts is relative to targetDir; an absolute
 // path is always rejected outright, never silently reinterpreted as
 // relative.
-var ErrAbsolutePath = errors.New("patchapply: path must be relative to targetDir, not absolute")
+const ErrAbsolutePath apperrors.Error = "patchapply: path must be relative to targetDir, not absolute"
 
 // ErrPathTraversal is returned (wrapped) when a FileChange.Path would
 // escape targetDir — via a literal ".." component or via a symlink planted
@@ -23,7 +24,7 @@ var ErrAbsolutePath = errors.New("patchapply: path must be relative to targetDir
 // bug as a shell-injection vulnerability, for the filesystem instead of a
 // shell, and is treated with the same seriousness: rejected outright, never
 // clamped or sanitized into something "safe."
-var ErrPathTraversal = errors.New("patchapply: path escapes targetDir")
+const ErrPathTraversal apperrors.Error = "patchapply: path escapes targetDir"
 
 // resolvedPath validates that rel is a safe path relative to
 // realTargetDir (which the caller must already have resolved to its real,

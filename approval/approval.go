@@ -8,10 +8,10 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"time"
 
+	"github.com/mediusfy/modulex/apperrors"
 	"github.com/mediusfy/modulex/provenance"
 )
 
@@ -163,15 +163,15 @@ func (g Grant) ToProvenanceApproval() provenance.Approval {
 // errEmptyAction is returned by Broker.Grant when Scope.Action is empty:
 // an unscoped-to-any-action grant would be indistinguishable from a
 // wildcard, which this package never allows.
-var errEmptyAction = errors.New("approval: scope action must not be empty")
+const errEmptyAction apperrors.Error = "approval: scope action must not be empty"
 
 // errEmptyApprover is returned by Broker.Grant when approvedBy is empty:
 // every grant must be attributable to an approver for auditability.
-var errEmptyApprover = errors.New("approval: approvedBy must not be empty")
+const errEmptyApprover apperrors.Error = "approval: approvedBy must not be empty"
 
 // errNonPositiveTTL is returned by Broker.Grant when ttl is not strictly
 // positive: a Grant is not allowed to exist without a real expiry.
-var errNonPositiveTTL = errors.New("approval: ttl must be positive")
+const errNonPositiveTTL apperrors.Error = "approval: ttl must be positive"
 
 // generateToken returns a new unguessable token (hex-encoded, tokenBytes
 // bytes of crypto/rand output) and its SHA-256 hex digest.

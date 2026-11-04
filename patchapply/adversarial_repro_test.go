@@ -67,49 +67,79 @@ func TestAdversarial_PathTraversalTouchesNothing(t *testing.T) {
 }
 
 func TestAdversarial_SymlinkEscapeRejected(t *testing.T) {
-	dir := t.TempDir()
-	outsideDir := t.TempDir()
-
-	if err := os.Symlink(outsideDir, filepath.Join(dir, "escape-link")); err != nil {
-		t.Skipf("symlinks not supported in this environment: %v", err)
+	tests := []struct {
+		name string
+	}{
+		{name: "Adversarial_SymlinkEscapeRejected"},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			outsideDir := t.TempDir()
 
-	_, err := patchapply.Apply(dir, []patchapply.FileChange{
-		{Path: "escape-link/pwned.txt", NewContent: []byte("attacker content")},
-	}, patchapply.ApplyOptions{})
-	if err == nil {
-		t.Fatal("Apply through a symlink escaping targetDir succeeded, want error")
-	}
-	if _, statErr := os.Stat(filepath.Join(outsideDir, "pwned.txt")); statErr == nil {
-		t.Fatal("symlink escape wrote outside targetDir")
+			if err := os.Symlink(outsideDir, filepath.Join(dir, "escape-link")); err != nil {
+				t.Skipf("symlinks not supported in this environment: %v", err)
+			}
+
+			_, err := patchapply.Apply(dir, []patchapply.FileChange{
+				{Path: "escape-link/pwned.txt", NewContent: []byte("attacker content")},
+			}, patchapply.ApplyOptions{})
+			if err == nil {
+				t.Fatal("Apply through a symlink escaping targetDir succeeded, want error")
+			}
+			if _, statErr := os.Stat(filepath.Join(outsideDir, "pwned.txt")); statErr == nil {
+				t.Fatal("symlink escape wrote outside targetDir")
+			}
+		})
 	}
 }
 
 func TestAdversarial_UnrelatedEditNeverClobbered(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "shared.txt")
-	original := []byte("original baseline content")
-	mustWrite(t, path, original)
-
-	// Simulate: the caller computed a patch against `original`, but before
-	// Apply runs, some other process/human edits the file.
-	unrelatedEdit := []byte("a human's own unrelated edit, made after the patch was computed")
-	mustWrite(t, path, unrelatedEdit)
-
-	_, err := patchapply.Apply(dir, []patchapply.FileChange{
-		{Path: "shared.txt", NewContent: []byte("attacker/stale patch content"), ExpectedPriorContent: original},
-	}, patchapply.ApplyOptions{})
-	if err == nil {
-		t.Fatal("Apply succeeded despite unrelated drift, want rejection")
+	tests := []struct {
+		name string
+	}{
+		{name: "Adversarial_UnrelatedEditNeverClobbered"},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "shared.txt")
+			original := []byte("original baseline content")
+			mustWrite(t, path, original)
 
-	got := mustRead(t, path)
-	if !bytes.Equal(got, unrelatedEdit) {
-		t.Fatalf("unrelated edit was clobbered: got %q, want %q (the preserved human edit)", got, unrelatedEdit)
+			// Simulate: the caller computed a patch against `original`, but before
+			// Apply runs, some other process/human edits the file.
+			unrelatedEdit := []byte("a human's own unrelated edit, made after the patch was computed")
+			mustWrite(t, path, unrelatedEdit)
+
+			_, err := patchapply.Apply(dir, []patchapply.FileChange{
+				{Path: "shared.txt", NewContent: []byte("attacker/stale patch content"), ExpectedPriorContent: original},
+			}, patchapply.ApplyOptions{})
+			if err == nil {
+				t.Fatal("Apply succeeded despite unrelated drift, want rejection")
+			}
+
+			got := mustRead(t, path)
+			if !bytes.Equal(got, unrelatedEdit) {
+				t.Fatalf("unrelated edit was clobbered: got %q, want %q (the preserved human edit)", got, unrelatedEdit)
+			}
+		})
 	}
 }
 
 func TestAdversarial_DeletionNeverSucceedsWithoutApprovedBroker(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "Adversarial_DeletionNeverSucceedsWithoutApprovedBroker", run: runAdversarialDeletionNeverSucceedsWithoutApprovedBroker},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
+}
+
+func runAdversarialDeletionNeverSucceedsWithoutApprovedBroker(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "important.txt")
 	mustWrite(t, path, []byte("do not delete me without approval"))
@@ -179,77 +209,95 @@ func TestAdversarial_DeletionNeverSucceedsWithoutApprovedBroker(t *testing.T) {
 }
 
 func TestAdversarial_PartialFailureRestoresAllFiles(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("running as root; permission-based failure injection does not apply")
+	tests := []struct {
+		name string
+	}{
+		{name: "Adversarial_PartialFailureRestoresAllFiles"},
 	}
-	dir := t.TempDir()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if os.Geteuid() == 0 {
+				t.Skip("running as root; permission-based failure injection does not apply")
+			}
+			dir := t.TempDir()
 
-	// Two files that will succeed, then a third whose parent directory is
-	// read-only so its write genuinely fails partway through the batch.
-	mustWrite(t, filepath.Join(dir, "one.txt"), []byte("original one"))
-	lockedDir := filepath.Join(dir, "locked")
-	if err := os.Mkdir(lockedDir, 0o555); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(lockedDir, 0o755) })
+			// Two files that will succeed, then a third whose parent directory is
+			// read-only so its write genuinely fails partway through the batch.
+			mustWrite(t, filepath.Join(dir, "one.txt"), []byte("original one"))
+			lockedDir := filepath.Join(dir, "locked")
+			if err := os.Mkdir(lockedDir, 0o555); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(lockedDir, 0o755) })
 
-	changes := []patchapply.FileChange{
-		{Path: "one.txt", NewContent: []byte("modified one"), ExpectedPriorContent: []byte("original one")},
-		{Path: "two.txt", NewContent: []byte("brand new two")},
-		{Path: "locked/three.txt", NewContent: []byte("should never land")},
-	}
-	_, err := patchapply.Apply(dir, changes, patchapply.ApplyOptions{})
-	if err == nil {
-		t.Fatal("Apply into a read-only directory succeeded, want failure")
-	}
+			changes := []patchapply.FileChange{
+				{Path: "one.txt", NewContent: []byte("modified one"), ExpectedPriorContent: []byte("original one")},
+				{Path: "two.txt", NewContent: []byte("brand new two")},
+				{Path: "locked/three.txt", NewContent: []byte("should never land")},
+			}
+			_, err := patchapply.Apply(dir, changes, patchapply.ApplyOptions{})
+			if err == nil {
+				t.Fatal("Apply into a read-only directory succeeded, want failure")
+			}
 
-	if got := mustRead(t, filepath.Join(dir, "one.txt")); !bytes.Equal(got, []byte("original one")) {
-		t.Fatalf("one.txt not rolled back: got %q, want original", got)
-	}
-	if _, statErr := os.Stat(filepath.Join(dir, "two.txt")); !os.IsNotExist(statErr) {
-		t.Fatal("two.txt (a brand-new file from the failed batch) was not rolled back / removed")
-	}
-	if _, statErr := os.Stat(filepath.Join(lockedDir, "three.txt")); !os.IsNotExist(statErr) {
-		t.Fatal("three.txt should never have been created")
+			if got := mustRead(t, filepath.Join(dir, "one.txt")); !bytes.Equal(got, []byte("original one")) {
+				t.Fatalf("one.txt not rolled back: got %q, want original", got)
+			}
+			if _, statErr := os.Stat(filepath.Join(dir, "two.txt")); !os.IsNotExist(statErr) {
+				t.Fatal("two.txt (a brand-new file from the failed batch) was not rolled back / removed")
+			}
+			if _, statErr := os.Stat(filepath.Join(lockedDir, "three.txt")); !os.IsNotExist(statErr) {
+				t.Fatal("three.txt should never have been created")
+			}
+		})
 	}
 }
 
 func TestAdversarial_SharedNewDirectoryRollbackDoesNotLoseSiblingFiles(t *testing.T) {
-	dir := t.TempDir()
+	tests := []struct {
+		name string
+	}{
+		{name: "Adversarial_SharedNewDirectoryRollbackDoesNotLoseSiblingFiles"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
 
-	changes := []patchapply.FileChange{
-		{Path: "newdir/sub/a.txt", NewContent: []byte("a content")},
-		{Path: "newdir/sub/b.txt", NewContent: []byte("b content")},
-	}
-	j, err := patchapply.Apply(dir, changes, patchapply.ApplyOptions{})
-	if err != nil {
-		t.Fatalf("Apply failed: %v", err)
-	}
-	if _, statErr := os.Stat(filepath.Join(dir, "newdir", "sub", "a.txt")); statErr != nil {
-		t.Fatalf("a.txt missing after successful Apply: %v", statErr)
-	}
-	if _, statErr := os.Stat(filepath.Join(dir, "newdir", "sub", "b.txt")); statErr != nil {
-		t.Fatalf("b.txt missing after successful Apply: %v", statErr)
-	}
+			changes := []patchapply.FileChange{
+				{Path: "newdir/sub/a.txt", NewContent: []byte("a content")},
+				{Path: "newdir/sub/b.txt", NewContent: []byte("b content")},
+			}
+			j, err := patchapply.Apply(dir, changes, patchapply.ApplyOptions{})
+			if err != nil {
+				t.Fatalf("Apply failed: %v", err)
+			}
+			if _, statErr := os.Stat(filepath.Join(dir, "newdir", "sub", "a.txt")); statErr != nil {
+				t.Fatalf("a.txt missing after successful Apply: %v", statErr)
+			}
+			if _, statErr := os.Stat(filepath.Join(dir, "newdir", "sub", "b.txt")); statErr != nil {
+				t.Fatalf("b.txt missing after successful Apply: %v", statErr)
+			}
 
-	// Rolling back both files means deleting paths Apply created, which
-	// requires an approved grant for the scope Rollback derives from them.
-	broker := approval.NewBroker()
-	scope := patchapply.BatchScope("delete", []string{"newdir/sub/a.txt", "newdir/sub/b.txt"})
-	if _, err := broker.Grant(scope, "human@example.com", time.Minute); err != nil {
-		t.Fatal(err)
-	}
-	if err := patchapply.Rollback(dir, j, patchapply.RollbackOptions{
-		Broker: broker,
-		Scope:  approval.Scope{Action: "delete"},
-	}); err != nil {
-		t.Fatalf("Rollback failed: %v", err)
-	}
-	if _, statErr := os.Stat(filepath.Join(dir, "newdir")); !os.IsNotExist(statErr) {
-		t.Fatal("newdir should be fully removed after rolling back both files that created it")
-	}
-	if err := patchapply.Verify(dir, j); err != nil {
-		t.Fatalf("Verify after rollback reports drift: %v", err)
+			// Rolling back both files means deleting paths Apply created, which
+			// requires an approved grant for the scope Rollback derives from them.
+			broker := approval.NewBroker()
+			scope := patchapply.BatchScope("delete", []string{"newdir/sub/a.txt", "newdir/sub/b.txt"})
+			if _, err := broker.Grant(scope, "human@example.com", time.Minute); err != nil {
+				t.Fatal(err)
+			}
+			if err := patchapply.Rollback(dir, j, patchapply.RollbackOptions{
+				Broker: broker,
+				Scope:  approval.Scope{Action: "delete"},
+			}); err != nil {
+				t.Fatalf("Rollback failed: %v", err)
+			}
+			if _, statErr := os.Stat(filepath.Join(dir, "newdir")); !os.IsNotExist(statErr) {
+				t.Fatal("newdir should be fully removed after rolling back both files that created it")
+			}
+			if err := patchapply.Verify(dir, j); err != nil {
+				t.Fatalf("Verify after rollback reports drift: %v", err)
+			}
+		})
 	}
 }
 
@@ -264,46 +312,55 @@ func TestAdversarial_SharedNewDirectoryRollbackDoesNotLoseSiblingFiles(t *testin
 // file (or any third-party file) in a package-created directory always
 // survives.
 func TestAdversarial_ThirdPartyFileAddedToCreatedDirSurvivesUntilSiblingRemoved(t *testing.T) {
-	dir := t.TempDir()
+	tests := []struct {
+		name string
+	}{
+		{name: "Adversarial_ThirdPartyFileAddedToCreatedDirSurvivesUntilSiblingRemoved"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
 
-	j, err := patchapply.Apply(dir, []patchapply.FileChange{
-		{Path: "created/only.txt", NewContent: []byte("only file")},
-	}, patchapply.ApplyOptions{})
-	if err != nil {
-		t.Fatalf("Apply failed: %v", err)
-	}
+			j, err := patchapply.Apply(dir, []patchapply.FileChange{
+				{Path: "created/only.txt", NewContent: []byte("only file")},
+			}, patchapply.ApplyOptions{})
+			if err != nil {
+				t.Fatalf("Apply failed: %v", err)
+			}
 
-	// A third party drops an unrelated file into the directory this
-	// package just created, before Rollback runs.
-	thirdPartyFile := filepath.Join(dir, "created", "unrelated-third-party-file.txt")
-	mustWrite(t, thirdPartyFile, []byte("not tracked by the journal at all"))
+			// A third party drops an unrelated file into the directory this
+			// package just created, before Rollback runs.
+			thirdPartyFile := filepath.Join(dir, "created", "unrelated-third-party-file.txt")
+			mustWrite(t, thirdPartyFile, []byte("not tracked by the journal at all"))
 
-	broker := approval.NewBroker()
-	scope := patchapply.BatchScope("delete", []string{"created/only.txt"})
-	if _, err := broker.Grant(scope, "human@example.com", time.Minute); err != nil {
-		t.Fatal(err)
-	}
-	if err := patchapply.Rollback(dir, j, patchapply.RollbackOptions{
-		Broker: broker,
-		Scope:  approval.Scope{Action: "delete"},
-	}); err != nil {
-		t.Fatalf("Rollback failed: %v", err)
-	}
+			broker := approval.NewBroker()
+			scope := patchapply.BatchScope("delete", []string{"created/only.txt"})
+			if _, err := broker.Grant(scope, "human@example.com", time.Minute); err != nil {
+				t.Fatal(err)
+			}
+			if err := patchapply.Rollback(dir, j, patchapply.RollbackOptions{
+				Broker: broker,
+				Scope:  approval.Scope{Action: "delete"},
+			}); err != nil {
+				t.Fatalf("Rollback failed: %v", err)
+			}
 
-	// only.txt was tracked by the journal and must be gone.
-	if _, statErr := os.Stat(filepath.Join(dir, "created", "only.txt")); !os.IsNotExist(statErr) {
-		t.Fatalf("only.txt should have been removed by rollback, stat err = %v", statErr)
-	}
-	// The third party's file was NEVER tracked by the journal and must
-	// survive — this is the exact bug this test guards against.
-	got := mustRead(t, thirdPartyFile)
-	if !bytes.Equal(got, []byte("not tracked by the journal at all")) {
-		t.Fatalf("third-party file content changed: got %q", got)
-	}
-	// Because the directory is non-empty (the third-party file still
-	// lives there), Rollback must not have removed it either.
-	if _, statErr := os.Stat(filepath.Join(dir, "created")); statErr != nil {
-		t.Fatalf("created/ directory should survive while it still contains the third-party file: %v", statErr)
+			// only.txt was tracked by the journal and must be gone.
+			if _, statErr := os.Stat(filepath.Join(dir, "created", "only.txt")); !os.IsNotExist(statErr) {
+				t.Fatalf("only.txt should have been removed by rollback, stat err = %v", statErr)
+			}
+			// The third party's file was NEVER tracked by the journal and must
+			// survive — this is the exact bug this test guards against.
+			got := mustRead(t, thirdPartyFile)
+			if !bytes.Equal(got, []byte("not tracked by the journal at all")) {
+				t.Fatalf("third-party file content changed: got %q", got)
+			}
+			// Because the directory is non-empty (the third-party file still
+			// lives there), Rollback must not have removed it either.
+			if _, statErr := os.Stat(filepath.Join(dir, "created")); statErr != nil {
+				t.Fatalf("created/ directory should survive while it still contains the third-party file: %v", statErr)
+			}
+		})
 	}
 }
 
@@ -318,44 +375,53 @@ func TestAdversarial_ThirdPartyFileAddedToCreatedDirSurvivesUntilSiblingRemoved(
 // pre-fix implementation before this test was written. Rollback must now
 // return ErrJournalNotRestorable and leave the file untouched instead.
 func TestAdversarial_SerializedJournalRefusesToRollbackRatherThanDestroyData(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "important.txt")
-	original := []byte("original important content that must never be silently destroyed")
-	mustWrite(t, path, original)
+	tests := []struct {
+		name string
+	}{
+		{name: "Adversarial_SerializedJournalRefusesToRollbackRatherThanDestroyData"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "important.txt")
+			original := []byte("original important content that must never be silently destroyed")
+			mustWrite(t, path, original)
 
-	j, err := patchapply.Apply(dir, []patchapply.FileChange{
-		{Path: "important.txt", NewContent: []byte("modified content")},
-	}, patchapply.ApplyOptions{})
-	if err != nil {
-		t.Fatalf("Apply failed: %v", err)
-	}
+			j, err := patchapply.Apply(dir, []patchapply.FileChange{
+				{Path: "important.txt", NewContent: []byte("modified content")},
+			}, patchapply.ApplyOptions{})
+			if err != nil {
+				t.Fatalf("Apply failed: %v", err)
+			}
 
-	// Simulate persisting the journal (e.g. to disk, or handing it to
-	// another process/tool) and reloading it later — this is exactly the
-	// lossy round-trip JournalEntry.OriginalContent's json:"-" tag causes.
-	data, err := json.Marshal(j)
-	if err != nil {
-		t.Fatalf("marshal failed: %v", err)
-	}
-	var reloaded patchapply.Journal
-	if err := json.Unmarshal(data, &reloaded); err != nil {
-		t.Fatalf("unmarshal failed: %v", err)
-	}
+			// Simulate persisting the journal (e.g. to disk, or handing it to
+			// another process/tool) and reloading it later — this is exactly the
+			// lossy round-trip JournalEntry.OriginalContent's json:"-" tag causes.
+			data, err := json.Marshal(j)
+			if err != nil {
+				t.Fatalf("marshal failed: %v", err)
+			}
+			var reloaded patchapply.Journal
+			if err := json.Unmarshal(data, &reloaded); err != nil {
+				t.Fatalf("unmarshal failed: %v", err)
+			}
 
-	err = patchapply.Rollback(dir, reloaded, patchapply.RollbackOptions{})
-	if err == nil {
-		t.Fatal("Rollback on a JSON-round-tripped Journal succeeded, want ErrJournalNotRestorable")
-	}
-	if !errors.Is(err, patchapply.ErrJournalNotRestorable) {
-		t.Fatalf("Rollback error = %v, want it to wrap patchapply.ErrJournalNotRestorable", err)
-	}
+			err = patchapply.Rollback(dir, reloaded, patchapply.RollbackOptions{})
+			if err == nil {
+				t.Fatal("Rollback on a JSON-round-tripped Journal succeeded, want ErrJournalNotRestorable")
+			}
+			if !errors.Is(err, patchapply.ErrJournalNotRestorable) {
+				t.Fatalf("Rollback error = %v, want it to wrap patchapply.ErrJournalNotRestorable", err)
+			}
 
-	got := mustRead(t, path)
-	if !bytes.Equal(got, []byte("modified content")) {
-		t.Fatalf("file content changed after a refused Rollback: got %q, want the post-Apply content unchanged (%q)",
-			got, "modified content")
-	}
-	if len(got) == 0 {
-		t.Fatal("DATA LOSS: file was overwritten with empty content by Rollback on a JSON-round-tripped Journal")
+			got := mustRead(t, path)
+			if !bytes.Equal(got, []byte("modified content")) {
+				t.Fatalf("file content changed after a refused Rollback: got %q, want the post-Apply content unchanged (%q)",
+					got, "modified content")
+			}
+			if len(got) == 0 {
+				t.Fatal("DATA LOSS: file was overwritten with empty content by Rollback on a JSON-round-tripped Journal")
+			}
+		})
 	}
 }

@@ -70,8 +70,21 @@ func TestRequiresApproval(t *testing.T) {
 }
 
 func TestRequiresApproval_EmptyContractAlwaysErrors(t *testing.T) {
-	var c contract.Contract
-	if _, err := RequiresApproval(c, "anything"); !errors.Is(err, ErrCommandNotFound) {
-		t.Errorf("RequiresApproval on a zero-value Contract = %v, want ErrCommandNotFound", err)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "RequiresApproval_EmptyContractAlwaysErrors",
+			run: func(t *testing.T) {
+				var c contract.Contract
+				if _, err := RequiresApproval(c, "anything"); !errors.Is(err, ErrCommandNotFound) {
+					t.Errorf("RequiresApproval on a zero-value Contract = %v, want ErrCommandNotFound", err)
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
 	}
 }

@@ -40,6 +40,18 @@ func readFile(t *testing.T, targetDir, rel string) ([]byte, bool) {
 }
 
 func TestApply_SuccessThenRollbackThenVerify(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "Apply_SuccessThenRollbackThenVerify", run: runApplySuccessThenRollbackThenVerify},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
+}
+
+func runApplySuccessThenRollbackThenVerify(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "existing.txt", []byte("original content"))
 
@@ -104,114 +116,159 @@ func TestApply_SuccessThenRollbackThenVerify(t *testing.T) {
 }
 
 func TestVerify_DetectsDriftAfterRollback(t *testing.T) {
-	dir := t.TempDir()
-	writeFile(t, dir, "a.txt", []byte("v1"))
+	tests := []struct {
+		name string
+	}{
+		{name: "Verify_DetectsDriftAfterRollback"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFile(t, dir, "a.txt", []byte("v1"))
 
-	journal, err := Apply(dir, []FileChange{
-		{Path: "a.txt", NewContent: []byte("v2"), ExpectedPriorContent: []byte("v1")},
-	}, ApplyOptions{})
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if err := Rollback(dir, journal, RollbackOptions{}); err != nil {
-		t.Fatalf("Rollback: %v", err)
-	}
-	if err := Verify(dir, journal); err != nil {
-		t.Fatalf("Verify immediately after rollback should be clean: %v", err)
-	}
+			journal, err := Apply(dir, []FileChange{
+				{Path: "a.txt", NewContent: []byte("v2"), ExpectedPriorContent: []byte("v1")},
+			}, ApplyOptions{})
+			if err != nil {
+				t.Fatalf("Apply: %v", err)
+			}
+			if err := Rollback(dir, journal, RollbackOptions{}); err != nil {
+				t.Fatalf("Rollback: %v", err)
+			}
+			if err := Verify(dir, journal); err != nil {
+				t.Fatalf("Verify immediately after rollback should be clean: %v", err)
+			}
 
-	// Simulate someone modifying the file again after rollback.
-	writeFile(t, dir, "a.txt", []byte("modified after rollback"))
+			// Simulate someone modifying the file again after rollback.
+			writeFile(t, dir, "a.txt", []byte("modified after rollback"))
 
-	err = Verify(dir, journal)
-	if err == nil {
-		t.Fatal("Verify should report drift after a post-rollback modification")
-	}
-	if !bytes.Contains([]byte(err.Error()), []byte("a.txt")) {
-		t.Fatalf("Verify error should name the drifted file, got: %v", err)
+			err = Verify(dir, journal)
+			if err == nil {
+				t.Fatal("Verify should report drift after a post-rollback modification")
+			}
+			if !bytes.Contains([]byte(err.Error()), []byte("a.txt")) {
+				t.Fatalf("Verify error should name the drifted file, got: %v", err)
+			}
+		})
 	}
 }
 
 func TestApply_DeleteWithApprovedBrokerSucceeds(t *testing.T) {
-	dir := t.TempDir()
-	writeFile(t, dir, "gone.txt", []byte("bye"))
+	tests := []struct {
+		name string
+	}{
+		{name: "Apply_DeleteWithApprovedBrokerSucceeds"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFile(t, dir, "gone.txt", []byte("bye"))
 
-	broker := approval.NewBroker()
-	// Resource is derived by Apply from the batch itself (via BatchScope),
-	// not trusted from an independently-supplied string — grant for the
-	// exact scope Apply will actually check.
-	scope := BatchScope("delete", []string{"gone.txt"})
-	if _, err := broker.Grant(scope, "tester", time.Minute); err != nil {
-		t.Fatalf("Grant: %v", err)
-	}
+			broker := approval.NewBroker()
+			// Resource is derived by Apply from the batch itself (via BatchScope),
+			// not trusted from an independently-supplied string — grant for the
+			// exact scope Apply will actually check.
+			scope := BatchScope("delete", []string{"gone.txt"})
+			if _, err := broker.Grant(scope, "tester", time.Minute); err != nil {
+				t.Fatalf("Grant: %v", err)
+			}
 
-	journal, err := Apply(dir, []FileChange{
-		{Path: "gone.txt", Delete: true, ExpectedPriorContent: []byte("bye")},
-	}, ApplyOptions{Broker: broker, Scope: approval.Scope{Action: "delete"}})
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if _, ok := readFile(t, dir, "gone.txt"); ok {
-		t.Fatal("gone.txt should have been deleted")
-	}
+			journal, err := Apply(dir, []FileChange{
+				{Path: "gone.txt", Delete: true, ExpectedPriorContent: []byte("bye")},
+			}, ApplyOptions{Broker: broker, Scope: approval.Scope{Action: "delete"}})
+			if err != nil {
+				t.Fatalf("Apply: %v", err)
+			}
+			if _, ok := readFile(t, dir, "gone.txt"); ok {
+				t.Fatal("gone.txt should have been deleted")
+			}
 
-	if err := Rollback(dir, journal, RollbackOptions{}); err != nil {
-		t.Fatalf("Rollback: %v", err)
-	}
-	if b, ok := readFile(t, dir, "gone.txt"); !ok || string(b) != "bye" {
-		t.Fatalf("after rollback, gone.txt = %q, %v; want %q, true", b, ok, "bye")
+			if err := Rollback(dir, journal, RollbackOptions{}); err != nil {
+				t.Fatalf("Rollback: %v", err)
+			}
+			if b, ok := readFile(t, dir, "gone.txt"); !ok || string(b) != "bye" {
+				t.Fatalf("after rollback, gone.txt = %q, %v; want %q, true", b, ok, "bye")
+			}
+		})
 	}
 }
 
 func TestApply_DeleteOfAlreadyAbsentPathIsNoop(t *testing.T) {
-	dir := t.TempDir()
-
-	broker := approval.NewBroker()
-	scope := BatchScope("delete", []string{"never-existed.txt"})
-	if _, err := broker.Grant(scope, "tester", time.Minute); err != nil {
-		t.Fatalf("Grant: %v", err)
+	tests := []struct {
+		name string
+	}{
+		{name: "Apply_DeleteOfAlreadyAbsentPathIsNoop"},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
 
-	journal, err := Apply(dir, []FileChange{
-		{Path: "never-existed.txt", Delete: true},
-	}, ApplyOptions{Broker: broker, Scope: approval.Scope{Action: "delete"}})
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if len(journal.Entries) != 1 || journal.Entries[0].Outcome != OutcomeNoop {
-		t.Fatalf("expected a single OutcomeNoop entry, got %+v", journal.Entries)
+			broker := approval.NewBroker()
+			scope := BatchScope("delete", []string{"never-existed.txt"})
+			if _, err := broker.Grant(scope, "tester", time.Minute); err != nil {
+				t.Fatalf("Grant: %v", err)
+			}
+
+			journal, err := Apply(dir, []FileChange{
+				{Path: "never-existed.txt", Delete: true},
+			}, ApplyOptions{Broker: broker, Scope: approval.Scope{Action: "delete"}})
+			if err != nil {
+				t.Fatalf("Apply: %v", err)
+			}
+			if len(journal.Entries) != 1 || journal.Entries[0].Outcome != OutcomeNoop {
+				t.Fatalf("expected a single OutcomeNoop entry, got %+v", journal.Entries)
+			}
+		})
 	}
 }
 
 func TestApply_ProvenanceStatusUsedForApproval(t *testing.T) {
-	// Sanity check that an unapproved scope really does return
-	// provenance.StatusApprovalRequired from the broker itself, which is
-	// what checkApproval relies on.
-	broker := approval.NewBroker()
-	status := broker.Check(approval.Scope{Action: "delete", Resource: "x"})
-	if status != provenance.StatusApprovalRequired {
-		t.Fatalf("expected StatusApprovalRequired for a fresh broker, got %s", status)
+	tests := []struct {
+		name string
+	}{
+		{name: "Apply_ProvenanceStatusUsedForApproval"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Sanity check that an unapproved scope really does return
+			// provenance.StatusApprovalRequired from the broker itself, which is
+			// what checkApproval relies on.
+			broker := approval.NewBroker()
+			status := broker.Check(approval.Scope{Action: "delete", Resource: "x"})
+			if status != provenance.StatusApprovalRequired {
+				t.Fatalf("expected StatusApprovalRequired for a fresh broker, got %s", status)
+			}
+		})
 	}
 }
 
 func TestJournal_StringNeverIncludesContent(t *testing.T) {
-	dir := t.TempDir()
-	secretContent := []byte("token=abcdef123456")
-	writeFile(t, dir, "secret.txt", secretContent)
-
-	journal, err := Apply(dir, []FileChange{
-		{Path: "secret.txt", NewContent: []byte("new content, also secret token=zzzzzzzzzz")},
-	}, ApplyOptions{})
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
+	tests := []struct {
+		name string
+	}{
+		{name: "Journal_StringNeverIncludesContent"},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			secretContent := []byte("token=abcdef123456")
+			writeFile(t, dir, "secret.txt", secretContent)
 
-	s := journal.String()
-	if bytes.Contains([]byte(s), secretContent) {
-		t.Fatalf("Journal.String() must never include file content, got: %s", s)
-	}
-	if bytes.Contains([]byte(s), []byte("abcdef123456")) || bytes.Contains([]byte(s), []byte("zzzzzzzzzz")) {
-		t.Fatalf("Journal.String() leaked content bytes: %s", s)
+			journal, err := Apply(dir, []FileChange{
+				{Path: "secret.txt", NewContent: []byte("new content, also secret token=zzzzzzzzzz")},
+			}, ApplyOptions{})
+			if err != nil {
+				t.Fatalf("Apply: %v", err)
+			}
+
+			s := journal.String()
+			if bytes.Contains([]byte(s), secretContent) {
+				t.Fatalf("Journal.String() must never include file content, got: %s", s)
+			}
+			if bytes.Contains([]byte(s), []byte("abcdef123456")) || bytes.Contains([]byte(s), []byte("zzzzzzzzzz")) {
+				t.Fatalf("Journal.String() leaked content bytes: %s", s)
+			}
+		})
 	}
 }
 
@@ -225,32 +282,41 @@ func TestJournal_StringNeverIncludesContent(t *testing.T) {
 // become non-executable after Apply. Apply must now stat the original
 // file's mode and chmod the temp file to match before the rename.
 func TestApply_PreservesOriginalFileModeOnWrite(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("permission bits are not POSIX-shaped on windows")
+	tests := []struct {
+		name string
+	}{
+		{name: "Apply_PreservesOriginalFileModeOnWrite"},
 	}
-	dir := t.TempDir()
-	full := filepath.Join(dir, "script.sh")
-	if err := os.WriteFile(full, []byte("#!/bin/sh\necho original\n"), 0o755); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if runtime.GOOS == "windows" {
+				t.Skip("permission bits are not POSIX-shaped on windows")
+			}
+			dir := t.TempDir()
+			full := filepath.Join(dir, "script.sh")
+			if err := os.WriteFile(full, []byte("#!/bin/sh\necho original\n"), 0o755); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
 
-	journal, err := Apply(dir, []FileChange{
-		{Path: "script.sh", NewContent: []byte("#!/bin/sh\necho updated\n")},
-	}, ApplyOptions{})
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
+			journal, err := Apply(dir, []FileChange{
+				{Path: "script.sh", NewContent: []byte("#!/bin/sh\necho updated\n")},
+			}, ApplyOptions{})
+			if err != nil {
+				t.Fatalf("Apply: %v", err)
+			}
 
-	info, err := os.Stat(full)
-	if err != nil {
-		t.Fatalf("Stat: %v", err)
-	}
-	if got := info.Mode().Perm(); got != 0o755 {
-		t.Fatalf("after Apply, script.sh mode = %#o, want %#o (original mode must survive "+
-			"a content-only write, not collapse to os.CreateTemp's own default 0600)", got, 0o755)
-	}
-	if journal.Entries[0].OriginalMode != 0o755 {
-		t.Fatalf("journal Entries[0].OriginalMode = %#o, want %#o", journal.Entries[0].OriginalMode, 0o755)
+			info, err := os.Stat(full)
+			if err != nil {
+				t.Fatalf("Stat: %v", err)
+			}
+			if got := info.Mode().Perm(); got != 0o755 {
+				t.Fatalf("after Apply, script.sh mode = %#o, want %#o (original mode must survive "+
+					"a content-only write, not collapse to os.CreateTemp's own default 0600)", got, 0o755)
+			}
+			if journal.Entries[0].OriginalMode != 0o755 {
+				t.Fatalf("journal Entries[0].OriginalMode = %#o, want %#o", journal.Entries[0].OriginalMode, 0o755)
+			}
+		})
 	}
 }
 
@@ -258,23 +324,32 @@ func TestApply_PreservesOriginalFileModeOnWrite(t *testing.T) {
 // file (one that did not exist before Apply) lands at defaultNewFileMode
 // (0644), not at os.CreateTemp's own 0600 default.
 func TestApply_NewFileGetsDefaultModeNotCreateTempDefault(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("permission bits are not POSIX-shaped on windows")
+	tests := []struct {
+		name string
+	}{
+		{name: "Apply_NewFileGetsDefaultModeNotCreateTempDefault"},
 	}
-	dir := t.TempDir()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if runtime.GOOS == "windows" {
+				t.Skip("permission bits are not POSIX-shaped on windows")
+			}
+			dir := t.TempDir()
 
-	if _, err := Apply(dir, []FileChange{
-		{Path: "brand-new.txt", NewContent: []byte("hello")},
-	}, ApplyOptions{}); err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
+			if _, err := Apply(dir, []FileChange{
+				{Path: "brand-new.txt", NewContent: []byte("hello")},
+			}, ApplyOptions{}); err != nil {
+				t.Fatalf("Apply: %v", err)
+			}
 
-	info, err := os.Stat(filepath.Join(dir, "brand-new.txt"))
-	if err != nil {
-		t.Fatalf("Stat: %v", err)
-	}
-	if got := info.Mode().Perm(); got != 0o644 {
-		t.Fatalf("new file mode = %#o, want %#o (defaultNewFileMode), not os.CreateTemp's own 0600", got, 0o644)
+			info, err := os.Stat(filepath.Join(dir, "brand-new.txt"))
+			if err != nil {
+				t.Fatalf("Stat: %v", err)
+			}
+			if got := info.Mode().Perm(); got != 0o644 {
+				t.Fatalf("new file mode = %#o, want %#o (defaultNewFileMode), not os.CreateTemp's own 0600", got, 0o644)
+			}
+		})
 	}
 }
 
@@ -285,6 +360,18 @@ func TestApply_NewFileGetsDefaultModeNotCreateTempDefault(t *testing.T) {
 // and confirms Rollback corrects it back to what was recorded before
 // Apply ever touched the file.
 func TestRollback_RestoresOriginalModeNotJustContent(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "Rollback_RestoresOriginalModeNotJustContent", run: runRollbackRestoresOriginalModeNotJustContent},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
+}
+
+func runRollbackRestoresOriginalModeNotJustContent(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("permission bits are not POSIX-shaped on windows")
 	}
@@ -338,41 +425,50 @@ func TestRollback_RestoresOriginalModeNotJustContent(t *testing.T) {
 // BatchScope), so a grant scoped to one batch can never authorize a
 // different one.
 func TestApply_GrantForOneBatchDoesNotAuthorizeDifferentBatch(t *testing.T) {
-	dir := t.TempDir()
-	writeFile(t, dir, "a.txt", []byte("a"))
-	writeFile(t, dir, "b.txt", []byte("b"))
+	tests := []struct {
+		name string
+	}{
+		{name: "Apply_GrantForOneBatchDoesNotAuthorizeDifferentBatch"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFile(t, dir, "a.txt", []byte("a"))
+			writeFile(t, dir, "b.txt", []byte("b"))
 
-	broker := approval.NewBroker()
-	// A human approves deleting ONLY a.txt.
-	if _, err := broker.Grant(BatchScope("delete", []string{"a.txt"}), "tester", time.Minute); err != nil {
-		t.Fatalf("Grant: %v", err)
-	}
+			broker := approval.NewBroker()
+			// A human approves deleting ONLY a.txt.
+			if _, err := broker.Grant(BatchScope("delete", []string{"a.txt"}), "tester", time.Minute); err != nil {
+				t.Fatalf("Grant: %v", err)
+			}
 
-	// A batch that ALSO deletes b.txt must not be authorized by that
-	// grant, even though the caller passes the same Scope.Action.
-	_, err := Apply(dir, []FileChange{
-		{Path: "a.txt", Delete: true},
-		{Path: "b.txt", Delete: true},
-	}, ApplyOptions{Broker: broker, Scope: approval.Scope{Action: "delete"}})
-	if err == nil {
-		t.Fatal("a grant approved for deleting only a.txt must not authorize a batch that ALSO deletes b.txt")
-	}
-	if _, ok := readFile(t, dir, "a.txt"); !ok {
-		t.Fatal("a.txt should still exist: the whole batch must be rejected (zero side effects), not partially applied")
-	}
-	if _, ok := readFile(t, dir, "b.txt"); !ok {
-		t.Fatal("b.txt should still exist")
-	}
+			// A batch that ALSO deletes b.txt must not be authorized by that
+			// grant, even though the caller passes the same Scope.Action.
+			_, err := Apply(dir, []FileChange{
+				{Path: "a.txt", Delete: true},
+				{Path: "b.txt", Delete: true},
+			}, ApplyOptions{Broker: broker, Scope: approval.Scope{Action: "delete"}})
+			if err == nil {
+				t.Fatal("a grant approved for deleting only a.txt must not authorize a batch that ALSO deletes b.txt")
+			}
+			if _, ok := readFile(t, dir, "a.txt"); !ok {
+				t.Fatal("a.txt should still exist: the whole batch must be rejected (zero side effects), not partially applied")
+			}
+			if _, ok := readFile(t, dir, "b.txt"); !ok {
+				t.Fatal("b.txt should still exist")
+			}
 
-	// The SAME grant must still work for the exact batch it was approved
-	// for.
-	if _, err := Apply(dir, []FileChange{
-		{Path: "a.txt", Delete: true},
-	}, ApplyOptions{Broker: broker, Scope: approval.Scope{Action: "delete"}}); err != nil {
-		t.Fatalf("Apply with the correctly-scoped single-file batch failed: %v", err)
-	}
-	if _, ok := readFile(t, dir, "a.txt"); ok {
-		t.Fatal("a.txt should now be deleted")
+			// The SAME grant must still work for the exact batch it was approved
+			// for.
+			if _, err := Apply(dir, []FileChange{
+				{Path: "a.txt", Delete: true},
+			}, ApplyOptions{Broker: broker, Scope: approval.Scope{Action: "delete"}}); err != nil {
+				t.Fatalf("Apply with the correctly-scoped single-file batch failed: %v", err)
+			}
+			if _, ok := readFile(t, dir, "a.txt"); ok {
+				t.Fatal("a.txt should now be deleted")
+			}
+		})
 	}
 }
 
@@ -383,34 +479,43 @@ func TestApply_GrantForOneBatchDoesNotAuthorizeDifferentBatch(t *testing.T) {
 // package's M12 fix added deterministic ordering to Broker itself) could
 // pick an arbitrary one of several matching grants.
 func TestApply_TokenBasedCheckConsumesSpecificGrantDeterministically(t *testing.T) {
-	dir := t.TempDir()
-	writeFile(t, dir, "x.txt", []byte("x"))
+	tests := []struct {
+		name string
+	}{
+		{name: "Apply_TokenBasedCheckConsumesSpecificGrantDeterministically"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFile(t, dir, "x.txt", []byte("x"))
 
-	broker := approval.NewBroker()
-	scope := BatchScope("delete", []string{"x.txt"})
-	// Two independent grants for the exact same scope (e.g. two different
-	// approvers each approving the same thing).
-	g1, err := broker.Grant(scope, "tester1", time.Minute)
-	if err != nil {
-		t.Fatalf("Grant: %v", err)
-	}
-	g2, err := broker.Grant(scope, "tester2", time.Minute)
-	if err != nil {
-		t.Fatalf("Grant: %v", err)
-	}
+			broker := approval.NewBroker()
+			scope := BatchScope("delete", []string{"x.txt"})
+			// Two independent grants for the exact same scope (e.g. two different
+			// approvers each approving the same thing).
+			g1, err := broker.Grant(scope, "tester1", time.Minute)
+			if err != nil {
+				t.Fatalf("Grant: %v", err)
+			}
+			g2, err := broker.Grant(scope, "tester2", time.Minute)
+			if err != nil {
+				t.Fatalf("Grant: %v", err)
+			}
 
-	if _, err := Apply(dir, []FileChange{
-		{Path: "x.txt", Delete: true},
-	}, ApplyOptions{Broker: broker, Scope: approval.Scope{Action: "delete"}, Token: g2.Token}); err != nil {
-		t.Fatalf("Apply with Token: %v", err)
-	}
+			if _, err := Apply(dir, []FileChange{
+				{Path: "x.txt", Delete: true},
+			}, ApplyOptions{Broker: broker, Scope: approval.Scope{Action: "delete"}, Token: g2.Token}); err != nil {
+				t.Fatalf("Apply with Token: %v", err)
+			}
 
-	// g2 (the token explicitly presented) must be the one consumed; g1
-	// must remain untouched.
-	if got := broker.DryRunCheckToken(g2.Token, scope); got != provenance.StatusApprovalRequired {
-		t.Fatalf("g2 should have been consumed by the token-based check, DryRunCheckToken = %v, want ApprovalRequired", got)
-	}
-	if got := broker.DryRunCheckToken(g1.Token, scope); got != provenance.StatusPass {
-		t.Fatalf("g1 should remain unused since Apply was told to consume g2 specifically, got %v, want Pass", got)
+			// g2 (the token explicitly presented) must be the one consumed; g1
+			// must remain untouched.
+			if got := broker.DryRunCheckToken(g2.Token, scope); got != provenance.StatusApprovalRequired {
+				t.Fatalf("g2 should have been consumed by the token-based check, DryRunCheckToken = %v, want ApprovalRequired", got)
+			}
+			if got := broker.DryRunCheckToken(g1.Token, scope); got != provenance.StatusPass {
+				t.Fatalf("g1 should remain unused since Apply was told to consume g2 specifically, got %v, want Pass", got)
+			}
+		})
 	}
 }

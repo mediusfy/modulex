@@ -69,8 +69,20 @@ func validContract() Contract {
 }
 
 func TestContract_RoundTripYAML(t *testing.T) {
-	original := validContract()
+	tests := []struct {
+		name string
+	}{
+		{name: "valid contract survives marshal and unmarshal"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assertRoundTrip(t, validContract())
+		})
+	}
+}
 
+func assertRoundTrip(t *testing.T, original Contract) {
+	t.Helper()
 	data, err := yaml.Marshal(&original)
 	if err != nil {
 		t.Fatalf("yaml.Marshal: %v", err)
@@ -110,9 +122,18 @@ func TestContract_RoundTripYAML(t *testing.T) {
 }
 
 func TestContract_Validate_ValidContractPasses(t *testing.T) {
-	c := validContract()
-	if err := c.Validate(); err != nil {
-		t.Fatalf("Validate() = %v, want nil", err)
+	tests := []struct {
+		name string
+	}{
+		{name: "valid contract passes"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := validContract()
+			if err := c.Validate(); err != nil {
+				t.Fatalf("Validate() = %v, want nil", err)
+			}
+		})
 	}
 }
 
@@ -169,46 +190,71 @@ func TestContract_Validate_MissingRequiredFields(t *testing.T) {
 }
 
 func TestContract_Validate_UnknownCommandClass(t *testing.T) {
-	c := validContract()
-	c.Commands = []CommandDecl{
-		{Name: "mystery-command", Command: "do-something-risky", Class: provenance.CommandClass("yolo")},
+	tests := []struct {
+		name      string
+		commands  []CommandDecl
+		wantInMsg []string
+	}{
+		{
+			name: "unknown class names index, command, value and valid classes",
+			commands: []CommandDecl{
+				{Name: "mystery-command", Command: "do-something-risky", Class: provenance.CommandClass("yolo")},
+			},
+			wantInMsg: []string{
+				"commands[0]",
+				`"mystery-command"`,
+				`"yolo"`,
+				"safe, mutating, networked, destructive, approval_required",
+			},
+		},
 	}
 
-	err := c.Validate()
-	if err == nil {
-		t.Fatal("Validate() = nil, want error for unknown command class")
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := validContract()
+			c.Commands = tt.commands
 
-	msg := err.Error()
-	if !strings.Contains(msg, "commands[0]") {
-		t.Errorf("error %q does not name the offending command index", msg)
-	}
-	if !strings.Contains(msg, `"mystery-command"`) {
-		t.Errorf("error %q does not name the offending command", msg)
-	}
-	if !strings.Contains(msg, `"yolo"`) {
-		t.Errorf("error %q does not name the bad class value", msg)
-	}
-	if !strings.Contains(msg, "safe, mutating, networked, destructive, approval_required") {
-		t.Errorf("error %q does not enumerate the valid classes", msg)
+			err := c.Validate()
+			if err == nil {
+				t.Fatal("Validate() = nil, want error for unknown command class")
+			}
+			for _, want := range tt.wantInMsg {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not contain %q", err.Error(), want)
+				}
+			}
+		})
 	}
 }
 
 func TestContract_Validate_BadProtectedPathGlob(t *testing.T) {
-	c := validContract()
-	c.ProtectedPaths = []string{"go.mod", ".github/workflows/[.yml"}
-
-	err := c.Validate()
-	if err == nil {
-		t.Fatal("Validate() = nil, want error for a malformed protected_paths glob")
+	tests := []struct {
+		name      string
+		paths     []string
+		wantInMsg []string
+	}{
+		{
+			name:      "malformed glob names index and pattern",
+			paths:     []string{"go.mod", ".github/workflows/[.yml"},
+			wantInMsg: []string{"protected_paths[1]", `".github/workflows/[.yml"`},
+		},
 	}
 
-	msg := err.Error()
-	if !strings.Contains(msg, "protected_paths[1]") {
-		t.Errorf("error %q does not name the offending index", msg)
-	}
-	if !strings.Contains(msg, `".github/workflows/[.yml"`) {
-		t.Errorf("error %q does not name the offending pattern", msg)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := validContract()
+			c.ProtectedPaths = tt.paths
+
+			err := c.Validate()
+			if err == nil {
+				t.Fatal("Validate() = nil, want error for a malformed protected_paths glob")
+			}
+			for _, want := range tt.wantInMsg {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not contain %q", err.Error(), want)
+				}
+			}
+		})
 	}
 }
 
@@ -258,25 +304,35 @@ func TestContract_Validate_SecretRejection(t *testing.T) {
 }
 
 func TestExampleContract_IsValid(t *testing.T) {
-	data, err := os.ReadFile("testdata/modulex.agent.example.yaml")
-	if err != nil {
-		t.Fatalf("reading example contract: %v", err)
+	tests := []struct {
+		name string
+		path string
+	}{
+		{name: "example fixture is valid and describes this module", path: "testdata/modulex.agent.example.yaml"},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := os.ReadFile("testdata/modulex.agent.example.yaml")
+			if err != nil {
+				t.Fatalf("reading example contract: %v", err)
+			}
 
-	var c Contract
-	if err := yaml.Unmarshal(data, &c); err != nil {
-		t.Fatalf("yaml.Unmarshal: %v", err)
-	}
+			var c Contract
+			if err := yaml.Unmarshal(data, &c); err != nil {
+				t.Fatalf("yaml.Unmarshal: %v", err)
+			}
 
-	if err := c.Validate(); err != nil {
-		t.Fatalf("Validate() = %v, want nil", err)
-	}
+			if err := c.Validate(); err != nil {
+				t.Fatalf("Validate() = %v, want nil", err)
+			}
 
-	if c.SchemaVersion != SchemaVersion {
-		t.Errorf("example SchemaVersion = %q, want %q (keep the example fixture in sync with the schema)", c.SchemaVersion, SchemaVersion)
-	}
-	if len(c.Projects) == 0 || c.Projects[0].ModulePath != "github.com/mediusfy/modulex" {
-		t.Errorf("example contract does not describe this repository's module")
+			if c.SchemaVersion != SchemaVersion {
+				t.Errorf("example SchemaVersion = %q, want %q (keep the example fixture in sync with the schema)", c.SchemaVersion, SchemaVersion)
+			}
+			if len(c.Projects) == 0 || c.Projects[0].ModulePath != "github.com/mediusfy/modulex" {
+				t.Errorf("example contract does not describe this repository's module")
+			}
+		})
 	}
 }
 
@@ -287,25 +343,36 @@ func TestExampleContract_IsValid(t *testing.T) {
 // files intentionally carry different header comments (see each file's own
 // comment), so this compares parsed Contract values, not raw file bytes.
 func TestRootContract_MatchesExample(t *testing.T) {
-	rootData, err := os.ReadFile("../modulex.agent.yaml")
-	if err != nil {
-		t.Fatalf("reading root modulex.agent.yaml: %v", err)
+	tests := []struct {
+		name        string
+		rootPath    string
+		examplePath string
+	}{
+		{name: "root contract equals example fixture", rootPath: "../modulex.agent.yaml", examplePath: "testdata/modulex.agent.example.yaml"},
 	}
-	exampleData, err := os.ReadFile("testdata/modulex.agent.example.yaml")
-	if err != nil {
-		t.Fatalf("reading testdata/modulex.agent.example.yaml: %v", err)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rootData, err := os.ReadFile(tt.rootPath)
+			if err != nil {
+				t.Fatalf("reading root modulex.agent.yaml: %v", err)
+			}
+			exampleData, err := os.ReadFile(tt.examplePath)
+			if err != nil {
+				t.Fatalf("reading testdata/modulex.agent.example.yaml: %v", err)
+			}
 
-	var root, example Contract
-	if err := yaml.Unmarshal(rootData, &root); err != nil {
-		t.Fatalf("yaml.Unmarshal(root): %v", err)
-	}
-	if err := yaml.Unmarshal(exampleData, &example); err != nil {
-		t.Fatalf("yaml.Unmarshal(example): %v", err)
-	}
+			var root, example Contract
+			if err := yaml.Unmarshal(rootData, &root); err != nil {
+				t.Fatalf("yaml.Unmarshal(root): %v", err)
+			}
+			if err := yaml.Unmarshal(exampleData, &example); err != nil {
+				t.Fatalf("yaml.Unmarshal(example): %v", err)
+			}
 
-	if !reflect.DeepEqual(root, example) {
-		t.Errorf("modulex.agent.yaml and contract/testdata/modulex.agent.example.yaml have drifted apart; " +
-			"edit the root file and copy the change into testdata, or vice versa, so both stay identical")
+			if !reflect.DeepEqual(root, example) {
+				t.Errorf("modulex.agent.yaml and contract/testdata/modulex.agent.example.yaml have drifted apart; " +
+					"edit the root file and copy the change into testdata, or vice versa, so both stay identical")
+			}
+		})
 	}
 }
