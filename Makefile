@@ -1,10 +1,11 @@
-.PHONY: deps test test-arch fmt lint build vuln check-consumer-boundary check-module-boundary check-api-compat check-changelog check-nested-modules release publish-godev proto-gen help
+.PHONY: deps test test-arch test-integration fmt lint build vuln check-consumer-boundary check-module-boundary check-api-compat check-changelog check-nested-modules release publish-godev proto-gen help
 
 help:
 	@echo "Available targets:"
 	@echo "  deps                    - Download Go module dependencies"
 	@echo "  test                    - Run go test"
 	@echo "  test-arch               - Run go test -race ./..."
+	@echo "  test-integration        - Build and smoke-test every entry point (integration/)"
 	@echo "  fmt                     - Format code using gofmt"
 	@echo "  lint                    - Verify linter config and run golangci-lint"
 	@echo "  build                   - Compile packages and examples"
@@ -29,6 +30,9 @@ test-arch:
 
 fmt:
 	gofmt -s -w .
+
+test-integration:
+	go test -race -count=1 ./integration/...
 
 lint:
 	@if command -v golangci-lint >/dev/null 2>&1; then \
