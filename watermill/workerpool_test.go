@@ -12,65 +12,85 @@ import (
 )
 
 func TestEventBus_SubscribeWithOptionsBoundsConcurrency(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	tests := []struct {
+		name string
+	}{
+		{name: "subscribe with options bounds concurrency"},
+	}
 
-	bus := watermill.NewEventBus(20, false, false)
-	var active, maxActive, received atomic.Int32
-	done := make(chan struct{})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
 
-	require.NoError(t, bus.SubscribeWithOptions(ctx, "work", func(context.Context, []byte) error {
-		current := active.Add(1)
-		for {
-			previous := maxActive.Load()
-			if current <= previous || maxActive.CompareAndSwap(previous, current) {
-				break
+			bus := watermill.NewEventBus(20, false, false)
+			var active, maxActive, received atomic.Int32
+			done := make(chan struct{})
+
+			require.NoError(t, bus.SubscribeWithOptions(ctx, "work", func(context.Context, []byte) error {
+				current := active.Add(1)
+				for {
+					previous := maxActive.Load()
+					if current <= previous || maxActive.CompareAndSwap(previous, current) {
+						break
+					}
+				}
+				time.Sleep(10 * time.Millisecond)
+				active.Add(-1)
+				if received.Add(1) == 20 {
+					close(done)
+				}
+				return nil
+			}, workerpool.Options{Workers: 3, QueueCapacity: 5}))
+
+			for i := 0; i < 20; i++ {
+				require.NoError(t, bus.Publish(ctx, "work", []byte("payload")))
 			}
-		}
-		time.Sleep(10 * time.Millisecond)
-		active.Add(-1)
-		if received.Add(1) == 20 {
-			close(done)
-		}
-		return nil
-	}, workerpool.Options{Workers: 3, QueueCapacity: 5}))
-
-	for i := 0; i < 20; i++ {
-		require.NoError(t, bus.Publish(ctx, "work", []byte("payload")))
+			select {
+			case <-done:
+			case <-ctx.Done():
+				t.Fatal("timed out waiting for concurrent messages")
+			}
+			require.LessOrEqual(t, maxActive.Load(), int32(3))
+			require.NoError(t, bus.Close(ctx))
+		})
 	}
-	select {
-	case <-done:
-	case <-ctx.Done():
-		t.Fatal("timed out waiting for concurrent messages")
-	}
-	require.LessOrEqual(t, maxActive.Load(), int32(3))
-	require.NoError(t, bus.Close(ctx))
 }
 
 func TestEventBus_ConcurrentCloseDrainsHandlerBeforeReturning(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	bus := watermill.NewEventBus(0, false, false)
-	started := make(chan struct{})
-	release := make(chan struct{})
-	require.NoError(t, bus.SubscribeWithOptions(ctx, "work", func(context.Context, []byte) error {
-		close(started)
-		<-release
-		return nil
-	}, workerpool.Options{Workers: 1}))
-	require.NoError(t, bus.Publish(ctx, "work", []byte("payload")))
-	<-started
-
-	closed := make(chan error, 1)
-	go func() { closed <- bus.Close(ctx) }()
-	select {
-	case err := <-closed:
-		t.Fatalf("Close returned before handler completed: %v", err)
-	case <-time.After(25 * time.Millisecond):
+	tests := []struct {
+		name string
+	}{
+		{name: "concurrent close drains handler before returning"},
 	}
-	close(release)
-	require.NoError(t, <-closed)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			bus := watermill.NewEventBus(0, false, false)
+			started := make(chan struct{})
+			release := make(chan struct{})
+			require.NoError(t, bus.SubscribeWithOptions(ctx, "work", func(context.Context, []byte) error {
+				close(started)
+				<-release
+				return nil
+			}, workerpool.Options{Workers: 1}))
+			require.NoError(t, bus.Publish(ctx, "work", []byte("payload")))
+			<-started
+
+			closed := make(chan error, 1)
+			go func() { closed <- bus.Close(ctx) }()
+			select {
+			case err := <-closed:
+				t.Fatalf("Close returned before handler completed: %v", err)
+			case <-time.After(25 * time.Millisecond):
+			}
+			close(release)
+			require.NoError(t, <-closed)
+		})
+	}
 }
 
 // TestEventBus_SubscribeWithOptionsAcksMessageWhenHandlerPanics locks in the
@@ -79,38 +99,58 @@ func TestEventBus_ConcurrentCloseDrainsHandlerBeforeReturning(t *testing.T) {
 // ack-regardless-of-outcome policy for handler errors) and must not corrupt
 // the worker, which must keep processing subsequent messages.
 func TestEventBus_SubscribeWithOptionsAcksMessageWhenHandlerPanics(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	tests := []struct {
+		name string
+	}{
+		{name: "subscribe with options acks message when handler panics"},
+	}
 
-	bus := watermill.NewEventBus(0, false, false)
-	defer func() { _ = bus.Close(context.Background()) }()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
 
-	var calls atomic.Int32
-	processed := make(chan struct{}, 1)
-	require.NoError(t, bus.SubscribeWithOptions(ctx, "panicking", func(context.Context, []byte) error {
-		if calls.Add(1) == 1 {
-			panic("simulated handler panic")
-		}
-		close(processed)
-		return nil
-	}, workerpool.Options{Workers: 1, QueueCapacity: 1}))
+			bus := watermill.NewEventBus(0, false, false)
+			defer func() { _ = bus.Close(context.Background()) }()
 
-	require.NoError(t, bus.Publish(ctx, "panicking", []byte("first")))
-	require.NoError(t, bus.Publish(ctx, "panicking", []byte("second")))
+			var calls atomic.Int32
+			processed := make(chan struct{}, 1)
+			require.NoError(t, bus.SubscribeWithOptions(ctx, "panicking", func(context.Context, []byte) error {
+				if calls.Add(1) == 1 {
+					panic("simulated handler panic")
+				}
+				close(processed)
+				return nil
+			}, workerpool.Options{Workers: 1, QueueCapacity: 1}))
 
-	select {
-	case <-processed:
-	case <-ctx.Done():
-		t.Fatal("timed out waiting for the second message to be processed after a handler panic")
+			require.NoError(t, bus.Publish(ctx, "panicking", []byte("first")))
+			require.NoError(t, bus.Publish(ctx, "panicking", []byte("second")))
+
+			select {
+			case <-processed:
+			case <-ctx.Done():
+				t.Fatal("timed out waiting for the second message to be processed after a handler panic")
+			}
+		})
 	}
 }
 
 func TestEventBus_SubscribeWithOptionsRejectsInvalidOptions(t *testing.T) {
-	bus := watermill.NewEventBus(0, false, false)
-	defer func() { _ = bus.Close(context.Background()) }()
+	tests := []struct {
+		name string
+	}{
+		{name: "subscribe with options rejects invalid options"},
+	}
 
-	err := bus.SubscribeWithOptions(context.Background(), "work", func(context.Context, []byte) error { return nil }, workerpool.Options{})
-	require.Error(t, err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bus := watermill.NewEventBus(0, false, false)
+			defer func() { _ = bus.Close(context.Background()) }()
+
+			err := bus.SubscribeWithOptions(context.Background(), "work", func(context.Context, []byte) error { return nil }, workerpool.Options{})
+			require.Error(t, err)
+		})
+	}
 }
 
 // TestEventBus_SubscribeWithOptionsCloseUnblocksPendingSubmit exercises the
@@ -121,48 +161,58 @@ func TestEventBus_SubscribeWithOptionsRejectsInvalidOptions(t *testing.T) {
 // able to unblock it via subCtx cancellation, or Close would hang forever
 // with the subscription goroutine leaked.
 func TestEventBus_SubscribeWithOptionsCloseUnblocksPendingSubmit(t *testing.T) {
-	bus := watermill.NewEventBus(0, false, false)
-
-	started := make(chan struct{})
-	release := make(chan struct{})
-	var handlerCalled atomic.Bool
-	require.NoError(t, bus.SubscribeWithOptions(context.Background(), "blocked", func(context.Context, []byte) error {
-		if !handlerCalled.Swap(true) {
-			close(started)
-			<-release
-		}
-		return nil
-	}, workerpool.Options{Workers: 1, QueueCapacity: 0}))
-
-	require.NoError(t, bus.Publish(context.Background(), "blocked", []byte("first")))
-	select {
-	case <-started:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for the first handler to start")
+	tests := []struct {
+		name string
+	}{
+		{name: "subscribe with options close unblocks pending submit"},
 	}
 
-	// The worker is occupied and QueueCapacity is 0, so this Submit call
-	// blocks waiting for capacity until either the worker frees up or subCtx
-	// is cancelled by Close. Give it time to actually reach that blocked
-	// state before triggering Close below.
-	require.NoError(t, bus.Publish(context.Background(), "blocked", []byte("second")))
-	time.Sleep(50 * time.Millisecond)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bus := watermill.NewEventBus(0, false, false)
 
-	closed := make(chan error, 1)
-	go func() { closed <- bus.Close(context.Background()) }()
+			started := make(chan struct{})
+			release := make(chan struct{})
+			var handlerCalled atomic.Bool
+			require.NoError(t, bus.SubscribeWithOptions(context.Background(), "blocked", func(context.Context, []byte) error {
+				if !handlerCalled.Swap(true) {
+					close(started)
+					<-release
+				}
+				return nil
+			}, workerpool.Options{Workers: 1, QueueCapacity: 0}))
 
-	select {
-	case err := <-closed:
-		t.Fatalf("Close returned before the blocked handler was released: %v", err)
-	case <-time.After(25 * time.Millisecond):
-	}
+			require.NoError(t, bus.Publish(context.Background(), "blocked", []byte("first")))
+			select {
+			case <-started:
+			case <-time.After(2 * time.Second):
+				t.Fatal("timed out waiting for the first handler to start")
+			}
 
-	close(release)
+			// The worker is occupied and QueueCapacity is 0, so this Submit call
+			// blocks waiting for capacity until either the worker frees up or subCtx
+			// is cancelled by Close. Give it time to actually reach that blocked
+			// state before triggering Close below.
+			require.NoError(t, bus.Publish(context.Background(), "blocked", []byte("second")))
+			time.Sleep(50 * time.Millisecond)
 
-	select {
-	case err := <-closed:
-		require.NoError(t, err)
-	case <-time.After(2 * time.Second):
-		t.Fatal("Close did not return after the pending Submit should have been released by subscription cancellation")
+			closed := make(chan error, 1)
+			go func() { closed <- bus.Close(context.Background()) }()
+
+			select {
+			case err := <-closed:
+				t.Fatalf("Close returned before the blocked handler was released: %v", err)
+			case <-time.After(25 * time.Millisecond):
+			}
+
+			close(release)
+
+			select {
+			case err := <-closed:
+				require.NoError(t, err)
+			case <-time.After(2 * time.Second):
+				t.Fatal("Close did not return after the pending Submit should have been released by subscription cancellation")
+			}
+		})
 	}
 }

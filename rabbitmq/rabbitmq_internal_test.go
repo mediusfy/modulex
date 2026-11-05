@@ -13,18 +13,32 @@ import (
 // indefinitely, ignoring the caller's ctx, when another goroutine is
 // stalled holding it across a slow Qos/Consume broker round trip.
 func TestStartConsumer_CtxCancelledWhileWaitingForConsumeMuDoesNotBlockForever(t *testing.T) {
-	r := NewEventBus(nil)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "start consumer ctx cancelled while waiting for consume mu does not block forever",
+			run: func(t *testing.T) {
+				r := NewEventBus(nil)
 
-	// Simulate another goroutine holding the Qos+Consume lock, as if its own
-	// broker RPC had stalled.
-	r.consumeMu <- struct{}{}
-	defer func() { <-r.consumeMu }()
+				// Simulate another goroutine holding the Qos+Consume lock, as if its own
+				// broker RPC had stalled.
+				r.consumeMu <- struct{}{}
+				defer func() { <-r.consumeMu }()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
+				ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+				defer cancel()
 
-	_, _, err := r.startConsumer(ctx, "queue", 0)
-	require.ErrorIs(t, err, context.DeadlineExceeded)
+				_, _, err := r.startConsumer(ctx, "queue", 0)
+				require.ErrorIs(t, err, context.DeadlineExceeded)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 // TestStartConsumer_RejectsPlainConsumerAfterPoolClaimedChannelQos locks in
@@ -36,11 +50,25 @@ func TestStartConsumer_CtxCancelledWhileWaitingForConsumeMuDoesNotBlockForever(t
 // so any attempt to call Consume on it would panic), rather than creating a
 // consumer bound by the pool's leftover prefetch.
 func TestStartConsumer_RejectsPlainConsumerAfterPoolClaimedChannelQos(t *testing.T) {
-	r := NewEventBus(nil)
-	r.qosOwnedByPool = true
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "start consumer rejects plain consumer after pool claimed channel qos",
+			run: func(t *testing.T) {
+				r := NewEventBus(nil)
+				r.qosOwnedByPool = true
 
-	_, _, err := r.startConsumer(context.Background(), "queue", 0)
-	require.ErrorContains(t, err, "SubscribeWithOptions")
+				_, _, err := r.startConsumer(context.Background(), "queue", 0)
+				require.ErrorContains(t, err, "SubscribeWithOptions")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 // TestStartConsumer_SecondPooledConsumerDoesNotNeedGuard documents that two
@@ -49,14 +77,28 @@ func TestStartConsumer_RejectsPlainConsumerAfterPoolClaimedChannelQos(t *testing
 // call, so it is never contaminated by an earlier pooled subscription's
 // value the way a plain Subscribe would be.
 func TestStartConsumer_SecondPooledConsumerDoesNotNeedGuard(t *testing.T) {
-	r := NewEventBus(nil)
-	r.qosOwnedByPool = true
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "start consumer second pooled consumer does not need guard",
+			run: func(t *testing.T) {
+				r := NewEventBus(nil)
+				r.qosOwnedByPool = true
 
-	// prefetch > 0 always takes the explicit-Qos branch regardless of
-	// qosOwnedByPool, so this reaches (and panics on) the nil channel's
-	// Qos call rather than being rejected up front -- proving the guard
-	// only fires for prefetch == 0.
-	require.Panics(t, func() {
-		_, _, _ = r.startConsumer(context.Background(), "queue", 10)
-	})
+				// prefetch > 0 always takes the explicit-Qos branch regardless of
+				// qosOwnedByPool, so this reaches (and panics on) the nil channel's
+				// Qos call rather than being rejected up front -- proving the guard
+				// only fires for prefetch == 0.
+				require.Panics(t, func() {
+					_, _, _ = r.startConsumer(context.Background(), "queue", 10)
+				})
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
