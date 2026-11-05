@@ -65,30 +65,34 @@ func TestLoad(t *testing.T) {
 			}
 
 			c, present, err := Load(root)
-
-			if present != tt.wantPresent {
-				t.Errorf("present = %v, want %v", present, tt.wantPresent)
-			}
-			if (err != nil) != tt.wantErr {
-				t.Errorf("err = %v, wantErr %v", err, tt.wantErr)
-			}
-			if tt.wantErr || !tt.wantPresent {
-				if c != nil {
-					t.Errorf("c = %+v, want nil", c)
-				}
-				return
-			}
-			if c == nil {
-				t.Fatal("c = nil, want a parsed contract")
-			}
-			if len(c.ProtectedPaths) != len(tt.wantProtPath) {
-				t.Fatalf("ProtectedPaths = %v, want %v", c.ProtectedPaths, tt.wantProtPath)
-			}
-			for i, p := range tt.wantProtPath {
-				if c.ProtectedPaths[i] != p {
-					t.Errorf("ProtectedPaths[%d] = %q, want %q", i, c.ProtectedPaths[i], p)
-				}
-			}
+			checkLoadResult(t, c, present, err, tt.wantPresent, tt.wantErr, tt.wantProtPath)
 		})
+	}
+}
+
+func checkLoadResult(t *testing.T, c *Contract, present bool, err error, wantPresent, wantErr bool, wantProtPath []string) {
+	t.Helper()
+	if present != wantPresent {
+		t.Errorf("present = %v, want %v", present, wantPresent)
+	}
+	if (err != nil) != wantErr {
+		t.Errorf("err = %v, wantErr %v", err, wantErr)
+	}
+	if wantErr || !wantPresent {
+		if c != nil {
+			t.Errorf("c = %+v, want nil", c)
+		}
+		return
+	}
+	if c == nil {
+		t.Fatal("c = nil, want a parsed contract")
+	}
+	if len(c.ProtectedPaths) != len(wantProtPath) {
+		t.Fatalf("ProtectedPaths = %v, want %v", c.ProtectedPaths, wantProtPath)
+	}
+	for i, p := range wantProtPath {
+		if c.ProtectedPaths[i] != p {
+			t.Errorf("ProtectedPaths[%d] = %q, want %q", i, c.ProtectedPaths[i], p)
+		}
 	}
 }

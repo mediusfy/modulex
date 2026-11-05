@@ -1,9 +1,9 @@
 package approval
 
 import (
-	"errors"
 	"fmt"
 
+	"github.com/mediusfy/modulex/apperrors"
 	"github.com/mediusfy/modulex/contract"
 	"github.com/mediusfy/modulex/provenance"
 )
@@ -14,7 +14,7 @@ import (
 // caller must treat this as "requires approval", not as "does not require
 // approval" — the (false, err) return shape keeps the boolean itself always
 // strictly meaningful, but the error is not a green light.
-var ErrCommandNotFound = errors.New("approval: command not found in contract")
+const ErrCommandNotFound apperrors.Error = "approval: command not found in contract"
 
 // RequiresApproval reports whether commandName, as declared by c.Commands,
 // requires human approval before running: true if its

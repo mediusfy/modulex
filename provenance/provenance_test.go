@@ -80,9 +80,18 @@ func validEnvelope() Envelope {
 }
 
 func TestValidate_FullyPopulatedEnvelope(t *testing.T) {
-	env := validEnvelope()
-	if err := env.Validate(); err != nil {
-		t.Fatalf("Validate() = %v, want nil", err)
+	tests := []struct {
+		name string
+	}{
+		{name: "Validate FullyPopulatedEnvelope"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := validEnvelope()
+			if err := env.Validate(); err != nil {
+				t.Fatalf("Validate() = %v, want nil", err)
+			}
+		})
 	}
 }
 
@@ -178,24 +187,33 @@ func TestValidate_RejectsUnredactedSecrets(t *testing.T) {
 }
 
 func TestRedact_RemovesSecretAndValidatePasses(t *testing.T) {
-	env := validEnvelope()
-	env.Commands[0].Output = "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY, ghp_1234567890abcdefghijklmnopqrstuvwxyz"
-
-	if err := env.Validate(); err == nil {
-		t.Fatalf("Validate() = nil before Redact(), want error")
+	tests := []struct {
+		name string
+	}{
+		{name: "Redact RemovesSecretAndValidatePasses"},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := validEnvelope()
+			env.Commands[0].Output = "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY, ghp_1234567890abcdefghijklmnopqrstuvwxyz" // nosecret: fake credentials fixture for redaction test
 
-	env.Redact()
+			if err := env.Validate(); err == nil {
+				t.Fatalf("Validate() = nil before Redact(), want error")
+			}
 
-	if strings.Contains(env.Commands[0].Output, "wJalrXUtnFEMI") || strings.Contains(env.Commands[0].Output, "ghp_1234567890") {
-		t.Fatalf("Redact() left secret material in Output: %q", env.Commands[0].Output)
-	}
-	if !strings.Contains(env.Commands[0].Output, redactionMarker) {
-		t.Fatalf("Redact() output does not contain redaction marker: %q", env.Commands[0].Output)
-	}
+			env.Redact()
 
-	if err := env.Validate(); err != nil {
-		t.Fatalf("Validate() after Redact() = %v, want nil", err)
+			if strings.Contains(env.Commands[0].Output, "wJalrXUtnFEMI") || strings.Contains(env.Commands[0].Output, "ghp_1234567890") {
+				t.Fatalf("Redact() left secret material in Output: %q", env.Commands[0].Output)
+			}
+			if !strings.Contains(env.Commands[0].Output, redactionMarker) {
+				t.Fatalf("Redact() output does not contain redaction marker: %q", env.Commands[0].Output)
+			}
+
+			if err := env.Validate(); err != nil {
+				t.Fatalf("Validate() after Redact() = %v, want nil", err)
+			}
+		})
 	}
 }
 
@@ -348,59 +366,86 @@ func TestValidate_SkippedOrUnavailableRequiresReason(t *testing.T) {
 }
 
 func TestEnvelope_JSONRoundTrip(t *testing.T) {
-	env := validEnvelope()
+	tests := []struct {
+		name string
+	}{
+		{name: "Envelope JSONRoundTrip"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := validEnvelope()
 
-	b, err := json.Marshal(env)
-	if err != nil {
-		t.Fatalf("json.Marshal() error = %v", err)
-	}
+			b, err := json.Marshal(env)
+			if err != nil {
+				t.Fatalf("json.Marshal() error = %v", err)
+			}
 
-	var got Envelope
-	if err := json.Unmarshal(b, &got); err != nil {
-		t.Fatalf("json.Unmarshal() error = %v", err)
-	}
+			var got Envelope
+			if err := json.Unmarshal(b, &got); err != nil {
+				t.Fatalf("json.Unmarshal() error = %v", err)
+			}
 
-	gotJSON, err := json.Marshal(got)
-	if err != nil {
-		t.Fatalf("json.Marshal(round-tripped) error = %v", err)
-	}
-	wantJSON, err := json.Marshal(env)
-	if err != nil {
-		t.Fatalf("json.Marshal(original) error = %v", err)
-	}
-	if string(gotJSON) != string(wantJSON) {
-		t.Fatalf("round-trip mismatch:\n got: %s\nwant: %s", gotJSON, wantJSON)
+			gotJSON, err := json.Marshal(got)
+			if err != nil {
+				t.Fatalf("json.Marshal(round-tripped) error = %v", err)
+			}
+			wantJSON, err := json.Marshal(env)
+			if err != nil {
+				t.Fatalf("json.Marshal(original) error = %v", err)
+			}
+			if string(gotJSON) != string(wantJSON) {
+				t.Fatalf("round-trip mismatch:\n got: %s\nwant: %s", gotJSON, wantJSON)
+			}
+		})
 	}
 }
 
 func TestEnvelope_MarshalDeterministic(t *testing.T) {
-	env := validEnvelope()
+	tests := []struct {
+		name string
+	}{
+		{name: "Envelope MarshalDeterministic"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := validEnvelope()
 
-	first, err := json.Marshal(env)
-	if err != nil {
-		t.Fatalf("json.Marshal() error = %v", err)
-	}
-	second, err := json.Marshal(env)
-	if err != nil {
-		t.Fatalf("json.Marshal() error = %v", err)
-	}
-	if string(first) != string(second) {
-		t.Fatalf("json.Marshal() not deterministic:\n first: %s\nsecond: %s", first, second)
+			first, err := json.Marshal(env)
+			if err != nil {
+				t.Fatalf("json.Marshal() error = %v", err)
+			}
+			second, err := json.Marshal(env)
+			if err != nil {
+				t.Fatalf("json.Marshal() error = %v", err)
+			}
+			if string(first) != string(second) {
+				t.Fatalf("json.Marshal() not deterministic:\n first: %s\nsecond: %s", first, second)
+			}
+		})
 	}
 }
 
 func TestSampleHandoff_ParsesAndValidates(t *testing.T) {
-	b, err := os.ReadFile("testdata/sample-handoff.json")
-	if err != nil {
-		t.Fatalf("os.ReadFile() error = %v", err)
+	tests := []struct {
+		name string
+	}{
+		{name: "SampleHandoff ParsesAndValidates"},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b, err := os.ReadFile("testdata/sample-handoff.json")
+			if err != nil {
+				t.Fatalf("os.ReadFile() error = %v", err)
+			}
 
-	var env Envelope
-	if err := json.Unmarshal(b, &env); err != nil {
-		t.Fatalf("json.Unmarshal() error = %v", err)
-	}
+			var env Envelope
+			if err := json.Unmarshal(b, &env); err != nil {
+				t.Fatalf("json.Unmarshal() error = %v", err)
+			}
 
-	if err := env.Validate(); err != nil {
-		t.Fatalf("Validate() on sample fixture = %v, want nil", err)
+			if err := env.Validate(); err != nil {
+				t.Fatalf("Validate() on sample fixture = %v, want nil", err)
+			}
+		})
 	}
 }

@@ -157,6 +157,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/mediusfy/modulex/apperrors"
 	"github.com/mediusfy/modulex/approval"
 	"github.com/mediusfy/modulex/provenance"
 )
@@ -166,13 +167,13 @@ import (
 // contains a Delete with no Broker configured at all, or because a
 // supplied Broker/Scope did not return provenance.StatusPass. See the
 // package doc comment's "Deletion requires approval" section.
-var ErrApprovalRequired = errors.New("patchapply: approval required")
+const ErrApprovalRequired apperrors.Error = "patchapply: approval required"
 
 // ErrPriorContentMismatch is returned (wrapped) by [Apply] when a
 // [FileChange.ExpectedPriorContent] does not match the file's current
 // on-disk content — the mechanism behind "preserve dirty-worktree state
 // and unrelated edits."
-var ErrPriorContentMismatch = errors.New("patchapply: prior content mismatch")
+const ErrPriorContentMismatch apperrors.Error = "patchapply: prior content mismatch"
 
 // ErrJournalNotRestorable is returned (wrapped) by [Rollback] when a
 // [JournalEntry] claims a path existed before [Apply] touched it
@@ -191,7 +192,7 @@ var ErrPriorContentMismatch = errors.New("patchapply: prior content mismatch")
 // a nil OriginalContent can only mean the Journal passed to Rollback was
 // reconstructed from something other than Apply's own return value —  most
 // likely a JSON round-trip. Rollback refuses to guess in that case.
-var ErrJournalNotRestorable = errors.New("patchapply: journal entry claims the path existed but has no original content to restore (was this Journal serialized and reloaded? see the package doc comment)")
+const ErrJournalNotRestorable apperrors.Error = "patchapply: journal entry claims the path existed but has no original content to restore (was this Journal serialized and reloaded? see the package doc comment)"
 
 // FileChange describes one intended mutation to a single file within a
 // target directory: either write NewContent to Path, or delete Path. This

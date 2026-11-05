@@ -48,6 +48,18 @@ func dirEntries(t *testing.T, root string) map[string]string {
 // attempt riding alongside an otherwise-legitimate change in the same
 // batch.
 func TestApply_PathTraversalRejectedWithZeroSideEffects(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "Apply_PathTraversalRejectedWithZeroSideEffects", run: runApplyPathTraversalRejectedWithZeroSideEffects},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
+}
+
+func runApplyPathTraversalRejectedWithZeroSideEffects(t *testing.T) {
 	parent := t.TempDir()
 	dir := filepath.Join(parent, "target")
 	if err := os.Mkdir(dir, 0o755); err != nil {
@@ -91,28 +103,37 @@ func TestApply_PathTraversalRejectedWithZeroSideEffects(t *testing.T) {
 // TestApply_AbsolutePathRejectedWithZeroSideEffects mirrors the traversal
 // test for an absolute path instead of "..".
 func TestApply_AbsolutePathRejectedWithZeroSideEffects(t *testing.T) {
-	dir := t.TempDir()
-	before := dirEntries(t, dir)
-
-	victim := filepath.Join(t.TempDir(), "should-not-exist.txt")
-
-	_, err := Apply(dir, []FileChange{
-		{Path: "legit.txt", NewContent: []byte("should never land")},
-		{Path: victim, NewContent: []byte("pwned")},
-	}, ApplyOptions{})
-	if err == nil {
-		t.Fatal("expected Apply to reject a batch containing an absolute path")
+	tests := []struct {
+		name string
+	}{
+		{name: "Apply_AbsolutePathRejectedWithZeroSideEffects"},
 	}
-	if !errors.Is(err, ErrAbsolutePath) {
-		t.Fatalf("expected ErrAbsolutePath, got: %v", err)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			before := dirEntries(t, dir)
 
-	after := dirEntries(t, dir)
-	if len(after) != len(before) {
-		t.Fatalf("batch should have zero side effects inside targetDir; before=%v after=%v", before, after)
-	}
-	if _, statErr := os.Stat(victim); !os.IsNotExist(statErr) {
-		t.Fatalf("absolute path target must never have been written, stat err = %v", statErr)
+			victim := filepath.Join(t.TempDir(), "should-not-exist.txt")
+
+			_, err := Apply(dir, []FileChange{
+				{Path: "legit.txt", NewContent: []byte("should never land")},
+				{Path: victim, NewContent: []byte("pwned")},
+			}, ApplyOptions{})
+			if err == nil {
+				t.Fatal("expected Apply to reject a batch containing an absolute path")
+			}
+			if !errors.Is(err, ErrAbsolutePath) {
+				t.Fatalf("expected ErrAbsolutePath, got: %v", err)
+			}
+
+			after := dirEntries(t, dir)
+			if len(after) != len(before) {
+				t.Fatalf("batch should have zero side effects inside targetDir; before=%v after=%v", before, after)
+			}
+			if _, statErr := os.Stat(victim); !os.IsNotExist(statErr) {
+				t.Fatalf("absolute path target must never have been written, stat err = %v", statErr)
+			}
+		})
 	}
 }
 
@@ -120,31 +141,40 @@ func TestApply_AbsolutePathRejectedWithZeroSideEffects(t *testing.T) {
 // targetDir that points outside it is caught even though the file at the
 // end of the symlinked path does not exist yet.
 func TestApply_SymlinkEscapeRejected(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("symlink creation semantics differ on windows")
+	tests := []struct {
+		name string
+	}{
+		{name: "Apply_SymlinkEscapeRejected"},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if runtime.GOOS == "windows" {
+				t.Skip("symlink creation semantics differ on windows")
+			}
 
-	outside := t.TempDir()
-	dir := t.TempDir()
+			outside := t.TempDir()
+			dir := t.TempDir()
 
-	// dir/escape -> outside (a symlink to a directory entirely outside
-	// targetDir).
-	if err := os.Symlink(outside, filepath.Join(dir, "escape")); err != nil {
-		t.Fatalf("Symlink: %v", err)
-	}
+			// dir/escape -> outside (a symlink to a directory entirely outside
+			// targetDir).
+			if err := os.Symlink(outside, filepath.Join(dir, "escape")); err != nil {
+				t.Fatalf("Symlink: %v", err)
+			}
 
-	_, err := Apply(dir, []FileChange{
-		{Path: "escape/newfile.txt", NewContent: []byte("pwned")},
-	}, ApplyOptions{})
-	if err == nil {
-		t.Fatal("expected Apply to reject a path that escapes targetDir via a symlink")
-	}
-	if !errors.Is(err, ErrPathTraversal) {
-		t.Fatalf("expected ErrPathTraversal, got: %v", err)
-	}
+			_, err := Apply(dir, []FileChange{
+				{Path: "escape/newfile.txt", NewContent: []byte("pwned")},
+			}, ApplyOptions{})
+			if err == nil {
+				t.Fatal("expected Apply to reject a path that escapes targetDir via a symlink")
+			}
+			if !errors.Is(err, ErrPathTraversal) {
+				t.Fatalf("expected ErrPathTraversal, got: %v", err)
+			}
 
-	if _, statErr := os.Stat(filepath.Join(outside, "newfile.txt")); !os.IsNotExist(statErr) {
-		t.Fatalf("file must never have been written through the symlink, stat err = %v", statErr)
+			if _, statErr := os.Stat(filepath.Join(outside, "newfile.txt")); !os.IsNotExist(statErr) {
+				t.Fatalf("file must never have been written through the symlink, stat err = %v", statErr)
+			}
+		})
 	}
 }
 
@@ -154,39 +184,48 @@ func TestApply_SymlinkEscapeRejected(t *testing.T) {
 // directory, targetDir) is legitimately inside targetDir — it's full itself
 // that resolves outside.
 func TestApply_SymlinkEscapeAtLeafRejected(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("symlink creation semantics differ on windows")
+	tests := []struct {
+		name string
+	}{
+		{name: "Apply_SymlinkEscapeAtLeafRejected"},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if runtime.GOOS == "windows" {
+				t.Skip("symlink creation semantics differ on windows")
+			}
 
-	outside := t.TempDir()
-	secret := filepath.Join(outside, "secret.txt")
-	if err := os.WriteFile(secret, []byte("super secret"), 0o600); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+			outside := t.TempDir()
+			secret := filepath.Join(outside, "secret.txt")
+			if err := os.WriteFile(secret, []byte("super secret"), 0o600); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
 
-	dir := t.TempDir()
-	// dir/escape -> outside/secret.txt (a symlink whose own path is the
-	// FileChange's target, pointing to a file entirely outside targetDir).
-	if err := os.Symlink(secret, filepath.Join(dir, "escape")); err != nil {
-		t.Fatalf("Symlink: %v", err)
-	}
+			dir := t.TempDir()
+			// dir/escape -> outside/secret.txt (a symlink whose own path is the
+			// FileChange's target, pointing to a file entirely outside targetDir).
+			if err := os.Symlink(secret, filepath.Join(dir, "escape")); err != nil {
+				t.Fatalf("Symlink: %v", err)
+			}
 
-	_, err := Apply(dir, []FileChange{
-		{Path: "escape", NewContent: []byte("pwned")},
-	}, ApplyOptions{})
-	if err == nil {
-		t.Fatal("expected Apply to reject a path whose own leaf is a symlink escaping targetDir")
-	}
-	if !errors.Is(err, ErrPathTraversal) {
-		t.Fatalf("expected ErrPathTraversal, got: %v", err)
-	}
+			_, err := Apply(dir, []FileChange{
+				{Path: "escape", NewContent: []byte("pwned")},
+			}, ApplyOptions{})
+			if err == nil {
+				t.Fatal("expected Apply to reject a path whose own leaf is a symlink escaping targetDir")
+			}
+			if !errors.Is(err, ErrPathTraversal) {
+				t.Fatalf("expected ErrPathTraversal, got: %v", err)
+			}
 
-	got, readErr := os.ReadFile(secret)
-	if readErr != nil {
-		t.Fatalf("ReadFile: %v", readErr)
-	}
-	if string(got) != "super secret" {
-		t.Fatalf("file outside targetDir must never have been touched, got %q", got)
+			got, readErr := os.ReadFile(secret)
+			if readErr != nil {
+				t.Fatalf("ReadFile: %v", readErr)
+			}
+			if string(got) != "super secret" {
+				t.Fatalf("file outside targetDir must never have been touched, got %q", got)
+			}
+		})
 	}
 }
 
@@ -196,35 +235,44 @@ func TestApply_SymlinkEscapeAtLeafRejected(t *testing.T) {
 // edit that landed on disk after the baseline was captured but before
 // Apply runs.
 func TestApply_UnrelatedDirtyWorktreeChangeIsPreserved(t *testing.T) {
-	dir := t.TempDir()
-	baseline := []byte("baseline content the patch was computed against")
-	writeFile(t, dir, "shared.txt", baseline)
-
-	// A human (or an unrelated process) edits the file after the baseline
-	// was captured, before Apply is ever called.
-	unrelatedEdit := []byte("a human's unrelated in-progress edit")
-	writeFile(t, dir, "shared.txt", unrelatedEdit)
-
-	_, err := Apply(dir, []FileChange{
-		{
-			Path:                 "shared.txt",
-			NewContent:           []byte("the patch's intended new content"),
-			ExpectedPriorContent: baseline,
-		},
-	}, ApplyOptions{})
-	if err == nil {
-		t.Fatal("expected Apply to reject a batch whose ExpectedPriorContent no longer matches disk")
+	tests := []struct {
+		name string
+	}{
+		{name: "Apply_UnrelatedDirtyWorktreeChangeIsPreserved"},
 	}
-	if !errors.Is(err, ErrPriorContentMismatch) {
-		t.Fatalf("expected ErrPriorContentMismatch, got: %v", err)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			baseline := []byte("baseline content the patch was computed against")
+			writeFile(t, dir, "shared.txt", baseline)
 
-	current, ok := readFile(t, dir, "shared.txt")
-	if !ok {
-		t.Fatal("shared.txt should still exist")
-	}
-	if !bytes.Equal(current, unrelatedEdit) {
-		t.Fatalf("unrelated edit must be preserved: got %q, want %q", current, unrelatedEdit)
+			// A human (or an unrelated process) edits the file after the baseline
+			// was captured, before Apply is ever called.
+			unrelatedEdit := []byte("a human's unrelated in-progress edit")
+			writeFile(t, dir, "shared.txt", unrelatedEdit)
+
+			_, err := Apply(dir, []FileChange{
+				{
+					Path:                 "shared.txt",
+					NewContent:           []byte("the patch's intended new content"),
+					ExpectedPriorContent: baseline,
+				},
+			}, ApplyOptions{})
+			if err == nil {
+				t.Fatal("expected Apply to reject a batch whose ExpectedPriorContent no longer matches disk")
+			}
+			if !errors.Is(err, ErrPriorContentMismatch) {
+				t.Fatalf("expected ErrPriorContentMismatch, got: %v", err)
+			}
+
+			current, ok := readFile(t, dir, "shared.txt")
+			if !ok {
+				t.Fatal("shared.txt should still exist")
+			}
+			if !bytes.Equal(current, unrelatedEdit) {
+				t.Fatalf("unrelated edit must be preserved: got %q, want %q", current, unrelatedEdit)
+			}
+		})
 	}
 }
 
@@ -236,53 +284,62 @@ func TestApply_UnrelatedDirtyWorktreeChangeIsPreserved(t *testing.T) {
 // including the 1st file, whose write had already succeeded before the
 // 2nd change failed.
 func TestApply_PartialFailureRollsBackAllPriorWrites(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("running as root bypasses directory permission checks, which this test depends on")
+	tests := []struct {
+		name string
+	}{
+		{name: "Apply_PartialFailureRollsBackAllPriorWrites"},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if os.Geteuid() == 0 {
+				t.Skip("running as root bypasses directory permission checks, which this test depends on")
+			}
 
-	dir := t.TempDir()
-	writeFile(t, dir, "one.txt", []byte("one-original"))
-	writeFile(t, dir, "three.txt", []byte("three-original"))
+			dir := t.TempDir()
+			writeFile(t, dir, "one.txt", []byte("one-original"))
+			writeFile(t, dir, "three.txt", []byte("three-original"))
 
-	lockedDir := filepath.Join(dir, "locked")
-	if err := os.Mkdir(lockedDir, 0o755); err != nil {
-		t.Fatalf("Mkdir: %v", err)
-	}
-	// Remove write permission on the directory: an existing path inside it
-	// can still be *stat*ed (traversal only needs the execute bit, which
-	// 0o555 retains), so Apply's step-4 read phase for a not-yet-existing
-	// file inside it succeeds cleanly — but *creating* a new file inside it
-	// fails with a genuine permission error at write time, which is
-	// exactly the partial-failure scenario this test needs: a failure that
-	// only manifests during the write phase, after earlier changes in the
-	// batch already succeeded.
-	if err := os.Chmod(lockedDir, 0o555); err != nil {
-		t.Fatalf("Chmod: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(lockedDir, 0o755) })
+			lockedDir := filepath.Join(dir, "locked")
+			if err := os.Mkdir(lockedDir, 0o755); err != nil {
+				t.Fatalf("Mkdir: %v", err)
+			}
+			// Remove write permission on the directory: an existing path inside it
+			// can still be *stat*ed (traversal only needs the execute bit, which
+			// 0o555 retains), so Apply's step-4 read phase for a not-yet-existing
+			// file inside it succeeds cleanly — but *creating* a new file inside it
+			// fails with a genuine permission error at write time, which is
+			// exactly the partial-failure scenario this test needs: a failure that
+			// only manifests during the write phase, after earlier changes in the
+			// batch already succeeded.
+			if err := os.Chmod(lockedDir, 0o555); err != nil {
+				t.Fatalf("Chmod: %v", err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(lockedDir, 0o755) })
 
-	_, err := Apply(dir, []FileChange{
-		{Path: "one.txt", NewContent: []byte("one-updated"), ExpectedPriorContent: []byte("one-original")},
-		{Path: "locked/two.txt", NewContent: []byte("two-new")},
-		{Path: "three.txt", NewContent: []byte("three-updated"), ExpectedPriorContent: []byte("three-original")},
-	}, ApplyOptions{})
-	if err == nil {
-		t.Fatal("expected Apply to fail when the 2nd change's directory is unwritable")
-	}
+			_, err := Apply(dir, []FileChange{
+				{Path: "one.txt", NewContent: []byte("one-updated"), ExpectedPriorContent: []byte("one-original")},
+				{Path: "locked/two.txt", NewContent: []byte("two-new")},
+				{Path: "three.txt", NewContent: []byte("three-updated"), ExpectedPriorContent: []byte("three-original")},
+			}, ApplyOptions{})
+			if err == nil {
+				t.Fatal("expected Apply to fail when the 2nd change's directory is unwritable")
+			}
 
-	// Restore permissions before reading back, in case the failure somehow
-	// left things in a state where Chmod above wasn't reached (defensive;
-	// the deferred Cleanup handles the normal case).
-	_ = os.Chmod(lockedDir, 0o755)
+			// Restore permissions before reading back, in case the failure somehow
+			// left things in a state where Chmod above wasn't reached (defensive;
+			// the deferred Cleanup handles the normal case).
+			_ = os.Chmod(lockedDir, 0o755)
 
-	if b, ok := readFile(t, dir, "one.txt"); !ok || string(b) != "one-original" {
-		t.Fatalf("one.txt should have been rolled back to its original content: got %q, ok=%v", b, ok)
-	}
-	if _, ok := readFile(t, dir, "locked/two.txt"); ok {
-		t.Fatal("locked/two.txt should never have been created")
-	}
-	if b, ok := readFile(t, dir, "three.txt"); !ok || string(b) != "three-original" {
-		t.Fatalf("three.txt must remain untouched (never reached): got %q, ok=%v", b, ok)
+			if b, ok := readFile(t, dir, "one.txt"); !ok || string(b) != "one-original" {
+				t.Fatalf("one.txt should have been rolled back to its original content: got %q, ok=%v", b, ok)
+			}
+			if _, ok := readFile(t, dir, "locked/two.txt"); ok {
+				t.Fatal("locked/two.txt should never have been created")
+			}
+			if b, ok := readFile(t, dir, "three.txt"); !ok || string(b) != "three-original" {
+				t.Fatalf("three.txt must remain untouched (never reached): got %q, ok=%v", b, ok)
+			}
+		})
 	}
 }
 
@@ -291,20 +348,29 @@ func TestApply_PartialFailureRollsBackAllPriorWrites(t *testing.T) {
 // always rejected, full stop — there is no way to delete without going
 // through approval.
 func TestApply_DeleteWithoutAnyBrokerIsAlwaysRejected(t *testing.T) {
-	dir := t.TempDir()
-	writeFile(t, dir, "keep.txt", []byte("still here"))
+	tests := []struct {
+		name string
+	}{
+		{name: "Apply_DeleteWithoutAnyBrokerIsAlwaysRejected"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFile(t, dir, "keep.txt", []byte("still here"))
 
-	_, err := Apply(dir, []FileChange{
-		{Path: "keep.txt", Delete: true},
-	}, ApplyOptions{})
-	if err == nil {
-		t.Fatal("expected Apply to reject a Delete with no Broker configured")
-	}
-	if !errors.Is(err, ErrApprovalRequired) {
-		t.Fatalf("expected ErrApprovalRequired, got: %v", err)
-	}
-	if b, ok := readFile(t, dir, "keep.txt"); !ok || string(b) != "still here" {
-		t.Fatalf("keep.txt must still exist untouched: got %q, ok=%v", b, ok)
+			_, err := Apply(dir, []FileChange{
+				{Path: "keep.txt", Delete: true},
+			}, ApplyOptions{})
+			if err == nil {
+				t.Fatal("expected Apply to reject a Delete with no Broker configured")
+			}
+			if !errors.Is(err, ErrApprovalRequired) {
+				t.Fatalf("expected ErrApprovalRequired, got: %v", err)
+			}
+			if b, ok := readFile(t, dir, "keep.txt"); !ok || string(b) != "still here" {
+				t.Fatalf("keep.txt must still exist untouched: got %q, ok=%v", b, ok)
+			}
+		})
 	}
 }
 
@@ -312,30 +378,39 @@ func TestApply_DeleteWithoutAnyBrokerIsAlwaysRejected(t *testing.T) {
 // present is not enough on its own: the specific Scope presented must
 // actually be approved.
 func TestApply_DeleteWithUnapprovedScopeIsRejected(t *testing.T) {
-	dir := t.TempDir()
-	writeFile(t, dir, "keep.txt", []byte("still here"))
+	tests := []struct {
+		name string
+	}{
+		{name: "Apply_DeleteWithUnapprovedScopeIsRejected"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFile(t, dir, "keep.txt", []byte("still here"))
 
-	broker := approval.NewBroker()
-	// Grant an approval for a DIFFERENT resource than the one Apply will
-	// be asked to check.
-	if _, err := broker.Grant(approval.Scope{Action: "delete", Resource: "other.txt"}, "tester", time.Minute); err != nil {
-		t.Fatalf("Grant: %v", err)
-	}
+			broker := approval.NewBroker()
+			// Grant an approval for a DIFFERENT resource than the one Apply will
+			// be asked to check.
+			if _, err := broker.Grant(approval.Scope{Action: "delete", Resource: "other.txt"}, "tester", time.Minute); err != nil {
+				t.Fatalf("Grant: %v", err)
+			}
 
-	_, err := Apply(dir, []FileChange{
-		{Path: "keep.txt", Delete: true},
-	}, ApplyOptions{
-		Broker: broker,
-		Scope:  approval.Scope{Action: "delete", Resource: "keep.txt"},
-	})
-	if err == nil {
-		t.Fatal("expected Apply to reject a Delete whose scope was not approved")
-	}
-	if !errors.Is(err, ErrApprovalRequired) {
-		t.Fatalf("expected ErrApprovalRequired, got: %v", err)
-	}
-	if b, ok := readFile(t, dir, "keep.txt"); !ok || string(b) != "still here" {
-		t.Fatalf("keep.txt must still exist untouched: got %q, ok=%v", b, ok)
+			_, err := Apply(dir, []FileChange{
+				{Path: "keep.txt", Delete: true},
+			}, ApplyOptions{
+				Broker: broker,
+				Scope:  approval.Scope{Action: "delete", Resource: "keep.txt"},
+			})
+			if err == nil {
+				t.Fatal("expected Apply to reject a Delete whose scope was not approved")
+			}
+			if !errors.Is(err, ErrApprovalRequired) {
+				t.Fatalf("expected ErrApprovalRequired, got: %v", err)
+			}
+			if b, ok := readFile(t, dir, "keep.txt"); !ok || string(b) != "still here" {
+				t.Fatalf("keep.txt must still exist untouched: got %q, ok=%v", b, ok)
+			}
+		})
 	}
 }
 
@@ -344,29 +419,38 @@ func TestApply_DeleteWithUnapprovedScopeIsRejected(t *testing.T) {
 // contains a secret-shaped value, and asserts the resulting error string
 // does not contain the raw secret.
 func TestApply_SecretRedactedInPriorContentMismatchError(t *testing.T) {
-	dir := t.TempDir()
-	fakeToken := "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	actualContent := []byte("config line before\n" + fakeToken + "\nconfig line after")
-	writeFile(t, dir, "config.txt", actualContent)
+	tests := []struct {
+		name string
+	}{
+		{name: "Apply_SecretRedactedInPriorContentMismatchError"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			fakeToken := "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" // nosecret: fake token fixture
+			actualContent := []byte("config line before\n" + fakeToken + "\nconfig line after")
+			writeFile(t, dir, "config.txt", actualContent)
 
-	_, err := Apply(dir, []FileChange{
-		{
-			Path:                 "config.txt",
-			NewContent:           []byte("new content"),
-			ExpectedPriorContent: []byte("this does not match what's on disk"),
-		},
-	}, ApplyOptions{})
-	if err == nil {
-		t.Fatal("expected a prior-content mismatch error")
-	}
-	if !errors.Is(err, ErrPriorContentMismatch) {
-		t.Fatalf("expected ErrPriorContentMismatch, got: %v", err)
-	}
-	if bytes.Contains([]byte(err.Error()), []byte(fakeToken)) {
-		t.Fatalf("error message leaked the raw secret-shaped token: %v", err)
-	}
-	if !bytes.Contains([]byte(err.Error()), []byte(redactionMarker)) {
-		t.Fatalf("expected error message to contain the redaction marker, got: %v", err)
+			_, err := Apply(dir, []FileChange{
+				{
+					Path:                 "config.txt",
+					NewContent:           []byte("new content"),
+					ExpectedPriorContent: []byte("this does not match what's on disk"),
+				},
+			}, ApplyOptions{})
+			if err == nil {
+				t.Fatal("expected a prior-content mismatch error")
+			}
+			if !errors.Is(err, ErrPriorContentMismatch) {
+				t.Fatalf("expected ErrPriorContentMismatch, got: %v", err)
+			}
+			if bytes.Contains([]byte(err.Error()), []byte(fakeToken)) {
+				t.Fatalf("error message leaked the raw secret-shaped token: %v", err)
+			}
+			if !bytes.Contains([]byte(err.Error()), []byte(redactionMarker)) {
+				t.Fatalf("expected error message to contain the redaction marker, got: %v", err)
+			}
+		})
 	}
 }
 
@@ -375,29 +459,38 @@ func TestApply_SecretRedactedInPriorContentMismatchError(t *testing.T) {
 // immediately after Rollback, then reports drift (naming the file) once
 // the file is modified again.
 func TestVerify_ReportsDriftAfterReModificationPostRollback(t *testing.T) {
-	dir := t.TempDir()
-	writeFile(t, dir, "watched.txt", []byte("original"))
+	tests := []struct {
+		name string
+	}{
+		{name: "Verify_ReportsDriftAfterReModificationPostRollback"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFile(t, dir, "watched.txt", []byte("original"))
 
-	journal, err := Apply(dir, []FileChange{
-		{Path: "watched.txt", NewContent: []byte("changed"), ExpectedPriorContent: []byte("original")},
-	}, ApplyOptions{})
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if err := Rollback(dir, journal, RollbackOptions{}); err != nil {
-		t.Fatalf("Rollback: %v", err)
-	}
-	if err := Verify(dir, journal); err != nil {
-		t.Fatalf("Verify should report no drift right after rollback: %v", err)
-	}
+			journal, err := Apply(dir, []FileChange{
+				{Path: "watched.txt", NewContent: []byte("changed"), ExpectedPriorContent: []byte("original")},
+			}, ApplyOptions{})
+			if err != nil {
+				t.Fatalf("Apply: %v", err)
+			}
+			if err := Rollback(dir, journal, RollbackOptions{}); err != nil {
+				t.Fatalf("Rollback: %v", err)
+			}
+			if err := Verify(dir, journal); err != nil {
+				t.Fatalf("Verify should report no drift right after rollback: %v", err)
+			}
 
-	writeFile(t, dir, "watched.txt", []byte("drifted"))
-	err = Verify(dir, journal)
-	if err == nil {
-		t.Fatal("Verify should report drift after a post-rollback modification")
-	}
-	if !bytes.Contains([]byte(err.Error()), []byte("watched.txt")) {
-		t.Fatalf("Verify error should name the drifted file: %v", err)
+			writeFile(t, dir, "watched.txt", []byte("drifted"))
+			err = Verify(dir, journal)
+			if err == nil {
+				t.Fatal("Verify should report drift after a post-rollback modification")
+			}
+			if !bytes.Contains([]byte(err.Error()), []byte("watched.txt")) {
+				t.Fatalf("Verify error should name the drifted file: %v", err)
+			}
+		})
 	}
 }
 
@@ -406,42 +499,51 @@ func TestVerify_ReportsDriftAfterReModificationPostRollback(t *testing.T) {
 // outside targetDir. The Journal type is exported, so this trust boundary
 // must be enforced at use time, not just at Apply time.
 func TestRollback_RejectsMaliciousJournalPathTraversal(t *testing.T) {
-	parent := t.TempDir()
-	targetDir := filepath.Join(parent, "target")
-	if err := os.Mkdir(targetDir, 0o755); err != nil {
-		t.Fatalf("Mkdir: %v", err)
+	tests := []struct {
+		name string
+	}{
+		{name: "Rollback_RejectsMaliciousJournalPathTraversal"},
 	}
-	victim := filepath.Join(parent, "victim.txt")
-	if err := os.WriteFile(victim, []byte("should survive"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parent := t.TempDir()
+			targetDir := filepath.Join(parent, "target")
+			if err := os.Mkdir(targetDir, 0o755); err != nil {
+				t.Fatalf("Mkdir: %v", err)
+			}
+			victim := filepath.Join(parent, "victim.txt")
+			if err := os.WriteFile(victim, []byte("should survive"), 0o644); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
 
-	resolvedTargetDir, err := filepath.EvalSymlinks(targetDir)
-	if err != nil {
-		t.Fatalf("EvalSymlinks: %v", err)
-	}
+			resolvedTargetDir, err := filepath.EvalSymlinks(targetDir)
+			if err != nil {
+				t.Fatalf("EvalSymlinks: %v", err)
+			}
 
-	malicious := Journal{
-		TargetDir: resolvedTargetDir,
-		Entries: []JournalEntry{
-			{Path: "../victim.txt", ExistedBefore: false},
-		},
-	}
+			malicious := Journal{
+				TargetDir: resolvedTargetDir,
+				Entries: []JournalEntry{
+					{Path: "../victim.txt", ExistedBefore: false},
+				},
+			}
 
-	err = Rollback(targetDir, malicious, RollbackOptions{})
-	if err == nil {
-		t.Fatal("expected Rollback to reject a malicious journal entry that escapes targetDir")
-	}
-	if !errors.Is(err, ErrPathTraversal) {
-		t.Fatalf("expected ErrPathTraversal, got: %v", err)
-	}
+			err = Rollback(targetDir, malicious, RollbackOptions{})
+			if err == nil {
+				t.Fatal("expected Rollback to reject a malicious journal entry that escapes targetDir")
+			}
+			if !errors.Is(err, ErrPathTraversal) {
+				t.Fatalf("expected ErrPathTraversal, got: %v", err)
+			}
 
-	b, err := os.ReadFile(victim)
-	if err != nil {
-		t.Fatalf("victim file should still exist: %v", err)
-	}
-	if string(b) != "should survive" {
-		t.Fatalf("victim file content was modified: %q", b)
+			b, err := os.ReadFile(victim)
+			if err != nil {
+				t.Fatalf("victim file should still exist: %v", err)
+			}
+			if string(b) != "should survive" {
+				t.Fatalf("victim file content was modified: %q", b)
+			}
+		})
 	}
 }
 
@@ -456,6 +558,18 @@ func TestRollback_RejectsMaliciousJournalPathTraversal(t *testing.T) {
 // deletion (every JournalEntry with ExistedBefore false) through the same
 // kind of broker check.
 func TestRollback_RequiresApprovalToDeleteCreatedFile(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "Rollback_RequiresApprovalToDeleteCreatedFile", run: runRollbackRequiresApprovalToDeleteCreatedFile},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
+}
+
+func runRollbackRequiresApprovalToDeleteCreatedFile(t *testing.T) {
 	dir := t.TempDir()
 
 	journal, err := Apply(dir, []FileChange{
@@ -515,23 +629,32 @@ func TestRollback_RequiresApprovalToDeleteCreatedFile(t *testing.T) {
 // exactly mirroring Apply's own "writes don't need approval, deletes do"
 // rule.
 func TestRollback_WritesRestoringExistingContentAreNeverGated(t *testing.T) {
-	dir := t.TempDir()
-	writeFile(t, dir, "existing.txt", []byte("original"))
-
-	journal, err := Apply(dir, []FileChange{
-		{Path: "existing.txt", NewContent: []byte("updated"), ExpectedPriorContent: []byte("original")},
-	}, ApplyOptions{})
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
+	tests := []struct {
+		name string
+	}{
+		{name: "Rollback_WritesRestoringExistingContentAreNeverGated"},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFile(t, dir, "existing.txt", []byte("original"))
 
-	// No broker at all: this must still succeed, since restoring content
-	// for a path that existed before is a write, not a deletion.
-	if err := Rollback(dir, journal, RollbackOptions{}); err != nil {
-		t.Fatalf("Rollback of a pure content restore (no deletion involved) should not require a broker: %v", err)
-	}
-	if b, ok := readFile(t, dir, "existing.txt"); !ok || string(b) != "original" {
-		t.Fatalf("existing.txt = %q, ok=%v; want %q, true", b, ok, "original")
+			journal, err := Apply(dir, []FileChange{
+				{Path: "existing.txt", NewContent: []byte("updated"), ExpectedPriorContent: []byte("original")},
+			}, ApplyOptions{})
+			if err != nil {
+				t.Fatalf("Apply: %v", err)
+			}
+
+			// No broker at all: this must still succeed, since restoring content
+			// for a path that existed before is a write, not a deletion.
+			if err := Rollback(dir, journal, RollbackOptions{}); err != nil {
+				t.Fatalf("Rollback of a pure content restore (no deletion involved) should not require a broker: %v", err)
+			}
+			if b, ok := readFile(t, dir, "existing.txt"); !ok || string(b) != "original" {
+				t.Fatalf("existing.txt = %q, ok=%v; want %q, true", b, ok, "original")
+			}
+		})
 	}
 }
 
@@ -545,6 +668,18 @@ func TestRollback_WritesRestoringExistingContentAreNeverGated(t *testing.T) {
 // must now refuse to remove a CreatedDir that does not resolve inside the
 // real target directory.
 func TestRollback_RejectsCreatedDirOutsideTargetDir(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "Rollback_RejectsCreatedDirOutsideTargetDir", run: runRollbackRejectsCreatedDirOutsideTargetDir},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
+}
+
+func runRollbackRejectsCreatedDirOutsideTargetDir(t *testing.T) {
 	parent := t.TempDir()
 	targetDir := filepath.Join(parent, "target")
 	if err := os.Mkdir(targetDir, 0o755); err != nil {
@@ -623,33 +758,42 @@ func TestRollback_RejectsCreatedDirOutsideTargetDir(t *testing.T) {
 // caller-constructed Journal cannot trick Verify into reading files outside
 // targetDir.
 func TestVerify_RejectsMaliciousJournalPathTraversal(t *testing.T) {
-	parent := t.TempDir()
-	targetDir := filepath.Join(parent, "target")
-	if err := os.Mkdir(targetDir, 0o755); err != nil {
-		t.Fatalf("Mkdir: %v", err)
+	tests := []struct {
+		name string
+	}{
+		{name: "Verify_RejectsMaliciousJournalPathTraversal"},
 	}
-	secret := filepath.Join(parent, "secret.txt")
-	if err := os.WriteFile(secret, []byte("outside secret"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parent := t.TempDir()
+			targetDir := filepath.Join(parent, "target")
+			if err := os.Mkdir(targetDir, 0o755); err != nil {
+				t.Fatalf("Mkdir: %v", err)
+			}
+			secret := filepath.Join(parent, "secret.txt")
+			if err := os.WriteFile(secret, []byte("outside secret"), 0o644); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
 
-	resolvedTargetDir, err := filepath.EvalSymlinks(targetDir)
-	if err != nil {
-		t.Fatalf("EvalSymlinks: %v", err)
-	}
+			resolvedTargetDir, err := filepath.EvalSymlinks(targetDir)
+			if err != nil {
+				t.Fatalf("EvalSymlinks: %v", err)
+			}
 
-	malicious := Journal{
-		TargetDir: resolvedTargetDir,
-		Entries: []JournalEntry{
-			{Path: "../secret.txt", ExistedBefore: false, OriginalContent: nil},
-		},
-	}
+			malicious := Journal{
+				TargetDir: resolvedTargetDir,
+				Entries: []JournalEntry{
+					{Path: "../secret.txt", ExistedBefore: false, OriginalContent: nil},
+				},
+			}
 
-	err = Verify(targetDir, malicious)
-	if err == nil {
-		t.Fatal("expected Verify to reject a malicious journal entry that escapes targetDir")
-	}
-	if !errors.Is(err, ErrPathTraversal) {
-		t.Fatalf("expected ErrPathTraversal, got: %v", err)
+			err = Verify(targetDir, malicious)
+			if err == nil {
+				t.Fatal("expected Verify to reject a malicious journal entry that escapes targetDir")
+			}
+			if !errors.Is(err, ErrPathTraversal) {
+				t.Fatalf("expected ErrPathTraversal, got: %v", err)
+			}
+		})
 	}
 }
