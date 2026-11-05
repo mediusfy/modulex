@@ -125,6 +125,26 @@ fresh: `approve` loads, grants, and saves back; `run_verification` loads
 [Agent Approval Broker Guide](agent-approval-broker-guide.md)'s "Wired end
 to end" section for the full mechanism.
 
+## Running the fast gate locally before opening a PR
+
+[`scripts/pr-prep.sh`](../../scripts/pr-prep.sh) wraps `agent handoff` for
+day-to-day use against any mediusfy repo, not just this one:
+
+```console
+$ cd ~/programming/projects/mediusfy/backend
+$ ~/programming/projects/mediusfy/modulex/scripts/pr-prep.sh
+```
+
+It builds and runs this checkout's `modulex` against `-root <target-repo>`,
+diffing the target repo's current branch against its default remote branch
+— the same secret scan, protected-paths check, and repo gates
+`pr-review-reusable.yml`'s `engine` job runs in CI, so a local pass means no
+surprises there. It also prints a `git log`/`git diff --stat` summary to
+seed a PR description, and an opt-in `--full` runs `pr_pipeline`'s real LLM
+review crew locally (`make review-supplied`, costs tokens). See the
+script's own `-h` for the full flag set, including `--remote <host>` to run
+the whole thing over SSH on a pre-provisioned host instead.
+
 ## Related work
 
 - [Agent MCP Server Guide](agent-mcp-server-guide.md) — the MCP-facing
