@@ -522,7 +522,7 @@ func TestScanSecrets_BareNosecretSubstringNoLongerSuppresses(t *testing.T) {
 			name:      "identifier merely contains nosecret",
 			baseFiles: map[string]string{"config.go": "package config\n"},
 			headFiles: map[string]string{"config.go": "package config\n\n" +
-				`const nosecretAPIKey = "api_key=supersecretvalue123"` + "\n"},
+				`const nosecretAPIKey = "api_key=supersecretvalue123"` + "\n"}, // nosecret: fixture proving an identifier containing "nosecret" is not an escape hatch
 			wantStatus: provenance.StatusFail,
 		},
 	}
