@@ -260,14 +260,19 @@ func TestValidateBaseURLAllowsOrdinaryPublicAddresses(t *testing.T) {
 // Dispatch.Comment's outbound path, bypassing TestMain's override to call
 // the real validateBaseURL for this one test.
 func TestDispatchRejectsSSRFBaseURL(t *testing.T) {
-	old := validateBaseURLHook
-	validateBaseURLHook = validateBaseURL
-	defer func() { validateBaseURLHook = old }()
+	tests := []struct{ name string }{{name: "Dispatch rejects metadata-service base_url"}}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			old := validateBaseURLHook
+			validateBaseURLHook = validateBaseURL
+			defer func() { validateBaseURLHook = old }()
 
-	cfg := Config{Provider: "ollama", Model: "m", BaseURL: "http://169.254.169.254/computeMetadata/v1/"}
-	_, _, err := Dispatch{}.Comment(context.Background(), cfg, results(), "diff")
-	if err == nil || !strings.Contains(err.Error(), "base_url rejected") {
-		t.Fatalf("err = %v, want a base_url rejection", err)
+			cfg := Config{Provider: "ollama", Model: "m", BaseURL: "http://169.254.169.254/computeMetadata/v1/"}
+			_, _, err := Dispatch{}.Comment(context.Background(), cfg, results(), "diff")
+			if err == nil || !strings.Contains(err.Error(), "base_url rejected") {
+				t.Fatalf("err = %v, want a base_url rejection", err)
+			}
+		})
 	}
 }
 

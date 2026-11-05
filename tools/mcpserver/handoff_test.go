@@ -37,46 +37,61 @@ func newGitFixture(t *testing.T) string {
 }
 
 func TestBuildHandoffEnvelope(t *testing.T) {
-	t.Run("valid git repo with valid verification results", func(t *testing.T) {
-		dir := newGitFixture(t)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "valid git repo with valid verification results",
+			run: func(t *testing.T) {
+				dir := newGitFixture(t)
 
-		env, err := buildHandoffEnvelope(context.Background(), dir, "claude", []provenance.VerificationResult{
-			{Name: "lint", Category: provenance.VerificationFull, Status: provenance.StatusPass},
-		})
-		if err != nil {
-			t.Fatalf("buildHandoffEnvelope() error = %v", err)
-		}
-		if env.Repository.Commit == "" {
-			t.Error("Repository.Commit is empty, want the fixture's commit SHA")
-		}
-		if env.Repository.Branch == "" {
-			t.Error("Repository.Branch is empty, want the fixture's branch name")
-		}
-		if env.Agent.Name != "claude" {
-			t.Errorf("Agent.Name = %q, want \"claude\"", env.Agent.Name)
-		}
-		if err := env.Validate(); err != nil {
-			t.Errorf("returned envelope fails Validate(): %v", err)
-		}
-	})
+				env, err := buildHandoffEnvelope(context.Background(), dir, "claude", []provenance.VerificationResult{
+					{Name: "lint", Category: provenance.VerificationFull, Status: provenance.StatusPass},
+				})
+				if err != nil {
+					t.Fatalf("buildHandoffEnvelope() error = %v", err)
+				}
+				if env.Repository.Commit == "" {
+					t.Error("Repository.Commit is empty, want the fixture's commit SHA")
+				}
+				if env.Repository.Branch == "" {
+					t.Error("Repository.Branch is empty, want the fixture's branch name")
+				}
+				if env.Agent.Name != "claude" {
+					t.Errorf("Agent.Name = %q, want \"claude\"", env.Agent.Name)
+				}
+				if err := env.Validate(); err != nil {
+					t.Errorf("returned envelope fails Validate(): %v", err)
+				}
+			},
+		},
+		{
+			name: "skipped result without reason fails validation",
+			run: func(t *testing.T) {
+				dir := newGitFixture(t)
 
-	t.Run("skipped result without reason fails validation", func(t *testing.T) {
-		dir := newGitFixture(t)
+				_, err := buildHandoffEnvelope(context.Background(), dir, "claude", []provenance.VerificationResult{
+					{Name: "lint", Category: provenance.VerificationFull, Status: provenance.StatusSkipped},
+				})
+				if err == nil {
+					t.Fatal("buildHandoffEnvelope() error = nil, want an error (StatusSkipped requires a non-empty Reason)")
+				}
+			},
+		},
+		{
+			name: "non-git root returns an error",
+			run: func(t *testing.T) {
+				dir := t.TempDir()
 
-		_, err := buildHandoffEnvelope(context.Background(), dir, "claude", []provenance.VerificationResult{
-			{Name: "lint", Category: provenance.VerificationFull, Status: provenance.StatusSkipped},
-		})
-		if err == nil {
-			t.Fatal("buildHandoffEnvelope() error = nil, want an error (StatusSkipped requires a non-empty Reason)")
-		}
-	})
-
-	t.Run("non-git root returns an error", func(t *testing.T) {
-		dir := t.TempDir()
-
-		_, err := buildHandoffEnvelope(context.Background(), dir, "claude", nil)
-		if err == nil {
-			t.Fatal("buildHandoffEnvelope() error = nil, want an error (not a git repository)")
-		}
-	})
+				_, err := buildHandoffEnvelope(context.Background(), dir, "claude", nil)
+				if err == nil {
+					t.Fatal("buildHandoffEnvelope() error = nil, want an error (not a git repository)")
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
