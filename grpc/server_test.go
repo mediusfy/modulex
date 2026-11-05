@@ -226,22 +226,35 @@ func TestNewServerRejectsNilArgs(t *testing.T) {
 	}
 }
 
-func TestServerStartThenImmediateStop(t *testing.T) {
+// newIdleServer builds a Server on a fresh bufconn listener without starting it.
+func newIdleServer(t *testing.T) (*grpcadapter.Server, *bufconn.Listener) {
+	t.Helper()
+	lis := bufconn.Listen(1024)
+	server, err := grpcadapter.NewServer(googlegrpc.NewServer(), lis, grpcadapter.WithShutdownTimeout(time.Second))
+	require.NoError(t, err)
+	return server, lis
+}
+
+func TestServerStartStopLifecycle(t *testing.T) {
 	tests := []struct {
 		name string
+		run  func(t *testing.T, server *grpcadapter.Server)
 	}{
-		{name: "start then immediate stop"},
+		{"start then immediate stop", func(t *testing.T, server *grpcadapter.Server) {
+			require.NoError(t, server.Start(context.Background()))
+			require.NoError(t, server.Stop(context.Background()))
+		}},
+		{"second start rejected", func(t *testing.T, server *grpcadapter.Server) {
+			require.NoError(t, server.Start(context.Background()))
+			require.Error(t, server.Start(context.Background()))
+			require.NoError(t, server.Stop(context.Background()))
+		}},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			lis := bufconn.Listen(1024)
-			grpcServer := googlegrpc.NewServer()
-			server, err := grpcadapter.NewServer(grpcServer, lis, grpcadapter.WithShutdownTimeout(time.Second))
-			require.NoError(t, err)
-
-			require.NoError(t, server.Start(context.Background()))
-			require.NoError(t, server.Stop(context.Background()))
+			server, _ := newIdleServer(t)
+			tt.run(t, server)
 		})
 	}
 }
@@ -255,10 +268,7 @@ func TestServerStopBeforeStart(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			lis := bufconn.Listen(1024)
-			grpcServer := googlegrpc.NewServer()
-			server, err := grpcadapter.NewServer(grpcServer, lis, grpcadapter.WithShutdownTimeout(time.Second))
-			require.NoError(t, err)
+			server, _ := newIdleServer(t)
 
 			// Stop before Start must return promptly and must not deadlock waiting
 			// for a serving goroutine that was never launched.
@@ -292,40 +302,15 @@ func TestServerStopBeforeStartClosesListener(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			lis := bufconn.Listen(1024)
-			grpcServer := googlegrpc.NewServer()
-			server, err := grpcadapter.NewServer(grpcServer, lis, grpcadapter.WithShutdownTimeout(time.Second))
-			require.NoError(t, err)
+			server, lis := newIdleServer(t)
 
 			require.NoError(t, server.Stop(context.Background()))
 
 			// Stop must close the listener passed to NewServer even when Start was
 			// never called, so a caller that skips Start (e.g. behind a feature
 			// flag) does not leak the bound listener for the rest of the process.
-			_, err = lis.Accept()
+			_, err := lis.Accept()
 			require.Error(t, err, "listener should be closed after Stop, even without a prior Start")
-		})
-	}
-}
-
-func TestServerStartTwice(t *testing.T) {
-	tests := []struct {
-		name string
-	}{
-		{name: "second start rejected"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			lis := bufconn.Listen(1024)
-			grpcServer := googlegrpc.NewServer()
-			server, err := grpcadapter.NewServer(grpcServer, lis, grpcadapter.WithShutdownTimeout(time.Second))
-			require.NoError(t, err)
-
-			require.NoError(t, server.Start(context.Background()))
-			require.Error(t, server.Start(context.Background()))
-
-			require.NoError(t, server.Stop(context.Background()))
 		})
 	}
 }
