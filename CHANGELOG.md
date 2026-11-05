@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `apperrors`: new package with `apperrors.Error`, a string-backed error type
   so sentinel errors can be declared as constants.
+- `scaffold`: generated module and service tests are now table-driven; `examples/scaffolded-sample` was regenerated from the templates.
 - `integration`: hermetic smoke tests that build and run every `package main`
   entry point (`make test-integration`).
 
