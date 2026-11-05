@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `rabbitmq`: the integration test now closes the event bus before the channel,
   removing a shutdown hang in `TestEventBus_PlainHandlerPanicIsRecovered`.
+- `nats`, `rabbitmq`, `watermill`: `nats` sentinel errors are typed constants (**BREAKING** for code that reassigns them); long consume and delivery functions were split without behaviour changes.
 
 ## [0.12.1] - 2026-11-01
 
