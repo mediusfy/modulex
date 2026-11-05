@@ -90,115 +90,129 @@ func freeAddr(t *testing.T) string {
 }
 
 func TestEndToEnd_FullStackLifecycle(t *testing.T) {
-	sr := tracetest.NewSpanRecorder()
-	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "full stack lifecycle",
+			run: func(t *testing.T) {
+				sr := tracetest.NewSpanRecorder()
+				tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+				logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	eventBus := watermill.NewEventBus(0, false, false)
+				eventBus := watermill.NewEventBus(0, false, false)
 
-	manager, err := modulex.NewManager(
-		modulex.WithLogger(logger),
-		modulex.WithTracer(modulexotel.NewTracer(tp)),
-		modulex.WithEventBus(eventBus),
-	)
-	require.NoError(t, err)
+				manager, err := modulex.NewManager(
+					modulex.WithLogger(logger),
+					modulex.WithTracer(modulexotel.NewTracer(tp)),
+					modulex.WithEventBus(eventBus),
+				)
+				require.NoError(t, err)
 
-	router := gochi.NewRouter()
-	require.NoError(t, modulexchi.RegisterRouter(manager, router))
-	router.Get("/healthz", httpx.HealthHandler(manager))
-	router.Get("/readyz", httpx.ReadinessHandler(manager))
+				router := gochi.NewRouter()
+				require.NoError(t, modulexchi.RegisterRouter(manager, router))
+				router.Get("/healthz", httpx.HealthHandler(manager))
+				router.Get("/readyz", httpx.ReadinessHandler(manager))
 
-	mod := &e2eModule{receivedEvents: make(chan string, 1)}
-	require.NoError(t, manager.RegisterModule(mod))
+				mod := &e2eModule{receivedEvents: make(chan string, 1)}
+				require.NoError(t, manager.RegisterModule(mod))
 
-	ctx := context.Background()
-	require.NoError(t, manager.InitModules(ctx))
-	require.NoError(t, manager.StartModules(ctx))
-	assert.Equal(t, modulex.StateRunning, manager.State())
+				ctx := context.Background()
+				require.NoError(t, manager.InitModules(ctx))
+				require.NoError(t, manager.StartModules(ctx))
+				assert.Equal(t, modulex.StateRunning, manager.State())
 
-	addr := freeAddr(t)
-	httpServer := &http.Server{Addr: addr, Handler: router}
-	_, err = httpx.Serve(ctx, manager, "http-server", httpServer, 5*time.Second)
-	require.NoError(t, err)
+				addr := freeAddr(t)
+				httpServer := &http.Server{Addr: addr, Handler: router}
+				_, err = httpx.Serve(ctx, manager, "http-server", httpServer, 5*time.Second)
+				require.NoError(t, err)
 
-	baseURL := "http://" + addr
-	client := &http.Client{}
-	require.Eventually(t, func() bool {
-		resp, err := client.Get(baseURL + "/healthz")
-		if err != nil {
-			return false
-		}
-		defer func() { _ = resp.Body.Close() }()
-		return resp.StatusCode == http.StatusOK
-	}, 2*time.Second, 10*time.Millisecond, "server did not start listening in time")
+				baseURL := "http://" + addr
+				client := &http.Client{}
+				require.Eventually(t, func() bool {
+					resp, err := client.Get(baseURL + "/healthz")
+					if err != nil {
+						return false
+					}
+					defer func() { _ = resp.Body.Close() }()
+					return resp.StatusCode == http.StatusOK
+				}, 2*time.Second, 10*time.Millisecond, "server did not start listening in time")
 
-	t.Run("business route resolves the chi-registered handler", func(t *testing.T) {
-		resp, err := client.Get(baseURL + "/greet/modulex")
-		require.NoError(t, err)
-		defer func() { _ = resp.Body.Close() }()
+				t.Run("business route resolves the chi-registered handler", func(t *testing.T) {
+					resp, err := client.Get(baseURL + "/greet/modulex")
+					require.NoError(t, err)
+					defer func() { _ = resp.Body.Close() }()
 
-		var body map[string]string
-		require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
-		assert.Equal(t, http.StatusOK, resp.StatusCode)
-		assert.Equal(t, "hello modulex", body["greeting"])
-	})
+					var body map[string]string
+					require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+					assert.Equal(t, http.StatusOK, resp.StatusCode)
+					assert.Equal(t, "hello modulex", body["greeting"])
+				})
 
-	t.Run("health and readiness checks are exposed over HTTP", func(t *testing.T) {
-		for _, path := range []string{"/healthz", "/readyz"} {
-			resp, err := client.Get(baseURL + path)
-			require.NoError(t, err)
-			_ = resp.Body.Close()
-			assert.Equal(t, http.StatusOK, resp.StatusCode, "GET %s", path)
-		}
-	})
+				t.Run("health and readiness checks are exposed over HTTP", func(t *testing.T) {
+					for _, path := range []string{"/healthz", "/readyz"} {
+						resp, err := client.Get(baseURL + path)
+						require.NoError(t, err)
+						_ = resp.Body.Close()
+						assert.Equal(t, http.StatusOK, resp.StatusCode, "GET %s", path)
+					}
+				})
 
-	t.Run("event published through the registry EventBus reaches the module's subscriber", func(t *testing.T) {
-		require.NoError(t, manager.EventBus().Publish(ctx, "e2e.events", []byte("order-created")))
+				t.Run("event published through the registry EventBus reaches the module's subscriber", func(t *testing.T) {
+					require.NoError(t, manager.EventBus().Publish(ctx, "e2e.events", []byte("order-created")))
 
-		select {
-		case got := <-mod.receivedEvents:
-			assert.Equal(t, "order-created", got)
-		case <-time.After(2 * time.Second):
-			t.Fatal("timed out waiting for published event to reach subscriber")
-		}
-	})
+					select {
+					case got := <-mod.receivedEvents:
+						assert.Equal(t, "order-created", got)
+					case <-time.After(2 * time.Second):
+						t.Fatal("timed out waiting for published event to reach subscriber")
+					}
+				})
 
-	t.Run("supervised background task runs and is awaited on shutdown", func(t *testing.T) {
-		taskRan := make(chan struct{})
-		handle, err := manager.Go(ctx, "e2e-background-task", func(context.Context) error {
-			close(taskRan)
-			return nil
-		})
-		require.NoError(t, err)
+				t.Run("supervised background task runs and is awaited on shutdown", func(t *testing.T) {
+					taskRan := make(chan struct{})
+					handle, err := manager.Go(ctx, "e2e-background-task", func(context.Context) error {
+						close(taskRan)
+						return nil
+					})
+					require.NoError(t, err)
 
-		select {
-		case <-taskRan:
-		case <-time.After(2 * time.Second):
-			t.Fatal("timed out waiting for background task to run")
-		}
-		require.NoError(t, handle.Wait())
-	})
+					select {
+					case <-taskRan:
+					case <-time.After(2 * time.Second):
+						t.Fatal("timed out waiting for background task to run")
+					}
+					require.NoError(t, handle.Wait())
+				})
 
-	// Close the client's pooled connections before shutting down. Since Go
-	// 1.27 the client reuses keep-alive connections more aggressively, which
-	// can leave a spare, never-used connection in its pool; server-side that
-	// connection sits in StateNew, and Server.Shutdown only reaps StateNew
-	// connections after a hardcoded ~5s grace -- longer than Serve's
-	// shutdown window here, so shutdown would flakily time out.
-	client.CloseIdleConnections()
-	require.NoError(t, manager.StopModules(ctx))
-	assert.Equal(t, modulex.StateStopped, manager.State())
+				// Close the client's pooled connections before shutting down. Since Go
+				// 1.27 the client reuses keep-alive connections more aggressively, which
+				// can leave a spare, never-used connection in its pool; server-side that
+				// connection sits in StateNew, and Server.Shutdown only reaps StateNew
+				// connections after a hardcoded ~5s grace -- longer than Serve's
+				// shutdown window here, so shutdown would flakily time out.
+				client.CloseIdleConnections()
+				require.NoError(t, manager.StopModules(ctx))
+				assert.Equal(t, modulex.StateStopped, manager.State())
 
-	// The HTTP server was shut down by StopModules cancelling the supervised
-	// task; a fresh request must fail rather than hang.
-	_, err = client.Get(baseURL + "/healthz")
-	assert.Error(t, err, "server should no longer be listening after StopModules")
+				// The HTTP server was shut down by StopModules cancelling the supervised
+				// task; a fresh request must fail rather than hang.
+				_, err = client.Get(baseURL + "/healthz")
+				assert.Error(t, err, "server should no longer be listening after StopModules")
 
-	spanNames := make(map[string]struct{})
-	for _, s := range sr.Ended() {
-		spanNames[s.Name()] = struct{}{}
+				spanNames := make(map[string]struct{})
+				for _, s := range sr.Ended() {
+					spanNames[s.Name()] = struct{}{}
+				}
+				assert.Contains(t, spanNames, "InitModules")
+				assert.Contains(t, spanNames, fmt.Sprintf("InitModule:%s", mod.Name()))
+				assert.Contains(t, spanNames, "StopModules")
+			},
+		},
 	}
-	assert.Contains(t, spanNames, "InitModules")
-	assert.Contains(t, spanNames, fmt.Sprintf("InitModule:%s", mod.Name()))
-	assert.Contains(t, spanNames, "StopModules")
+
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }

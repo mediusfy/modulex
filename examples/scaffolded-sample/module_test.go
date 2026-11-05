@@ -8,37 +8,58 @@ import (
 	"github.com/mediusfy/modulex/modtest"
 )
 
-// TestModuleLifecycleOrder exercises this generated module against
-// Modulex's official test harness: Init before Stop, in a fresh Manager.
-// See docs/planning/scaffolding-and-test-harness-guide.md.
-func TestModuleLifecycleOrder(t *testing.T) {
-	modtest.AssertLifecycleOrder(t, scaffoldedsample.NewModule())
-}
+// TestModule exercises this generated module against Modulex's official test
+// harness (see docs/planning/scaffolding-and-test-harness-guide.md). Each row
+// gets a fresh module, so rows cannot influence each other. Add a row to cover
+// another harness assertion.
+func TestModule(t *testing.T) {
+	tests := []struct {
+		name   string
+		assert func(t *testing.T, mod *scaffoldedsample.Module)
+	}{
+		{
+			// Init before Stop, in a fresh Manager.
+			name: "lifecycle order",
+			assert: func(t *testing.T, mod *scaffoldedsample.Module) {
+				modtest.AssertLifecycleOrder(t, mod)
+			},
+		},
+		{
+			// Stop runs during rollback when a sibling module's Init fails
+			// after this one succeeded.
+			name: "rollback on init failure",
+			assert: func(t *testing.T, mod *scaffoldedsample.Module) {
+				modtest.AssertRollbackOnInitFailure(t, mod)
+			},
+		},
+		{
+			// The InMemoryRepository Init acquires is released by Stop.
+			// mod.Repository() returns nil until Init runs, which
+			// AssertResourceOwnership accounts for (see its doc comment).
+			name: "resource ownership",
+			assert: func(t *testing.T, mod *scaffoldedsample.Module) {
+				modtest.AssertResourceOwnership(t, mod, func() modtest.ResourceOwner {
+					if mod.Repository() == nil {
+						return nil
+					}
+					return mod.Repository()
+				})
+			},
+		},
+		{
+			// Init returns promptly if its context is cancelled mid-call. Init
+			// does not block today, so this mostly guards against a future
+			// regression that adds blocking work without observing ctx.Done().
+			name: "respects cancellation",
+			assert: func(t *testing.T, mod *scaffoldedsample.Module) {
+				modtest.AssertRespectsCancellation(t, mod, modtest.PhaseInit, 200*time.Millisecond)
+			},
+		},
+	}
 
-// TestModuleRollbackOnInitFailure proves this module's Stop runs during
-// rollback when a sibling module's Init fails after this one succeeded.
-func TestModuleRollbackOnInitFailure(t *testing.T) {
-	modtest.AssertRollbackOnInitFailure(t, scaffoldedsample.NewModule())
-}
-
-// TestModuleResourceOwnership proves the InMemoryRepository this module's
-// Init acquires is released by Stop. mod.Repository() returns nil until
-// Init runs, which AssertResourceOwnership accounts for (see its doc
-// comment).
-func TestModuleResourceOwnership(t *testing.T) {
-	mod := scaffoldedsample.NewModule()
-	modtest.AssertResourceOwnership(t, mod, func() modtest.ResourceOwner {
-		if mod.Repository() == nil {
-			return nil
-		}
-		return mod.Repository()
-	})
-}
-
-// TestModuleRespectsCancellation proves Init returns promptly if its
-// context is cancelled mid-call. This module's Init does not block on
-// anything, so today this mostly guards against a future regression that
-// adds blocking work to Init without also observing ctx.Done().
-func TestModuleRespectsCancellation(t *testing.T) {
-	modtest.AssertRespectsCancellation(t, scaffoldedsample.NewModule(), modtest.PhaseInit, 200*time.Millisecond)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.assert(t, scaffoldedsample.NewModule())
+		})
+	}
 }

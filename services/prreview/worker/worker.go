@@ -30,6 +30,17 @@ import (
 	"github.com/mediusfy/modulex/services/prreview/webhook"
 )
 
+// Structured-log attribute keys.
+const (
+	logKeyError    = "error"
+	logKeyHead     = "head"
+	logKeyJob      = "job"
+	logKeyLease    = "lease"
+	logKeyProvider = "provider"
+	logKeySHA      = "sha"
+	logKeyTokens   = "tokens"
+)
+
 // Worker wires the job pipeline. Every dependency is an interface with an
 // in-memory implementation, so the whole flow is table-testable.
 type Worker struct {
@@ -93,7 +104,7 @@ func (w *Worker) Handle(ctx context.Context, req webhook.ReviewRequest) error {
 		return fmt.Errorf("acquiring lease for %s: %w", key, err)
 	}
 	if action == store.ActionSkip {
-		w.Log.Info("review already running; target advanced", "job", key.String(), "sha", req.HeadSHA)
+		w.Log.Info("review already running; target advanced", logKeyJob, key.String(), logKeySHA, req.HeadSHA)
 		return nil
 	}
 
@@ -111,24 +122,9 @@ func (w *Worker) reviewOnce(ctx context.Context, key store.JobKey, req webhook.R
 		return fmt.Errorf("minting installation token: %w", err)
 	}
 
-	// Re-anchor on GitHub's answer for the PR head: the lease target may
-	// have been set by a stale, reordered, or retried task. Failure to
-	// resolve degrades to the lease target rather than dropping the job.
-	if w.PRs != nil {
-		if head, err := w.PRs.PRHead(ctx, token, req.Owner, req.Repo, req.PRNumber); err != nil {
-			w.Log.Warn("PR head lookup failed; using lease target", "job", key.String(), "error", err)
-		} else if head != reviewedSHA {
-			w.Log.Info("lease target stale; re-anchored on PR head", "job", key.String(), "lease", reviewedSHA, "head", head)
-			reviewedSHA = head
-			if _, err := w.Jobs.Mutate(ctx, key, func(j store.Job) store.Job {
-				if j.LeaseOwner == owner {
-					j.TargetSHA = head
-				}
-				return j
-			}); err != nil {
-				return fmt.Errorf("re-anchoring target for %s: %w", key, err)
-			}
-		}
+	reviewedSHA, err = w.reanchorTarget(ctx, key, req, token, reviewedSHA, owner)
+	if err != nil {
+		return err
 	}
 
 	// Gating checks (secret scan, protected paths — the pure checks the
@@ -153,61 +149,112 @@ func (w *Worker) reviewOnce(ctx context.Context, key store.JobKey, req webhook.R
 		return fmt.Errorf("running engine: %w", err)
 	}
 
-	// Caller-keyed commentary. AI failure degrades to engine-only —
-	// logged, never fatal, so a tenant's model outage cannot drop reviews.
-	var commentary string
-	var tokensUsed int64
-	cfg, err := w.Tenants.AIConfig(ctx, req.InstallationID)
-	if err != nil {
-		w.Log.Warn("tenant config unavailable; engine-only review", "job", key.String(), "error", err)
-	} else if cfg.Enabled() {
-		diff, derr := w.Fetcher.Diff(ctx, dir, engine.BaseRefName, "HEAD")
-		if derr != nil {
-			w.Log.Warn("diff unavailable for commentary", "job", key.String(), "error", derr)
-		}
-		commentary, tokensUsed, err = w.Commentary.Comment(ctx, ai.Config{
-			Provider: cfg.Provider,
-			APIKey:   cfg.APIKey,
-			Model:    cfg.Model,
-			BaseURL:  cfg.BaseURL,
-		}, results, diff)
-		if err != nil {
-			w.Log.Warn("AI commentary failed; engine-only review", "job", key.String(), "provider", cfg.Provider, "error", err)
-			commentary = ""
-		}
+	commentary, tokensUsed := w.aiCommentary(ctx, key, req, dir, results)
+
+	if err := w.postComment(ctx, key, req, token, reviewedSHA, owner, results, commentary); err != nil {
+		return err
 	}
 
-	// Post before completing, but never for a SHA that is no longer the
-	// target and never on a lease this worker no longer holds.
+	return w.complete(ctx, key, req, reviewedSHA, owner, tokensUsed)
+}
+
+// reanchorTarget re-anchors on GitHub's answer for the PR head: the lease
+// target may have been set by a stale, reordered, or retried task. Failure
+// to resolve degrades to the lease target rather than dropping the job. It
+// returns the SHA the review must run against.
+func (w *Worker) reanchorTarget(ctx context.Context, key store.JobKey, req webhook.ReviewRequest, token, reviewedSHA, owner string) (string, error) {
+	if w.PRs == nil {
+		return reviewedSHA, nil
+	}
+	head, err := w.PRs.PRHead(ctx, token, req.Owner, req.Repo, req.PRNumber)
+	if err != nil {
+		w.Log.Warn("PR head lookup failed; using lease target", logKeyJob, key.String(), logKeyError, err)
+		return reviewedSHA, nil
+	}
+	if head == reviewedSHA {
+		return reviewedSHA, nil
+	}
+	w.Log.Info("lease target stale; re-anchored on PR head", logKeyJob, key.String(), logKeyLease, reviewedSHA, logKeyHead, head)
+	if _, err := w.Jobs.Mutate(ctx, key, func(j store.Job) store.Job {
+		if j.LeaseOwner == owner {
+			j.TargetSHA = head
+		}
+		return j
+	}); err != nil {
+		return head, fmt.Errorf("re-anchoring target for %s: %w", key, err)
+	}
+	return head, nil
+}
+
+// aiCommentary produces caller-keyed commentary. AI failure degrades to
+// engine-only — logged, never fatal, so a tenant's model outage cannot drop
+// reviews. It returns the commentary text and the tokens the provider
+// reported.
+func (w *Worker) aiCommentary(ctx context.Context, key store.JobKey, req webhook.ReviewRequest, dir string, results []provenance.VerificationResult) (string, int64) {
+	cfg, err := w.Tenants.AIConfig(ctx, req.InstallationID)
+	if err != nil {
+		w.Log.Warn("tenant config unavailable; engine-only review", logKeyJob, key.String(), logKeyError, err)
+		return "", 0
+	}
+	if !cfg.Enabled() {
+		return "", 0
+	}
+	diff, derr := w.Fetcher.Diff(ctx, dir, engine.BaseRefName, "HEAD")
+	if derr != nil {
+		w.Log.Warn("diff unavailable for commentary", logKeyJob, key.String(), logKeyError, derr)
+	}
+	commentary, tokensUsed, err := w.Commentary.Comment(ctx, ai.Config{
+		Provider: cfg.Provider,
+		APIKey:   cfg.APIKey,
+		Model:    cfg.Model,
+		BaseURL:  cfg.BaseURL,
+	}, results, diff)
+	if err != nil {
+		w.Log.Warn("AI commentary failed; engine-only review", logKeyJob, key.String(), logKeyProvider, cfg.Provider, logKeyError, err)
+		commentary = ""
+	}
+	return commentary, tokensUsed
+}
+
+// postComment posts or updates the single PR comment. It posts before the
+// job is completed, but never for a SHA that is no longer the target and
+// never on a lease this worker no longer holds.
+func (w *Worker) postComment(ctx context.Context, key store.JobKey, req webhook.ReviewRequest, token, reviewedSHA, owner string, results []provenance.VerificationResult, commentary string) error {
 	current, err := w.Jobs.Get(ctx, key)
 	if err != nil {
 		return fmt.Errorf("re-reading job before post: %w", err)
 	}
-	if current.TargetSHA == reviewedSHA && current.LeaseOwner == owner {
-		body := ComposeComment(reviewedSHA, results, commentary)
-		if current.CommentID != 0 {
-			if err := w.Comments.UpdateComment(ctx, token, req.Owner, req.Repo, current.CommentID, body); err != nil {
-				return fmt.Errorf("updating comment: %w", err)
-			}
-		} else {
-			commentID, err := w.Comments.CreateComment(ctx, token, req.Owner, req.Repo, req.PRNumber, body)
-			if err != nil {
-				return fmt.Errorf("creating comment: %w", err)
-			}
-			// Persist the ID immediately and unconditionally (even if the
-			// target advances before completion): losing it would orphan
-			// the comment and break the single-comment invariant.
-			if _, err := w.Jobs.Mutate(ctx, key, func(j store.Job) store.Job {
-				if j.CommentID == 0 {
-					j.CommentID = commentID
-				}
-				return j
-			}); err != nil {
-				return fmt.Errorf("persisting comment id for %s: %w", key, err)
-			}
-		}
+	if current.TargetSHA != reviewedSHA || current.LeaseOwner != owner {
+		return nil
 	}
+	body := ComposeComment(reviewedSHA, results, commentary)
+	if current.CommentID != 0 {
+		if err := w.Comments.UpdateComment(ctx, token, req.Owner, req.Repo, current.CommentID, body); err != nil {
+			return fmt.Errorf("updating comment: %w", err)
+		}
+		return nil
+	}
+	commentID, err := w.Comments.CreateComment(ctx, token, req.Owner, req.Repo, req.PRNumber, body)
+	if err != nil {
+		return fmt.Errorf("creating comment: %w", err)
+	}
+	// Persist the ID immediately and unconditionally (even if the
+	// target advances before completion): losing it would orphan
+	// the comment and break the single-comment invariant.
+	if _, err := w.Jobs.Mutate(ctx, key, func(j store.Job) store.Job {
+		if j.CommentID == 0 {
+			j.CommentID = commentID
+		}
+		return j
+	}); err != nil {
+		return fmt.Errorf("persisting comment id for %s: %w", key, err)
+	}
+	return nil
+}
 
+// complete records the job outcome, meters usage, and enqueues the
+// follow-up review when the target moved during this one.
+func (w *Worker) complete(ctx context.Context, key store.JobKey, req webhook.ReviewRequest, reviewedSHA, owner string, tokensUsed int64) error {
 	var outcome store.CompleteOutcome
 	if _, err := w.Jobs.Mutate(ctx, key, func(j store.Job) store.Job {
 		j2, o := store.CompleteDecision(j, reviewedSHA, tokensUsed, owner)
@@ -219,9 +266,9 @@ func (w *Worker) reviewOnce(ctx context.Context, key store.JobKey, req webhook.R
 
 	if outcome.Post {
 		if err := w.Ledger.Add(ctx, req.InstallationID, 1, tokensUsed); err != nil {
-			w.Log.Warn("ledger update failed", "job", key.String(), "error", err)
+			w.Log.Warn("ledger update failed", logKeyJob, key.String(), logKeyError, err)
 		}
-		w.Log.Info("review posted", "job", key.String(), "sha", reviewedSHA, "tokens", tokensUsed)
+		w.Log.Info("review posted", logKeyJob, key.String(), logKeySHA, reviewedSHA, logKeyTokens, tokensUsed)
 	}
 	if outcome.FollowUp {
 		follow := req
@@ -230,7 +277,7 @@ func (w *Worker) reviewOnce(ctx context.Context, key store.JobKey, req webhook.R
 		if err := w.Queue.Enqueue(ctx, follow); err != nil {
 			return fmt.Errorf("enqueueing follow-up for %s: %w", key, err)
 		}
-		w.Log.Info("target moved during review; follow-up enqueued", "job", key.String(), "sha", outcome.FollowUpSHA)
+		w.Log.Info("target moved during review; follow-up enqueued", logKeyJob, key.String(), logKeySHA, outcome.FollowUpSHA)
 	}
 	return nil
 }
@@ -243,7 +290,7 @@ func (w *Worker) releaseLease(ctx context.Context, key store.JobKey, owner strin
 	if _, err := w.Jobs.Mutate(ctx, key, func(j store.Job) store.Job {
 		return store.ReleaseDecision(j, owner)
 	}); err != nil {
-		w.Log.Warn("lease release failed; TTL will expire it", "job", key.String(), "error", err)
+		w.Log.Warn("lease release failed; TTL will expire it", logKeyJob, key.String(), logKeyError, err)
 	}
 }
 

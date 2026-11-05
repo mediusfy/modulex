@@ -46,85 +46,105 @@ func dialBufconn(t *testing.T, lis *bufconn.Listener, opts ...googlegrpc.DialOpt
 }
 
 func TestServerLifecycleStartCallGracefulStop(t *testing.T) {
-	lis := bufconn.Listen(1024 * 1024)
+	tests := []struct {
+		name string
+	}{
+		{name: "start, call, graceful stop, idempotent stop"},
+	}
 
-	grpcServer := googlegrpc.NewServer()
-	checker := &staticChecker{health: map[string]func(context.Context) error{
-		"ok": func(context.Context) error { return nil },
-	}}
-	healthpb.RegisterHealthServer(grpcServer, grpcadapter.NewHealthServer(checker))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lis := bufconn.Listen(1024 * 1024)
 
-	server, err := grpcadapter.NewServer(grpcServer, lis)
-	require.NoError(t, err)
+			grpcServer := googlegrpc.NewServer()
+			checker := &staticChecker{health: map[string]func(context.Context) error{
+				"ok": func(context.Context) error { return nil },
+			}}
+			healthpb.RegisterHealthServer(grpcServer, grpcadapter.NewHealthServer(checker))
 
-	require.NoError(t, server.Start(context.Background()))
+			server, err := grpcadapter.NewServer(grpcServer, lis)
+			require.NoError(t, err)
 
-	conn := dialBufconn(t, lis)
-	client := healthpb.NewHealthClient(conn)
+			require.NoError(t, server.Start(context.Background()))
 
-	resp, err := client.Check(context.Background(), &healthpb.HealthCheckRequest{})
-	require.NoError(t, err)
-	assert.Equal(t, healthpb.HealthCheckResponse_SERVING, resp.GetStatus())
+			conn := dialBufconn(t, lis)
+			client := healthpb.NewHealthClient(conn)
 
-	require.NoError(t, server.Stop(context.Background()))
+			resp, err := client.Check(context.Background(), &healthpb.HealthCheckRequest{})
+			require.NoError(t, err)
+			assert.Equal(t, healthpb.HealthCheckResponse_SERVING, resp.GetStatus())
 
-	// Stop is idempotent.
-	require.NoError(t, server.Stop(context.Background()))
+			require.NoError(t, server.Stop(context.Background()))
+
+			// Stop is idempotent.
+			require.NoError(t, server.Stop(context.Background()))
+		})
+	}
 }
 
 func TestServerGracefulShutdownWaitsForInFlightCall(t *testing.T) {
-	lis := bufconn.Listen(1024 * 1024)
-
-	release := make(chan struct{})
-	callStarted := make(chan struct{})
-	grpcServer := googlegrpc.NewServer()
-	checker := &staticChecker{health: map[string]func(context.Context) error{
-		"slow": func(context.Context) error {
-			close(callStarted)
-			<-release
-			return nil
-		},
-	}}
-	healthpb.RegisterHealthServer(grpcServer, grpcadapter.NewHealthServer(checker))
-
-	server, err := grpcadapter.NewServer(grpcServer, lis, grpcadapter.WithShutdownTimeout(5*time.Second))
-	require.NoError(t, err)
-	require.NoError(t, server.Start(context.Background()))
-
-	conn := dialBufconn(t, lis)
-	client := healthpb.NewHealthClient(conn)
-
-	var callErr error
-	callDone := make(chan struct{})
-	go func() {
-		defer close(callDone)
-		_, callErr = client.Check(context.Background(), &healthpb.HealthCheckRequest{})
-	}()
-
-	<-callStarted // the slow check is now blocking inside the RPC handler.
-
-	stopDone := make(chan struct{})
-	var stopErr error
-	go func() {
-		defer close(stopDone)
-		stopErr = server.Stop(context.Background())
-	}()
-
-	// Stop must not return while the in-flight call is still blocked: give it
-	// a moment to (incorrectly) return early before we release the call.
-	select {
-	case <-stopDone:
-		t.Fatal("Stop returned before the in-flight RPC completed")
-	case <-time.After(100 * time.Millisecond):
+	tests := []struct {
+		name string
+	}{
+		{name: "stop waits for in-flight call"},
 	}
 
-	close(release)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lis := bufconn.Listen(1024 * 1024)
 
-	<-callDone
-	require.NoError(t, callErr)
+			release := make(chan struct{})
+			callStarted := make(chan struct{})
+			grpcServer := googlegrpc.NewServer()
+			checker := &staticChecker{health: map[string]func(context.Context) error{
+				"slow": func(context.Context) error {
+					close(callStarted)
+					<-release
+					return nil
+				},
+			}}
+			healthpb.RegisterHealthServer(grpcServer, grpcadapter.NewHealthServer(checker))
 
-	<-stopDone
-	require.NoError(t, stopErr)
+			server, err := grpcadapter.NewServer(grpcServer, lis, grpcadapter.WithShutdownTimeout(5*time.Second))
+			require.NoError(t, err)
+			require.NoError(t, server.Start(context.Background()))
+
+			conn := dialBufconn(t, lis)
+			client := healthpb.NewHealthClient(conn)
+
+			var callErr error
+			callDone := make(chan struct{})
+			go func() {
+				defer close(callDone)
+				_, callErr = client.Check(context.Background(), &healthpb.HealthCheckRequest{})
+			}()
+
+			<-callStarted // the slow check is now blocking inside the RPC handler.
+
+			stopDone := make(chan struct{})
+			var stopErr error
+			go func() {
+				defer close(stopDone)
+				stopErr = server.Stop(context.Background())
+			}()
+
+			// Stop must not return while the in-flight call is still blocked: give it
+			// a moment to (incorrectly) return early before we release the call.
+			select {
+			case <-stopDone:
+				t.Fatal("Stop returned before the in-flight RPC completed")
+			case <-time.After(100 * time.Millisecond):
+			}
+
+			close(release)
+
+			<-callDone
+			require.NoError(t, callErr)
+
+			<-stopDone
+			require.NoError(t, stopErr)
+		})
+	}
 }
 
 // TestServerStopForcesShutdownAfterTimeout confirms Stop falls back to a hard
@@ -142,110 +162,155 @@ func TestServerGracefulShutdownWaitsForInFlightCall(t *testing.T) {
 // handler unblocks promptly instead of waiting for the request to finish
 // naturally.
 func TestServerStopForcesShutdownAfterTimeout(t *testing.T) {
-	lis := bufconn.Listen(1024 * 1024)
+	tests := []struct {
+		name string
+	}{
+		{name: "forced stop after shutdown timeout"},
+	}
 
-	callStarted := make(chan struct{})
-	grpcServer := googlegrpc.NewServer()
-	checker := &staticChecker{health: map[string]func(context.Context) error{
-		"blocks-until-canceled": func(ctx context.Context) error {
-			close(callStarted)
-			<-ctx.Done()
-			return ctx.Err()
-		},
-	}}
-	healthpb.RegisterHealthServer(grpcServer, grpcadapter.NewHealthServer(checker))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lis := bufconn.Listen(1024 * 1024)
 
-	server, err := grpcadapter.NewServer(grpcServer, lis, grpcadapter.WithShutdownTimeout(50*time.Millisecond))
-	require.NoError(t, err)
-	require.NoError(t, server.Start(context.Background()))
+			callStarted := make(chan struct{})
+			grpcServer := googlegrpc.NewServer()
+			checker := &staticChecker{health: map[string]func(context.Context) error{
+				"blocks-until-canceled": func(ctx context.Context) error {
+					close(callStarted)
+					<-ctx.Done()
+					return ctx.Err()
+				},
+			}}
+			healthpb.RegisterHealthServer(grpcServer, grpcadapter.NewHealthServer(checker))
 
-	conn := dialBufconn(t, lis)
-	client := healthpb.NewHealthClient(conn)
+			server, err := grpcadapter.NewServer(grpcServer, lis, grpcadapter.WithShutdownTimeout(50*time.Millisecond))
+			require.NoError(t, err)
+			require.NoError(t, server.Start(context.Background()))
 
-	go func() {
-		_, _ = client.Check(context.Background(), &healthpb.HealthCheckRequest{})
-	}()
-	<-callStarted
+			conn := dialBufconn(t, lis)
+			client := healthpb.NewHealthClient(conn)
 
-	start := time.Now()
-	err = server.Stop(context.Background())
-	elapsed := time.Since(start)
+			go func() {
+				_, _ = client.Check(context.Background(), &healthpb.HealthCheckRequest{})
+			}()
+			<-callStarted
 
-	require.Error(t, err)
-	assert.Less(t, elapsed, 2*time.Second, "Stop should have forced shutdown near the configured timeout, not blocked indefinitely")
+			start := time.Now()
+			err = server.Stop(context.Background())
+			elapsed := time.Since(start)
+
+			require.Error(t, err)
+			assert.Less(t, elapsed, 2*time.Second, "Stop should have forced shutdown near the configured timeout, not blocked indefinitely")
+		})
+	}
 }
 
 func TestNewServerRejectsNilArgs(t *testing.T) {
-	lis := bufconn.Listen(1024)
-	defer func() { _ = lis.Close() }()
+	tests := []struct {
+		name string
+	}{
+		{name: "nil server and nil listener rejected"},
+	}
 
-	_, err := grpcadapter.NewServer(nil, lis)
-	require.Error(t, err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lis := bufconn.Listen(1024)
+			defer func() { _ = lis.Close() }()
 
-	_, err = grpcadapter.NewServer(googlegrpc.NewServer(), nil)
-	require.Error(t, err)
+			_, err := grpcadapter.NewServer(nil, lis)
+			require.Error(t, err)
+
+			_, err = grpcadapter.NewServer(googlegrpc.NewServer(), nil)
+			require.Error(t, err)
+		})
+	}
 }
 
-func TestServerStartThenImmediateStop(t *testing.T) {
+// newIdleServer builds a Server on a fresh bufconn listener without starting it.
+func newIdleServer(t *testing.T) (*grpcadapter.Server, *bufconn.Listener) {
+	t.Helper()
 	lis := bufconn.Listen(1024)
-	grpcServer := googlegrpc.NewServer()
-	server, err := grpcadapter.NewServer(grpcServer, lis, grpcadapter.WithShutdownTimeout(time.Second))
+	server, err := grpcadapter.NewServer(googlegrpc.NewServer(), lis, grpcadapter.WithShutdownTimeout(time.Second))
 	require.NoError(t, err)
+	return server, lis
+}
 
-	require.NoError(t, server.Start(context.Background()))
-	require.NoError(t, server.Stop(context.Background()))
+func TestServerStartStopLifecycle(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(t *testing.T, server *grpcadapter.Server)
+	}{
+		{"start then immediate stop", func(t *testing.T, server *grpcadapter.Server) {
+			require.NoError(t, server.Start(context.Background()))
+			require.NoError(t, server.Stop(context.Background()))
+		}},
+		{"second start rejected", func(t *testing.T, server *grpcadapter.Server) {
+			require.NoError(t, server.Start(context.Background()))
+			require.Error(t, server.Start(context.Background()))
+			require.NoError(t, server.Stop(context.Background()))
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server, _ := newIdleServer(t)
+			tt.run(t, server)
+		})
+	}
 }
 
 func TestServerStopBeforeStart(t *testing.T) {
-	lis := bufconn.Listen(1024)
-	grpcServer := googlegrpc.NewServer()
-	server, err := grpcadapter.NewServer(grpcServer, lis, grpcadapter.WithShutdownTimeout(time.Second))
-	require.NoError(t, err)
-
-	// Stop before Start must return promptly and must not deadlock waiting
-	// for a serving goroutine that was never launched.
-	stopDone := make(chan struct{})
-	var stopErr error
-	go func() {
-		defer close(stopDone)
-		stopErr = server.Stop(context.Background())
-	}()
-
-	select {
-	case <-stopDone:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Stop deadlocked when called before Start")
+	tests := []struct {
+		name string
+	}{
+		{name: "stop before start then start rejected"},
 	}
-	require.NoError(t, stopErr)
 
-	// Start after Stop is rejected so the server cannot be left running
-	// after its lifecycle has already been torn down.
-	require.Error(t, server.Start(context.Background()))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server, _ := newIdleServer(t)
+
+			// Stop before Start must return promptly and must not deadlock waiting
+			// for a serving goroutine that was never launched.
+			stopDone := make(chan struct{})
+			var stopErr error
+			go func() {
+				defer close(stopDone)
+				stopErr = server.Stop(context.Background())
+			}()
+
+			select {
+			case <-stopDone:
+			case <-time.After(2 * time.Second):
+				t.Fatal("Stop deadlocked when called before Start")
+			}
+			require.NoError(t, stopErr)
+
+			// Start after Stop is rejected so the server cannot be left running
+			// after its lifecycle has already been torn down.
+			require.Error(t, server.Start(context.Background()))
+		})
+	}
 }
 
 func TestServerStopBeforeStartClosesListener(t *testing.T) {
-	lis := bufconn.Listen(1024)
-	grpcServer := googlegrpc.NewServer()
-	server, err := grpcadapter.NewServer(grpcServer, lis, grpcadapter.WithShutdownTimeout(time.Second))
-	require.NoError(t, err)
+	tests := []struct {
+		name string
+	}{
+		{name: "stop before start closes listener"},
+	}
 
-	require.NoError(t, server.Stop(context.Background()))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server, lis := newIdleServer(t)
 
-	// Stop must close the listener passed to NewServer even when Start was
-	// never called, so a caller that skips Start (e.g. behind a feature
-	// flag) does not leak the bound listener for the rest of the process.
-	_, err = lis.Accept()
-	require.Error(t, err, "listener should be closed after Stop, even without a prior Start")
-}
+			require.NoError(t, server.Stop(context.Background()))
 
-func TestServerStartTwice(t *testing.T) {
-	lis := bufconn.Listen(1024)
-	grpcServer := googlegrpc.NewServer()
-	server, err := grpcadapter.NewServer(grpcServer, lis, grpcadapter.WithShutdownTimeout(time.Second))
-	require.NoError(t, err)
-
-	require.NoError(t, server.Start(context.Background()))
-	require.Error(t, server.Start(context.Background()))
-
-	require.NoError(t, server.Stop(context.Background()))
+			// Stop must close the listener passed to NewServer even when Start was
+			// never called, so a caller that skips Start (e.g. behind a feature
+			// flag) does not leak the bound listener for the rest of the process.
+			_, err := lis.Accept()
+			require.Error(t, err, "listener should be closed after Stop, even without a prior Start")
+		})
+	}
 }

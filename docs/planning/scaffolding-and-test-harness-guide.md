@@ -357,16 +357,22 @@ generated /path/to/modulex/examples/billing:
 
 $ go build ./examples/billing/...
 $ go test ./examples/billing/... -v
-=== RUN   TestModuleLifecycleOrder
---- PASS: TestModuleLifecycleOrder (0.00s)
-=== RUN   TestModuleRollbackOnInitFailure
---- PASS: TestModuleRollbackOnInitFailure (0.00s)
-=== RUN   TestModuleResourceOwnership
---- PASS: TestModuleResourceOwnership (0.00s)
-=== RUN   TestModuleRespectsCancellation
---- PASS: TestModuleRespectsCancellation (0.00s)
+=== RUN   TestModule
+=== RUN   TestModule/lifecycle_order
+=== RUN   TestModule/rollback_on_init_failure
+=== RUN   TestModule/resource_ownership
+=== RUN   TestModule/respects_cancellation
+--- PASS: TestModule (0.00s)
+    --- PASS: TestModule/lifecycle_order (0.00s)
+    --- PASS: TestModule/rollback_on_init_failure (0.00s)
+    --- PASS: TestModule/resource_ownership (0.00s)
+    --- PASS: TestModule/respects_cancellation (0.00s)
 === RUN   TestServiceCreateAndList
+=== RUN   TestServiceCreateAndList/single_item
+=== RUN   TestServiceCreateAndList/multiple_items
 --- PASS: TestServiceCreateAndList (0.00s)
+    --- PASS: TestServiceCreateAndList/single_item (0.00s)
+    --- PASS: TestServiceCreateAndList/multiple_items (0.00s)
 PASS
 ```
 

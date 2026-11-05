@@ -65,89 +65,144 @@ func TestBuildEnvelope_MapsJobResults(t *testing.T) {
 }
 
 func TestBuildEnvelope_SortsJobsByName(t *testing.T) {
-	cfg := baseConfig()
-	cfg.Jobs = []provenanceci.JobResult{
-		{Name: "zeta", Result: "success"},
-		{Name: "alpha", Result: "success"},
-		{Name: "mid", Result: "success"},
+	tests := []struct {
+		name string
+		jobs []provenanceci.JobResult
+		want []string
+	}{
+		{
+			name: "sorted regardless of input order",
+			jobs: []provenanceci.JobResult{
+				{Name: "zeta", Result: "success"},
+				{Name: "alpha", Result: "success"},
+				{Name: "mid", Result: "success"},
+			},
+			want: []string{"alpha", "mid", "zeta"},
+		},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := baseConfig()
+			cfg.Jobs = tt.jobs
 
-	env, err := provenanceci.BuildEnvelope(cfg)
-	if err != nil {
-		t.Fatalf("BuildEnvelope() error = %v", err)
-	}
+			env, err := provenanceci.BuildEnvelope(cfg)
+			if err != nil {
+				t.Fatalf("BuildEnvelope() error = %v", err)
+			}
 
-	var names []string
-	for _, v := range env.Verification {
-		names = append(names, v.Name)
-	}
-	want := []string{"alpha", "mid", "zeta"}
-	if strings.Join(names, ",") != strings.Join(want, ",") {
-		t.Errorf("Verification names = %v, want %v (sorted regardless of input order)", names, want)
+			var names []string
+			for _, v := range env.Verification {
+				names = append(names, v.Name)
+			}
+			if strings.Join(names, ",") != strings.Join(tt.want, ",") {
+				t.Errorf("Verification names = %v, want %v (sorted regardless of input order)", names, tt.want)
+			}
+		})
 	}
 }
 
 func TestBuildEnvelope_RequiresCommit(t *testing.T) {
-	cfg := baseConfig()
-	cfg.Commit = ""
+	tests := []struct {
+		name   string
+		commit string
+	}{
+		{name: "empty commit is rejected", commit: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := baseConfig()
+			cfg.Commit = tt.commit
 
-	if _, err := provenanceci.BuildEnvelope(cfg); err == nil {
-		t.Fatal("BuildEnvelope() error = nil, want an error (Repository.Commit is required)")
+			if _, err := provenanceci.BuildEnvelope(cfg); err == nil {
+				t.Fatal("BuildEnvelope() error = nil, want an error (Repository.Commit is required)")
+			}
+		})
 	}
 }
 
 func TestBuildEnvelope_DefaultsCreatedAt(t *testing.T) {
-	before := time.Now().UTC()
-	env, err := provenanceci.BuildEnvelope(baseConfig())
-	after := time.Now().UTC()
-	if err != nil {
-		t.Fatalf("BuildEnvelope() error = %v", err)
+	tests := []struct {
+		name string
+		cfg  provenanceci.Config
+	}{
+		{name: "unset CreatedAt defaults to now", cfg: baseConfig()},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before := time.Now().UTC()
+			env, err := provenanceci.BuildEnvelope(tt.cfg)
+			after := time.Now().UTC()
+			if err != nil {
+				t.Fatalf("BuildEnvelope() error = %v", err)
+			}
 
-	if env.CreatedAt.Before(before) || env.CreatedAt.After(after) {
-		t.Errorf("CreatedAt = %v, want between %v and %v", env.CreatedAt, before, after)
+			if env.CreatedAt.Before(before) || env.CreatedAt.After(after) {
+				t.Errorf("CreatedAt = %v, want between %v and %v", env.CreatedAt, before, after)
+			}
+		})
 	}
 }
 
 func TestBuildEnvelope_RepositoryStateAndAgentAreRecorded(t *testing.T) {
-	cfg := baseConfig()
-	cfg.Dirty = true
+	tests := []struct {
+		name      string
+		dirty     bool
+		wantAgent string
+	}{
+		{name: "dirty repository with ci agent", dirty: true, wantAgent: "ci"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := baseConfig()
+			cfg.Dirty = tt.dirty
 
-	env, err := provenanceci.BuildEnvelope(cfg)
-	if err != nil {
-		t.Fatalf("BuildEnvelope() error = %v", err)
-	}
+			env, err := provenanceci.BuildEnvelope(cfg)
+			if err != nil {
+				t.Fatalf("BuildEnvelope() error = %v", err)
+			}
 
-	if env.Repository.Commit != cfg.Commit {
-		t.Errorf("Repository.Commit = %q, want %q", env.Repository.Commit, cfg.Commit)
-	}
-	if env.Repository.Branch != cfg.Branch {
-		t.Errorf("Repository.Branch = %q, want %q", env.Repository.Branch, cfg.Branch)
-	}
-	if !env.Repository.Dirty {
-		t.Error("Repository.Dirty = false, want true")
-	}
-	if env.Agent.Name != "ci" {
-		t.Errorf("Agent.Name = %q, want \"ci\"", env.Agent.Name)
+			if env.Repository.Commit != cfg.Commit {
+				t.Errorf("Repository.Commit = %q, want %q", env.Repository.Commit, cfg.Commit)
+			}
+			if env.Repository.Branch != cfg.Branch {
+				t.Errorf("Repository.Branch = %q, want %q", env.Repository.Branch, cfg.Branch)
+			}
+			if env.Repository.Dirty != tt.dirty {
+				t.Errorf("Repository.Dirty = %v, want %v", env.Repository.Dirty, tt.dirty)
+			}
+			if env.Agent.Name != tt.wantAgent {
+				t.Errorf("Agent.Name = %q, want %q", env.Agent.Name, tt.wantAgent)
+			}
+		})
 	}
 }
 
 func TestBuildEnvelope_ProducesValidMarshalableJSON(t *testing.T) {
-	env, err := provenanceci.BuildEnvelope(baseConfig())
-	if err != nil {
-		t.Fatalf("BuildEnvelope() error = %v", err)
+	tests := []struct {
+		name string
+		cfg  provenanceci.Config
+	}{
+		{name: "base config round-trips and validates", cfg: baseConfig()},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env, err := provenanceci.BuildEnvelope(tt.cfg)
+			if err != nil {
+				t.Fatalf("BuildEnvelope() error = %v", err)
+			}
 
-	b, err := json.Marshal(env)
-	if err != nil {
-		t.Fatalf("json.Marshal(env) error = %v", err)
-	}
+			b, err := json.Marshal(env)
+			if err != nil {
+				t.Fatalf("json.Marshal(env) error = %v", err)
+			}
 
-	var roundTripped provenance.Envelope
-	if err := json.Unmarshal(b, &roundTripped); err != nil {
-		t.Fatalf("json.Unmarshal error = %v", err)
-	}
-	if err := roundTripped.Validate(); err != nil {
-		t.Fatalf("round-tripped envelope failed Validate(): %v", err)
+			var roundTripped provenance.Envelope
+			if err := json.Unmarshal(b, &roundTripped); err != nil {
+				t.Fatalf("json.Unmarshal error = %v", err)
+			}
+			if err := roundTripped.Validate(); err != nil {
+				t.Fatalf("round-tripped envelope failed Validate(): %v", err)
+			}
+		})
 	}
 }

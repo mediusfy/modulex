@@ -9,23 +9,43 @@ import (
 )
 
 func TestServiceCreateAndList(t *testing.T) {
-	repo := adapters.NewInMemoryRepository()
-	svc := service.New(repo)
-	ctx := context.Background()
-
-	created, err := svc.CreateScaffoldedSample(ctx, "example")
-	if err != nil {
-		t.Fatalf("CreateScaffoldedSample: %v", err)
-	}
-	if created.Name != "example" {
-		t.Errorf("CreateScaffoldedSample: Name = %q, want %q", created.Name, "example")
+	tests := []struct {
+		name  string
+		names []string
+	}{
+		{name: "single item", names: []string{"example"}},
+		{name: "multiple items", names: []string{"first", "second"}},
 	}
 
-	items, err := svc.ListScaffoldedSamples(ctx)
-	if err != nil {
-		t.Fatalf("ListScaffoldedSamples: %v", err)
-	}
-	if len(items) != 1 || items[0].ID != created.ID {
-		t.Errorf("ListScaffoldedSamples: got %+v, want a single item matching %+v", items, created)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := service.New(adapters.NewInMemoryRepository())
+			ctx := context.Background()
+
+			createdIDs := make(map[string]string, len(tt.names))
+			for _, name := range tt.names {
+				created, err := svc.CreateScaffoldedSample(ctx, name)
+				if err != nil {
+					t.Fatalf("CreateScaffoldedSample(%q): %v", name, err)
+				}
+				if created.Name != name {
+					t.Errorf("CreateScaffoldedSample(%q): Name = %q, want %q", name, created.Name, name)
+				}
+				createdIDs[created.ID] = name
+			}
+
+			items, err := svc.ListScaffoldedSamples(ctx)
+			if err != nil {
+				t.Fatalf("ListScaffoldedSamples: %v", err)
+			}
+			if len(items) != len(tt.names) {
+				t.Fatalf("ListScaffoldedSamples: got %d items (%+v), want %d", len(items), items, len(tt.names))
+			}
+			for _, item := range items {
+				if name, ok := createdIDs[item.ID]; !ok || item.Name != name {
+					t.Errorf("ListScaffoldedSamples: unexpected item %+v, want one of %v", item, createdIDs)
+				}
+			}
+		})
 	}
 }

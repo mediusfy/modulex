@@ -28,39 +28,25 @@ func unhealthyModule(name, checkName string) *fixtureModule {
 	}
 }
 
-func TestAssertHealthCheck_Passes(t *testing.T) {
-	mod := healthyModule("health-ok", "db")
-
-	ft := runFake(func(t TB) { AssertHealthCheck(t, mod, "db", false) })
-	if ft.failed {
-		t.Fatalf("AssertHealthCheck reported a failure for a passing health check: %v", ft.logs)
+func TestAssertHealthCheck(t *testing.T) {
+	tests := []struct {
+		name     string
+		mod      modulex.Module
+		wantErr  bool
+		wantFail bool
+	}{
+		{name: "passing health check", mod: healthyModule("health-ok", "db")},
+		{name: "unhealthy check with wantErr=false is detected", mod: unhealthyModule("health-bad", "db"), wantFail: true},
+		{name: "unhealthy check with wantErr=true matches", mod: unhealthyModule("health-bad-2", "db"), wantErr: true},
+		{name: "unregistered check fails", mod: &fixtureModule{name: "no-check"}, wantFail: true},
 	}
-}
-
-func TestAssertHealthCheck_DetectsUnhealthy(t *testing.T) {
-	mod := unhealthyModule("health-bad", "db")
-
-	ft := runFake(func(t TB) { AssertHealthCheck(t, mod, "db", false) })
-	if !ft.failed {
-		t.Fatalf("AssertHealthCheck did not detect a health check reporting an error when wantErr=false")
-	}
-}
-
-func TestAssertHealthCheck_WantErrTrueMatchesFailure(t *testing.T) {
-	mod := unhealthyModule("health-bad-2", "db")
-
-	ft := runFake(func(t TB) { AssertHealthCheck(t, mod, "db", true) })
-	if ft.failed {
-		t.Fatalf("AssertHealthCheck reported a failure when wantErr=true correctly matched a failing check: %v", ft.logs)
-	}
-}
-
-func TestAssertHealthCheck_MissingCheckFails(t *testing.T) {
-	mod := &fixtureModule{name: "no-check"}
-
-	ft := runFake(func(t TB) { AssertHealthCheck(t, mod, "db", false) })
-	if !ft.failed {
-		t.Fatalf("AssertHealthCheck did not fail when the named health check was never registered")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ft := runFake(func(t TB) { AssertHealthCheck(t, tt.mod, "db", tt.wantErr) })
+			if ft.failed != tt.wantFail {
+				t.Fatalf("AssertHealthCheck failed = %v, want %v: %v", ft.failed, tt.wantFail, ft.logs)
+			}
+		})
 	}
 }
 
@@ -78,20 +64,21 @@ func readinessModule(name, checkName string, ready bool) *fixtureModule {
 	}
 }
 
-func TestAssertReadinessCheck_Passes(t *testing.T) {
-	mod := readinessModule("ready-ok", "cache", true)
-
-	ft := runFake(func(t TB) { AssertReadinessCheck(t, mod, "cache", false) })
-	if ft.failed {
-		t.Fatalf("AssertReadinessCheck reported a failure for a passing readiness check: %v", ft.logs)
+func TestAssertReadinessCheck(t *testing.T) {
+	tests := []struct {
+		name     string
+		mod      modulex.Module
+		wantFail bool
+	}{
+		{name: "passing readiness check", mod: readinessModule("ready-ok", "cache", true)},
+		{name: "not-ready check with wantErr=false is detected", mod: readinessModule("ready-bad", "cache", false), wantFail: true},
 	}
-}
-
-func TestAssertReadinessCheck_DetectsNotReady(t *testing.T) {
-	mod := readinessModule("ready-bad", "cache", false)
-
-	ft := runFake(func(t TB) { AssertReadinessCheck(t, mod, "cache", false) })
-	if !ft.failed {
-		t.Fatalf("AssertReadinessCheck did not detect a readiness check reporting not-ready when wantErr=false")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ft := runFake(func(t TB) { AssertReadinessCheck(t, tt.mod, "cache", false) })
+			if ft.failed != tt.wantFail {
+				t.Fatalf("AssertReadinessCheck failed = %v, want %v: %v", ft.failed, tt.wantFail, ft.logs)
+			}
+		})
 	}
 }

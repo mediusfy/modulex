@@ -64,16 +64,25 @@ func startGRPCNotification(t *testing.T) *adapters.GRPCClient {
 }
 
 func TestGRPCClientServerRoundTrip(t *testing.T) {
-	client := startGRPCNotification(t)
+	tests := []struct {
+		name    string
+		message string
+		wantErr error
+	}{
+		{name: "send", message: "hello over grpc"},
+		{name: "empty message maps to invalid input", message: "", wantErr: modulexgrpc.ErrInvalidInput},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := startGRPCNotification(t)
 
-	err := client.Send(context.Background(), "hello over grpc")
-	assert.NoError(t, err)
-}
-
-func TestGRPCClientServerRoundTripEmptyMessageMapsToInvalidInput(t *testing.T) {
-	client := startGRPCNotification(t)
-
-	err := client.Send(context.Background(), "")
-	require.Error(t, err)
-	assert.ErrorIs(t, err, modulexgrpc.ErrInvalidInput)
+			err := client.Send(context.Background(), tt.message)
+			if tt.wantErr != nil {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, tt.wantErr)
+				return
+			}
+			assert.NoError(t, err)
+		})
+	}
 }

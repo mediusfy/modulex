@@ -81,19 +81,16 @@ func AssertResourceOwnership(t TB, mod modulex.Module, owner func() ResourceOwne
 	if o == nil {
 		t.Fatalf("modtest: owner() returned nil after Init; module %q must have acquired its resource by the time Init returns", mod.Name())
 	}
-	if o.Closed() {
-		t.Errorf("modtest: resource owner for module %q reports Closed() == true immediately after Init; the resource must remain open while the module is running", mod.Name())
-	}
+	assertOwnerOpen(t, mod, o, "Init")
 
 	if s, ok := mod.(modulex.Starter); ok {
 		if err := s.Start(context.Background()); err != nil {
 			t.Fatalf("modtest: Start: %v", err)
 		}
-		o := owner()
-		if o == nil {
+		if o := owner(); o == nil {
 			t.Errorf("modtest: owner() returned nil after Start; module %q must still own its resource while running", mod.Name())
-		} else if o.Closed() {
-			t.Errorf("modtest: resource owner for module %q reports Closed() == true immediately after Start; the resource must remain open while the module is running", mod.Name())
+		} else {
+			assertOwnerOpen(t, mod, o, "Start")
 		}
 	}
 
@@ -107,5 +104,15 @@ func AssertResourceOwnership(t TB, mod modulex.Module, owner func() ResourceOwne
 
 	if o := owner(); o == nil || !o.Closed() {
 		t.Errorf("modtest: resource owner for module %q reports Closed() == false (or was nil) after Stop returned; the resource was not released", mod.Name())
+	}
+}
+
+// assertOwnerOpen reports a test error if o already reports Closed() ==
+// true right after the named lifecycle phase.
+func assertOwnerOpen(t TB, mod modulex.Module, o ResourceOwner, phase string) {
+	t.Helper()
+
+	if o.Closed() {
+		t.Errorf("modtest: resource owner for module %q reports Closed() == true immediately after %s; the resource must remain open while the module is running", mod.Name(), phase)
 	}
 }

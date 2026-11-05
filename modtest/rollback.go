@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/mediusfy/modulex"
+	"github.com/mediusfy/modulex/apperrors"
 )
 
 // errInducedFailure is wrapped by the errors NewFailingModule returns by
@@ -12,7 +13,7 @@ import (
 // confirm (via errors.Is) that the failure they observed is the one they
 // induced, rather than some unrelated error the module under test happened
 // to also raise.
-var errInducedFailure = errors.New("modtest: induced failure")
+const errInducedFailure apperrors.Error = "modtest: induced failure"
 
 // failingModule is a minimal modulex.Module that deliberately fails Init or
 // Start, used to force InitModules/StartModules rollback so

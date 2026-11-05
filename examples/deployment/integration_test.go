@@ -23,108 +23,131 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestMonolithComposition(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	router := gochi.NewRouter()
+// TestComposition wires the notification and consumer modules the way each
+// deployment example's main.go does, and exercises the result. Each row builds
+// its own managers, so rows are independent.
+func TestComposition(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "monolith",
+			run: func(t *testing.T) {
+				logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+				router := gochi.NewRouter()
 
-	mgr, err := modulex.NewManager(modulex.WithLogger(logger))
-	require.NoError(t, err)
-	require.NoError(t, modulexchi.RegisterRouter(mgr, router))
-	require.NoError(t, mgr.RegisterModule(notification.NewModule()))
-	require.NoError(t, mgr.RegisterModule(consumer.NewModule()))
+				mgr, err := modulex.NewManager(modulex.WithLogger(logger))
+				require.NoError(t, err)
+				require.NoError(t, modulexchi.RegisterRouter(mgr, router))
+				require.NoError(t, mgr.RegisterModule(notification.NewModule()))
+				require.NoError(t, mgr.RegisterModule(consumer.NewModule()))
 
-	ctx := context.Background()
-	require.NoError(t, mgr.InitModules(ctx))
-	require.NoError(t, mgr.StartModules(ctx))
-	t.Cleanup(func() { _ = mgr.StopModules(context.Background()) })
+				ctx := context.Background()
+				require.NoError(t, mgr.InitModules(ctx))
+				require.NoError(t, mgr.StartModules(ctx))
+				t.Cleanup(func() { _ = mgr.StopModules(context.Background()) })
 
-	// Exercise the mounted HTTP endpoint directly.
-	body, err := json.Marshal(adapters.SendRequest{Message: "monolith"})
-	require.NoError(t, err)
+				// Exercise the mounted HTTP endpoint directly.
+				body, err := json.Marshal(adapters.SendRequest{Message: "monolith"})
+				require.NoError(t, err)
 
-	req := httptest.NewRequest(http.MethodPost, "/notify", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
+				req := httptest.NewRequest(http.MethodPost, "/notify", bytes.NewReader(body))
+				req.Header.Set("Content-Type", "application/json")
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
 
-	assert.Equal(t, http.StatusAccepted, rec.Code)
-	assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
-}
+				assert.Equal(t, http.StatusAccepted, rec.Code)
+				assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+			},
+		},
+		{
+			name: "remote http",
+			run: func(t *testing.T) {
+				logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-func TestRemoteComposition(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+				// Standalone notification service with a recorder to verify the remote call.
+				recorder := &sendRecorder{svc: service.New(logger)}
+				server := adapters.NewHTTPServer(recorder, logger)
+				mux := http.NewServeMux()
+				mux.HandleFunc("/notify", server.SendHandler())
+				ts := httptest.NewServer(mux)
+				defer ts.Close()
 
-	// Standalone notification service with a recorder to verify the remote call.
-	recorder := &sendRecorder{svc: service.New(logger)}
-	server := adapters.NewHTTPServer(recorder, logger)
-	mux := http.NewServeMux()
-	mux.HandleFunc("/notify", server.SendHandler())
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
+				// Consumer process with a remote notification module that proxies to the
+				// standalone service over HTTP.
+				mgr, err := modulex.NewManager(modulex.WithLogger(logger))
+				require.NoError(t, err)
+				remoteMod, err := notification.NewRemoteModule(ts.URL, nil)
+				require.NoError(t, err)
+				require.NoError(t, mgr.RegisterModule(remoteMod))
+				require.NoError(t, mgr.RegisterModule(consumer.NewModule()))
 
-	// Consumer process with a remote notification module that proxies to the
-	// standalone service over HTTP.
-	mgr, err := modulex.NewManager(modulex.WithLogger(logger))
-	require.NoError(t, err)
-	remoteMod, err := notification.NewRemoteModule(ts.URL, nil)
-	require.NoError(t, err)
-	require.NoError(t, mgr.RegisterModule(remoteMod))
-	require.NoError(t, mgr.RegisterModule(consumer.NewModule()))
+				ctx := context.Background()
+				require.NoError(t, mgr.InitModules(ctx))
+				require.NoError(t, mgr.StartModules(ctx))
+				require.NoError(t, mgr.StopModules(ctx))
 
-	ctx := context.Background()
-	require.NoError(t, mgr.InitModules(ctx))
-	require.NoError(t, mgr.StartModules(ctx))
-	require.NoError(t, mgr.StopModules(ctx))
+				assert.True(t, recorder.called, "remote notification service should have been called")
+				assert.Equal(t, "hello from consumer", recorder.lastMessage)
+			},
+		},
+		{
+			name: "remote grpc",
+			run: func(t *testing.T) {
+				logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	assert.True(t, recorder.called, "remote notification service should have been called")
-	assert.Equal(t, "hello from consumer", recorder.lastMessage)
-}
+				// Standalone notification service, served over gRPC on an ephemeral port,
+				// exactly as examples/deployment/remote/notification-grpc-server/main.go
+				// does.
+				serverMgr, err := modulex.NewManager(modulex.WithLogger(logger))
+				require.NoError(t, err)
+				serverMod := notification.NewGRPCServerModule("127.0.0.1:0")
+				require.NoError(t, serverMgr.RegisterModule(notification.NewModule()))
+				require.NoError(t, serverMgr.RegisterModule(serverMod))
 
-func TestRemoteGRPCComposition(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+				ctx := context.Background()
+				require.NoError(t, serverMgr.InitModules(ctx))
+				require.NoError(t, serverMgr.StartModules(ctx))
+				t.Cleanup(func() { _ = serverMgr.StopModules(context.Background()) })
 
-	// Standalone notification service, served over gRPC on an ephemeral port,
-	// exactly as examples/deployment/remote/notification-grpc-server/main.go
-	// does.
-	serverMgr, err := modulex.NewManager(modulex.WithLogger(logger))
-	require.NoError(t, err)
-	serverMod := notification.NewGRPCServerModule("127.0.0.1:0")
-	require.NoError(t, serverMgr.RegisterModule(notification.NewModule()))
-	require.NoError(t, serverMgr.RegisterModule(serverMod))
+				// Consumer process with a remote notification module that proxies to the
+				// standalone service over gRPC, exactly as
+				// examples/deployment/remote/grpc-consumer/main.go does.
+				consumerMgr, err := modulex.NewManager(modulex.WithLogger(logger))
+				require.NoError(t, err)
+				remoteMod, err := notification.NewGRPCRemoteModule(serverMod.Addr().String())
+				require.NoError(t, err)
+				require.NoError(t, consumerMgr.RegisterModule(remoteMod))
+				require.NoError(t, consumerMgr.RegisterModule(consumer.NewModule()))
 
-	ctx := context.Background()
-	require.NoError(t, serverMgr.InitModules(ctx))
-	require.NoError(t, serverMgr.StartModules(ctx))
-	t.Cleanup(func() { _ = serverMgr.StopModules(context.Background()) })
+				require.NoError(t, consumerMgr.InitModules(ctx))
+				require.NoError(t, consumerMgr.StartModules(ctx))
+				require.NoError(t, consumerMgr.StopModules(ctx))
+			},
+		},
+		{
+			name: "notification module without router",
+			run: func(t *testing.T) {
+				logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	// Consumer process with a remote notification module that proxies to the
-	// standalone service over gRPC, exactly as
-	// examples/deployment/remote/grpc-consumer/main.go does.
-	consumerMgr, err := modulex.NewManager(modulex.WithLogger(logger))
-	require.NoError(t, err)
-	remoteMod, err := notification.NewGRPCRemoteModule(serverMod.Addr().String())
-	require.NoError(t, err)
-	require.NoError(t, consumerMgr.RegisterModule(remoteMod))
-	require.NoError(t, consumerMgr.RegisterModule(consumer.NewModule()))
+				mgr, err := modulex.NewManager(modulex.WithLogger(logger))
+				require.NoError(t, err)
+				require.NoError(t, mgr.RegisterModule(notification.NewModule()))
 
-	require.NoError(t, consumerMgr.InitModules(ctx))
-	require.NoError(t, consumerMgr.StartModules(ctx))
-	require.NoError(t, consumerMgr.StopModules(ctx))
-}
+				ctx := context.Background()
+				require.NoError(t, mgr.InitModules(ctx))
 
-func TestNotificationModuleWithoutRouter(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+				svc, err := modulex.Resolve(mgr, ports.ServiceKey)
+				require.NoError(t, err)
+				assert.NoError(t, svc.Send(ctx, "no-router"))
+			},
+		},
+	}
 
-	mgr, err := modulex.NewManager(modulex.WithLogger(logger))
-	require.NoError(t, err)
-	require.NoError(t, mgr.RegisterModule(notification.NewModule()))
-
-	ctx := context.Background()
-	require.NoError(t, mgr.InitModules(ctx))
-
-	svc, err := modulex.Resolve(mgr, ports.ServiceKey)
-	require.NoError(t, err)
-	assert.NoError(t, svc.Send(ctx, "no-router"))
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 type sendRecorder struct {

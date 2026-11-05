@@ -126,58 +126,65 @@ func NewProviderFromEnv(serviceName string, opts ...ProviderOption) (*sdktrace.T
 }
 
 func newExporter(cfg providerConfig) (sdktrace.SpanExporter, error) {
-	ctx := context.Background()
 	endpoint, path, isHTTP := sanitizeEndpoint(cfg.endpoint)
-
-	// Determine insecure status:
-	// 1. Explicit config choice (WithInsecure option or OTEL_EXPORTER_OTLP_INSECURE)
-	// 2. OR scheme was explicitly "http://"
-	// 3. Default to insecure for standard localhost/127.0.0.1 loopback testing endpoints if unspecified
-	isInsecure := false
-	if cfg.insecure != nil {
-		isInsecure = *cfg.insecure
-	} else if isHTTP || isLoopbackHost(endpoint) {
-		isInsecure = true
-	}
+	insecure := resolveInsecure(cfg, endpoint, isHTTP)
 
 	switch strings.ToLower(cfg.protocol) {
 	case "none":
 		return nil, nil
-
 	case "http", "http/protobuf":
-		httpOpts := []otlptracehttp.Option{}
-		if endpoint != "" {
-			httpOpts = append(httpOpts, otlptracehttp.WithEndpoint(endpoint))
-		}
-		if path != "" {
-			httpOpts = append(httpOpts, otlptracehttp.WithURLPath(path))
-		}
-		if isInsecure {
-			httpOpts = append(httpOpts, otlptracehttp.WithInsecure())
-		}
-		exporter, err := otlptracehttp.New(ctx, httpOpts...)
-		if err != nil {
-			return nil, fmt.Errorf("otel: failed to build OTLP HTTP exporter: %w", err)
-		}
-		return exporter, nil
-
+		return newHTTPExporter(endpoint, path, insecure)
 	case "grpc", "":
-		grpcOpts := []otlptracegrpc.Option{}
-		if endpoint != "" {
-			grpcOpts = append(grpcOpts, otlptracegrpc.WithEndpoint(endpoint))
-		}
-		if isInsecure {
-			grpcOpts = append(grpcOpts, otlptracegrpc.WithInsecure())
-		}
-		exporter, err := otlptracegrpc.New(ctx, grpcOpts...)
-		if err != nil {
-			return nil, fmt.Errorf("otel: failed to build OTLP gRPC exporter: %w", err)
-		}
-		return exporter, nil
-
+		return newGRPCExporter(endpoint, insecure)
 	default:
 		return nil, fmt.Errorf("otel: unsupported OTLP exporter protocol %q", cfg.protocol)
 	}
+}
+
+// resolveInsecure determines whether the exporter should use an insecure
+// transport:
+//  1. Explicit config choice (WithInsecure option or OTEL_EXPORTER_OTLP_INSECURE)
+//  2. OR scheme was explicitly "http://"
+//  3. Default to insecure for standard localhost/127.0.0.1 loopback testing
+//     endpoints if unspecified
+func resolveInsecure(cfg providerConfig, endpoint string, isHTTP bool) bool {
+	if cfg.insecure != nil {
+		return *cfg.insecure
+	}
+	return isHTTP || isLoopbackHost(endpoint)
+}
+
+func newHTTPExporter(endpoint, path string, insecure bool) (sdktrace.SpanExporter, error) {
+	httpOpts := []otlptracehttp.Option{}
+	if endpoint != "" {
+		httpOpts = append(httpOpts, otlptracehttp.WithEndpoint(endpoint))
+	}
+	if path != "" {
+		httpOpts = append(httpOpts, otlptracehttp.WithURLPath(path))
+	}
+	if insecure {
+		httpOpts = append(httpOpts, otlptracehttp.WithInsecure())
+	}
+	exporter, err := otlptracehttp.New(context.Background(), httpOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("otel: failed to build OTLP HTTP exporter: %w", err)
+	}
+	return exporter, nil
+}
+
+func newGRPCExporter(endpoint string, insecure bool) (sdktrace.SpanExporter, error) {
+	grpcOpts := []otlptracegrpc.Option{}
+	if endpoint != "" {
+		grpcOpts = append(grpcOpts, otlptracegrpc.WithEndpoint(endpoint))
+	}
+	if insecure {
+		grpcOpts = append(grpcOpts, otlptracegrpc.WithInsecure())
+	}
+	exporter, err := otlptracegrpc.New(context.Background(), grpcOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("otel: failed to build OTLP gRPC exporter: %w", err)
+	}
+	return exporter, nil
 }
 
 // sanitizeEndpoint splits a configured OTLP endpoint into the bare

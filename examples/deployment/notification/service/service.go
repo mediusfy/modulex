@@ -3,9 +3,13 @@ package service
 
 import (
 	"context"
-	"errors"
 	"log/slog"
+
+	"github.com/mediusfy/modulex/apperrors"
 )
+
+// logKeyMessage is the slog attribute key for the notification message.
+const logKeyMessage = "message"
 
 // NotificationService implements ports.Sender with in-process delivery.
 type NotificationService struct {
@@ -13,7 +17,7 @@ type NotificationService struct {
 }
 
 // ErrEmptyMessage is returned when a notification request contains no message.
-var ErrEmptyMessage = errors.New("message must not be empty")
+const ErrEmptyMessage apperrors.Error = "message must not be empty"
 
 // New creates a NotificationService.
 func New(logger *slog.Logger) *NotificationService {
@@ -28,6 +32,6 @@ func (s *NotificationService) Send(ctx context.Context, message string) error {
 	if message == "" {
 		return ErrEmptyMessage
 	}
-	s.logger.Info("notification sent", slog.String("message", message))
+	s.logger.Info("notification sent", slog.String(logKeyMessage, message))
 	return nil
 }

@@ -75,30 +75,43 @@ func TestNewProviderFromEnv(t *testing.T) {
 }
 
 func TestNewProviderFromEnv_ResourceAndSampling(t *testing.T) {
-	sr := tracetest.NewSpanRecorder()
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "scenario",
+			run: func(t *testing.T) {
+				sr := tracetest.NewSpanRecorder()
 
-	tp, shutdown, err := modulexotel.NewProviderFromEnv("resource-test-service",
-		modulexotel.WithExporterProtocol("none"),
-		modulexotel.WithSpanProcessor(sr),
-		modulexotel.WithResourceAttributes(),
-	)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = shutdown(context.Background()) })
+				tp, shutdown, err := modulexotel.NewProviderFromEnv("resource-test-service",
+					modulexotel.WithExporterProtocol("none"),
+					modulexotel.WithSpanProcessor(sr),
+					modulexotel.WithResourceAttributes(),
+				)
+				require.NoError(t, err)
+				t.Cleanup(func() { _ = shutdown(context.Background()) })
 
-	_, span := tp.Tracer("test").Start(context.Background(), "resource-check")
-	span.End()
+				_, span := tp.Tracer("test").Start(context.Background(), "resource-check")
+				span.End()
 
-	spans := sr.Ended()
-	require.Len(t, spans, 1)
+				spans := sr.Ended()
+				require.Len(t, spans, 1)
 
-	found := false
-	for _, attr := range spans[0].Resource().Attributes() {
-		if string(attr.Key) == "service.name" {
-			assert.Equal(t, "resource-test-service", attr.Value.AsString())
-			found = true
-		}
+				found := false
+				for _, attr := range spans[0].Resource().Attributes() {
+					if string(attr.Key) == "service.name" {
+						assert.Equal(t, "resource-test-service", attr.Value.AsString())
+						found = true
+					}
+				}
+				assert.True(t, found, "expected service.name resource attribute")
+			},
+		},
 	}
-	assert.True(t, found, "expected service.name resource attribute")
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestNewProviderFromEnv_SampleRatio(t *testing.T) {
@@ -129,11 +142,24 @@ func TestNewProviderFromEnv_SampleRatio(t *testing.T) {
 }
 
 func TestNewProviderFromEnv_UsesEnvironmentDefaults(t *testing.T) {
-	t.Setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "none")
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "scenario",
+			run: func(t *testing.T) {
+				t.Setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "none")
 
-	tp, shutdown, err := modulexotel.NewProviderFromEnv("env-default-service")
-	require.NoError(t, err)
-	require.NotNil(t, tp)
-	require.NotNil(t, shutdown)
-	_ = shutdown(context.Background())
+				tp, shutdown, err := modulexotel.NewProviderFromEnv("env-default-service")
+				require.NoError(t, err)
+				require.NotNil(t, tp)
+				require.NotNil(t, shutdown)
+				_ = shutdown(context.Background())
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
