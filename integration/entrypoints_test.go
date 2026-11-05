@@ -247,7 +247,7 @@ func grpcServerSetup(t *testing.T) launch {
 const (
 	prreviewStream    = "PRREVIEW_REVIEWS"
 	prreviewConsumer  = "prreview-worker"
-	webhookSecret     = "smoke-webhook-secret"
+	webhookSecret     = "smoke-webhook-secret" // nosecret: smoke-test fixture
 	lazyPostgresDSN   = "postgres://smoke:smoke@127.0.0.1:1/smoke?sslmode=disable"
 	missingEnvMessage = "missing required environment variable"
 )
