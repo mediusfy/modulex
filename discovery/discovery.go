@@ -327,25 +327,9 @@ func walkForModules(root, dir string, mods *[]GoModule) error {
 // unlike discoverModules) containing a Go file with a package-level func
 // main().
 func discoverCompositionRoots(root string) ([]CompositionRoot, error) {
-	out := make([]CompositionRoot, 0)
-	seen := make(map[string]bool)
-
-	examplesDir := filepath.Join(root, "examples")
-	if info, err := os.Stat(examplesDir); err == nil && info.IsDir() {
-		entries, err := os.ReadDir(examplesDir)
-		if err != nil {
-			return nil, fmt.Errorf("reading %s: %w", examplesDir, err)
-		}
-		for _, e := range entries {
-			if !e.IsDir() {
-				continue
-			}
-			rel := filepath.ToSlash(filepath.Join("examples", e.Name()))
-			out = append(out, CompositionRoot{Path: rel, Reason: "direct child directory of examples/"})
-			seen[rel] = true
-		}
-	} else if err != nil && !os.IsNotExist(err) {
-		return nil, fmt.Errorf("stat %s: %w", examplesDir, err)
+	out, seen, err := examplesCompositionRoots(root)
+	if err != nil {
+		return nil, err
 	}
 
 	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -358,27 +342,9 @@ func discoverCompositionRoots(root string) ([]CompositionRoot, error) {
 		if path != root && shouldSkipDir(d.Name()) {
 			return filepath.SkipDir
 		}
-
-		hasMain, err := dirHasMainFunc(path)
-		if err != nil {
-			// Best-effort: an unparsable directory is not fatal to
-			// discovery as a whole.
-			return nil
+		if cr, ok := mainCompositionRoot(root, path, seen); ok {
+			out = append(out, cr)
 		}
-		if !hasMain {
-			return nil
-		}
-
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return nil
-		}
-		rel = filepath.ToSlash(rel)
-		if seen[rel] {
-			return nil
-		}
-		seen[rel] = true
-		out = append(out, CompositionRoot{Path: rel, Reason: "contains a func main() declaration"})
 		return nil
 	})
 	if walkErr != nil {
@@ -387,6 +353,61 @@ func discoverCompositionRoots(root string) ([]CompositionRoot, error) {
 
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out, nil
+}
+
+// examplesCompositionRoots returns every direct child directory of
+// root/examples (if any) as a composition root, together with the set of
+// their relative paths.
+func examplesCompositionRoots(root string) ([]CompositionRoot, map[string]bool, error) {
+	out := make([]CompositionRoot, 0)
+	seen := make(map[string]bool)
+
+	examplesDir := filepath.Join(root, "examples")
+	info, err := os.Stat(examplesDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return out, seen, nil
+		}
+		return nil, nil, fmt.Errorf("stat %s: %w", examplesDir, err)
+	}
+	if !info.IsDir() {
+		return out, seen, nil
+	}
+
+	entries, err := os.ReadDir(examplesDir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("reading %s: %w", examplesDir, err)
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		rel := filepath.ToSlash(filepath.Join("examples", e.Name()))
+		out = append(out, CompositionRoot{Path: rel, Reason: "direct child directory of examples/"})
+		seen[rel] = true
+	}
+	return out, seen, nil
+}
+
+// mainCompositionRoot reports whether dir directly contains a package-level
+// func main() and has not been recorded in seen yet; if so it records it and
+// returns the composition root. Unparsable directories are best-effort
+// skipped rather than failing discovery as a whole.
+func mainCompositionRoot(root, dir string, seen map[string]bool) (CompositionRoot, bool) {
+	hasMain, err := dirHasMainFunc(dir)
+	if err != nil || !hasMain {
+		return CompositionRoot{}, false
+	}
+	rel, err := filepath.Rel(root, dir)
+	if err != nil {
+		return CompositionRoot{}, false
+	}
+	rel = filepath.ToSlash(rel)
+	if seen[rel] {
+		return CompositionRoot{}, false
+	}
+	seen[rel] = true
+	return CompositionRoot{Path: rel, Reason: "contains a func main() declaration"}, true
 }
 
 // dirHasMainFunc reports whether dir directly contains a .go file

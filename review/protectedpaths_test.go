@@ -65,10 +65,21 @@ func TestChangedFiles(t *testing.T) {
 }
 
 func TestChangedFiles_BadRefReturnsError(t *testing.T) {
-	root := newTestRepo(t)
+	tests := []struct {
+		name    string
+		baseRef string
+	}{
+		{name: "nonexistent ref", baseRef: "this-ref-does-not-exist"},
+	}
 
-	if _, err := ChangedFiles(context.Background(), root, "this-ref-does-not-exist", "HEAD"); err == nil {
-		t.Fatal("ChangedFiles() error = nil, want an error for a nonexistent ref")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := newTestRepo(t)
+
+			if _, err := ChangedFiles(context.Background(), root, tt.baseRef, "HEAD"); err == nil {
+				t.Fatal("ChangedFiles() error = nil, want an error for a nonexistent ref")
+			}
+		})
 	}
 }
 
@@ -275,15 +286,27 @@ func TestCheckProtectedPaths_SingleFileScenarios(t *testing.T) {
 }
 
 func TestCheckProtectedPaths_BadRefReturnsUnavailable(t *testing.T) {
-	root := newTestRepo(t)
-
-	result := CheckProtectedPaths(context.Background(), root, "this-ref-does-not-exist", "HEAD", []string{"go.mod"})
-
-	if result.Status != "unavailable" {
-		t.Fatalf("Status = %q, want unavailable", result.Status)
+	tests := []struct {
+		name      string
+		baseRef   string
+		protected []string
+	}{
+		{name: "nonexistent ref", baseRef: "this-ref-does-not-exist", protected: []string{"go.mod"}},
 	}
-	if result.Reason == "" {
-		t.Error("Reason is empty, want an explanation naming the failed diff computation")
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := newTestRepo(t)
+
+			result := CheckProtectedPaths(context.Background(), root, tt.baseRef, "HEAD", tt.protected)
+
+			if result.Status != "unavailable" {
+				t.Fatalf("Status = %q, want unavailable", result.Status)
+			}
+			if result.Reason == "" {
+				t.Error("Reason is empty, want an explanation naming the failed diff computation")
+			}
+		})
 	}
 }
 
@@ -292,15 +315,33 @@ func TestCheckProtectedPaths_BadRefReturnsUnavailable(t *testing.T) {
 // broken contract can coincide, and the unavailable Reason has to surface
 // both.
 func TestCheckProtectedPaths_BadRefStillReportsInvalidGlob(t *testing.T) {
-	root := newTestRepo(t)
-
-	result := CheckProtectedPaths(context.Background(), root, "this-ref-does-not-exist", "HEAD", []string{"go.mod["})
-
-	if result.Status != "unavailable" {
-		t.Fatalf("Status = %q, want unavailable", result.Status)
+	tests := []struct {
+		name      string
+		baseRef   string
+		protected []string
+		wantInMsg string
+	}{
+		{
+			name:      "nonexistent ref with malformed glob",
+			baseRef:   "this-ref-does-not-exist",
+			protected: []string{"go.mod["},
+			wantInMsg: `"go.mod["`,
+		},
 	}
-	if !strings.Contains(result.Reason, `"go.mod["`) {
-		t.Errorf("Reason = %q, want it to name the invalid glob pattern alongside the diff failure", result.Reason)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := newTestRepo(t)
+
+			result := CheckProtectedPaths(context.Background(), root, tt.baseRef, "HEAD", tt.protected)
+
+			if result.Status != "unavailable" {
+				t.Fatalf("Status = %q, want unavailable", result.Status)
+			}
+			if !strings.Contains(result.Reason, tt.wantInMsg) {
+				t.Errorf("Reason = %q, want it to name the invalid glob pattern alongside the diff failure", result.Reason)
+			}
+		})
 	}
 }
 
@@ -358,90 +399,129 @@ func TestMatchProtectedPath(t *testing.T) {
 // modulex.agent.yaml cannot disarm the very check meant to catch that
 // change.
 func TestLoadProtectedPathsAtRef_H2Regression(t *testing.T) {
-	root := newTestRepo(t)
-
-	writeFile(t, root, "modulex.agent.yaml", "protected_paths:\n  - SECURITY.md\n")
-	runGit(t, root, "add", "modulex.agent.yaml")
-	runGit(t, root, "commit", "--quiet", "-m", "declare SECURITY.md as protected")
-	runGit(t, root, "branch", "base")
-
-	// The working tree (and HEAD) now removes SECURITY.md from
-	// protected_paths entirely.
-	writeFile(t, root, "modulex.agent.yaml", "protected_paths: []\n")
-	runGit(t, root, "commit", "--quiet", "-am", "defang the contract")
-
-	got, err := LoadProtectedPathsAtRef(context.Background(), root, "base")
-	if err != nil {
-		t.Fatalf("LoadProtectedPathsAtRef() error = %v", err)
-	}
-	if !containsPath(got, "SECURITY.md") {
-		t.Fatalf("LoadProtectedPathsAtRef(base) = %v, want it to still include SECURITY.md (baseRef predates the defanging commit)", got)
+	tests := []struct {
+		name          string
+		protectedPath string
+		baseContract  string
+		headContract  string
+	}{
+		{
+			name:          "defanging commit does not disarm the base-ref contract",
+			protectedPath: "SECURITY.md",
+			baseContract:  "protected_paths:\n  - SECURITY.md\n",
+			headContract:  "protected_paths: []\n",
+		},
 	}
 
-	// Loading at HEAD (the defanged state) must reflect that state, proving
-	// this isn't just always returning a fixed answer.
-	gotHead, err := LoadProtectedPathsAtRef(context.Background(), root, "HEAD")
-	if err != nil {
-		t.Fatalf("LoadProtectedPathsAtRef(HEAD) error = %v", err)
-	}
-	if containsPath(gotHead, "SECURITY.md") {
-		t.Fatalf("LoadProtectedPathsAtRef(HEAD) = %v, want SECURITY.md absent (it really was dropped at HEAD)", gotHead)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := newTestRepo(t)
+
+			writeFile(t, root, "modulex.agent.yaml", tt.baseContract)
+			runGit(t, root, "add", "modulex.agent.yaml")
+			runGit(t, root, "commit", "--quiet", "-m", "declare "+tt.protectedPath+" as protected")
+			runGit(t, root, "branch", "base")
+
+			// The working tree (and HEAD) now removes the path from
+			// protected_paths entirely.
+			writeFile(t, root, "modulex.agent.yaml", tt.headContract)
+			runGit(t, root, "commit", "--quiet", "-am", "defang the contract")
+
+			got, err := LoadProtectedPathsAtRef(context.Background(), root, "base")
+			if err != nil {
+				t.Fatalf("LoadProtectedPathsAtRef() error = %v", err)
+			}
+			if !containsPath(got, tt.protectedPath) {
+				t.Fatalf("LoadProtectedPathsAtRef(base) = %v, want it to still include %s (baseRef predates the defanging commit)", got, tt.protectedPath)
+			}
+
+			// Loading at HEAD (the defanged state) must reflect that state, proving
+			// this isn't just always returning a fixed answer.
+			gotHead, err := LoadProtectedPathsAtRef(context.Background(), root, "HEAD")
+			if err != nil {
+				t.Fatalf("LoadProtectedPathsAtRef(HEAD) error = %v", err)
+			}
+			if containsPath(gotHead, tt.protectedPath) {
+				t.Fatalf("LoadProtectedPathsAtRef(HEAD) = %v, want %s absent (it really was dropped at HEAD)", gotHead, tt.protectedPath)
+			}
+		})
 	}
 }
 
 func TestLoadProtectedPathsAtRef(t *testing.T) {
-	t.Run("no contract at ref returns nil, not an error", func(t *testing.T) {
-		root := newTestRepo(t)
-		writeFile(t, root, "app.go", "package app\n")
-		runGit(t, root, "add", "app.go")
-		runGit(t, root, "commit", "--quiet", "-m", "base")
+	tests := []struct {
+		name         string
+		files        map[string]string // committed at HEAD before loading; empty means no commit
+		ref          string
+		wantNil      bool
+		wantContains []string
+		wantErr      bool
+		wantUnparse  bool // when wantErr, whether the error must wrap ErrContractUnparseable
+	}{
+		{
+			name:    "no contract at ref returns nil, not an error",
+			files:   map[string]string{"app.go": "package app\n"},
+			ref:     "HEAD",
+			wantNil: true,
+		},
+		{
+			name:         "contract file is always included alongside declared paths",
+			files:        map[string]string{"modulex.agent.yaml": "protected_paths:\n  - go.mod\n"},
+			ref:          "HEAD",
+			wantContains: []string{"go.mod", "modulex.agent.yaml"},
+		},
+		{
+			name:        "unparseable contract at ref is a wrapped ErrContractUnparseable error",
+			files:       map[string]string{"modulex.agent.yaml": "protected_paths: [oops\n"},
+			ref:         "HEAD",
+			wantErr:     true,
+			wantUnparse: true,
+		},
+		{
+			name:    "a ref that does not resolve is a plain (non-ErrContractUnparseable) error",
+			ref:     "this-ref-does-not-exist",
+			wantErr: true,
+		},
+	}
 
-		got, err := LoadProtectedPathsAtRef(context.Background(), root, "HEAD")
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if got != nil {
-			t.Fatalf("got %v, want nil", got)
-		}
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := newTestRepo(t)
+			if len(tt.files) > 0 {
+				commitAll(t, root, tt.files, "base")
+			}
 
-	t.Run("contract file is always included alongside declared paths", func(t *testing.T) {
-		root := newTestRepo(t)
-		writeFile(t, root, "modulex.agent.yaml", "protected_paths:\n  - go.mod\n")
-		runGit(t, root, "add", "modulex.agent.yaml")
-		runGit(t, root, "commit", "--quiet", "-m", "add contract")
+			got, err := LoadProtectedPathsAtRef(context.Background(), root, tt.ref)
 
-		got, err := LoadProtectedPathsAtRef(context.Background(), root, "HEAD")
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if !containsPath(got, "go.mod") || !containsPath(got, "modulex.agent.yaml") {
-			t.Fatalf("got %v, want it to include both go.mod and modulex.agent.yaml", got)
-		}
-	})
+			if tt.wantErr {
+				assertLoadError(t, err, tt.wantUnparse)
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.wantNil && got != nil {
+				t.Fatalf("got %v, want nil", got)
+			}
+			for _, want := range tt.wantContains {
+				if !containsPath(got, want) {
+					t.Fatalf("got %v, want it to include %q", got, want)
+				}
+			}
+		})
+	}
+}
 
-	t.Run("unparseable contract at ref is a wrapped ErrContractUnparseable error", func(t *testing.T) {
-		root := newTestRepo(t)
-		writeFile(t, root, "modulex.agent.yaml", "protected_paths: [oops\n")
-		runGit(t, root, "add", "modulex.agent.yaml")
-		runGit(t, root, "commit", "--quiet", "-m", "add broken contract")
-
-		_, err := LoadProtectedPathsAtRef(context.Background(), root, "HEAD")
-		if !errors.Is(err, ErrContractUnparseable) {
-			t.Fatalf("error = %v, want it to wrap ErrContractUnparseable", err)
-		}
-	})
-
-	t.Run("a ref that does not resolve is a plain (non-ErrContractUnparseable) error", func(t *testing.T) {
-		root := newTestRepo(t)
-		_, err := LoadProtectedPathsAtRef(context.Background(), root, "this-ref-does-not-exist")
-		if err == nil {
-			t.Fatal("expected an error for a nonexistent ref")
-		}
-		if errors.Is(err, ErrContractUnparseable) {
-			t.Fatalf("error = %v, want it NOT to wrap ErrContractUnparseable (ref resolution, not parsing, failed)", err)
-		}
-	})
+// assertLoadError checks err is non-nil and wraps ErrContractUnparseable
+// exactly when wantUnparse says it should.
+func assertLoadError(t *testing.T, err error, wantUnparse bool) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	if gotUnparse := errors.Is(err, ErrContractUnparseable); gotUnparse != wantUnparse {
+		t.Fatalf("error = %v, errors.Is(ErrContractUnparseable) = %v, want %v", err, gotUnparse, wantUnparse)
+	}
 }
 
 func containsPath(paths []string, p string) bool {
