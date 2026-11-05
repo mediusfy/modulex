@@ -149,80 +149,91 @@ func (w *EventBus) subscribe(ctx context.Context, topic string, handler modulex.
 	w.mu.Unlock()
 
 	w.wg.Add(1)
-	go func() {
-		defer func() {
-			cancel()
-			w.mu.Lock()
-			delete(w.subs, subID)
-			w.mu.Unlock()
-			if processor != nil {
-				_ = processor.Close(context.Background())
-			}
-			w.wg.Done()
-		}()
-
-		for {
-			select {
-			case <-subCtx.Done():
-				return
-			case msg, ok := <-messages:
-				if !ok {
-					return
-				}
-
-				if processor == nil {
-					// msgCtx is derived from subCtx (this subscription's own
-					// lifetime, cancelled by Close), not from the
-					// publisher's original ctx: see Publish's doc comment
-					// for why that ctx must not reach the handler directly.
-					// Only trace/span context, carried via msg.Metadata, is
-					// layered on top.
-					msgCtx := otel.GetTextMapPropagator().Extract(subCtx, propagation.MapCarrier(msg.Metadata))
-					err := handlerpanic.Recover(func() error { return handler(msgCtx, msg.Payload) })
-					if err != nil {
-						w.logger.Error("handler error, message acknowledged to prevent redelivery", err, nil)
-					}
-					msg.Ack()
-					continue
-				}
-
-				// subCtx is submitted here so that a Submit call blocked
-				// waiting for pool capacity is released by EventBus.Close()
-				// (which cancels subCtx).
-				_, err := processor.Submit(subCtx, func(context.Context) (herr error) {
-					// This defer guarantees msg.Ack() always runs, even if
-					// handler panics: workerpool.runTask's own recover
-					// happens after this closure has already unwound, which
-					// would otherwise leave msg permanently unresolved. The
-					// panic is re-thrown after acking so workerpool still
-					// records it as a failed task via its own recovery.
-					defer func() {
-						if p := recover(); p != nil {
-							msg.Ack()
-							panic(p)
-						}
-						if herr != nil {
-							w.logger.Error("handler error, message acknowledged to prevent redelivery", herr, nil)
-						}
-						msg.Ack()
-					}()
-					// Handler ctx is derived from subCtx (this
-					// subscription's own lifetime, cancelled by Close), not
-					// from the publisher's original ctx via msg.Context();
-					// see Publish's doc comment. Only trace/span context,
-					// carried via msg.Metadata, is layered on top.
-					msgCtx := otel.GetTextMapPropagator().Extract(subCtx, propagation.MapCarrier(msg.Metadata))
-					return handler(msgCtx, msg.Payload)
-				})
-				if err != nil {
-					w.logger.Error("worker pool rejected message, nacking for redelivery", err, nil)
-					msg.Nack()
-				}
-			}
-		}
-	}()
+	go w.consume(subCtx, subID, cancel, messages, handler, processor)
 
 	return nil
+}
+
+// consume is the per-subscription loop started by subscribe. It reads
+// messages until subCtx is done or messages is closed, then releases the
+// subscription's resources.
+func (w *EventBus) consume(subCtx context.Context, subID uint64, cancel context.CancelFunc, messages <-chan *message.Message,
+	handler modulex.EventHandler, processor *workerpool.Processor) {
+	defer func() {
+		cancel()
+		w.mu.Lock()
+		delete(w.subs, subID)
+		w.mu.Unlock()
+		if processor != nil {
+			_ = processor.Close(context.Background())
+		}
+		w.wg.Done()
+	}()
+
+	for {
+		select {
+		case <-subCtx.Done():
+			return
+		case msg, ok := <-messages:
+			if !ok {
+				return
+			}
+			if processor == nil {
+				w.handleMessage(subCtx, handler, msg)
+			} else {
+				w.submitMessage(subCtx, handler, msg, processor)
+			}
+		}
+	}
+}
+
+// extractMessageContext derives a handler context from subCtx (this
+// subscription's own lifetime, cancelled by Close), not from the publisher's
+// original ctx (see Publish's doc comment for why that ctx must not reach the
+// handler directly). Only trace/span context, carried via msg.Metadata, is
+// layered on top.
+func extractMessageContext(subCtx context.Context, msg *message.Message) context.Context {
+	return otel.GetTextMapPropagator().Extract(subCtx, propagation.MapCarrier(msg.Metadata))
+}
+
+// handleMessage runs handler for msg on the consume loop's own goroutine and
+// always acknowledges msg, whether the handler succeeded, failed or panicked.
+func (w *EventBus) handleMessage(subCtx context.Context, handler modulex.EventHandler, msg *message.Message) {
+	msgCtx := extractMessageContext(subCtx, msg)
+	if err := handlerpanic.Recover(func() error { return handler(msgCtx, msg.Payload) }); err != nil {
+		w.logger.Error("handler error, message acknowledged to prevent redelivery", err, nil)
+	}
+	msg.Ack()
+}
+
+// submitMessage hands msg to processor. subCtx is submitted so that a Submit
+// call blocked waiting for pool capacity is released by EventBus.Close()
+// (which cancels subCtx). If the pool rejects the message, it is nacked for
+// redelivery.
+func (w *EventBus) submitMessage(subCtx context.Context, handler modulex.EventHandler, msg *message.Message, processor *workerpool.Processor) {
+	_, err := processor.Submit(subCtx, func(context.Context) (herr error) {
+		// This defer guarantees msg.Ack() always runs, even if
+		// handler panics: workerpool.runTask's own recover
+		// happens after this closure has already unwound, which
+		// would otherwise leave msg permanently unresolved. The
+		// panic is re-thrown after acking so workerpool still
+		// records it as a failed task via its own recovery.
+		defer func() {
+			if p := recover(); p != nil {
+				msg.Ack()
+				panic(p)
+			}
+			if herr != nil {
+				w.logger.Error("handler error, message acknowledged to prevent redelivery", herr, nil)
+			}
+			msg.Ack()
+		}()
+		return handler(extractMessageContext(subCtx, msg), msg.Payload)
+	})
+	if err != nil {
+		w.logger.Error("worker pool rejected message, nacking for redelivery", err, nil)
+		msg.Nack()
+	}
 }
 
 // Close cancels all active subscriptions, waits for running handlers to exit,
