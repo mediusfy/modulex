@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Table-driven tests throughout, scaffold templates now generate table-driven
   tests, and several high-complexity functions were split without behaviour
   changes.
+- `grpc`, `httpx`, `modtest`: sentinel errors are typed constants (**BREAKING** for code that reassigns them); the health-check timeout is now a per-`HealthServer` setting rather than a package variable.
 
 ### Fixed
 
