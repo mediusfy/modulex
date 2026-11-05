@@ -764,20 +764,14 @@ func TestRegisterModuleValidation(t *testing.T) {
 			wantState: modulex.StateConfiguring,
 		},
 		{
-			name: "empty module name",
-			act: func(t *testing.T, manager *modulex.Manager) error {
-				mod := newMockModule(t, mockModuleConfig{name: ""})
-				return manager.RegisterModule(mod)
-			},
+			name:      "empty module name",
+			act:       registerNamedModuleAct(""),
 			wantErr:   modulex.ErrInvalidModuleName,
 			wantState: modulex.StateConfiguring,
 		},
 		{
-			name: "whitespace module name",
-			act: func(t *testing.T, manager *modulex.Manager) error {
-				mod := newMockModule(t, mockModuleConfig{name: "   "})
-				return manager.RegisterModule(mod)
-			},
+			name:      "whitespace module name",
+			act:       registerNamedModuleAct("   "),
 			wantErr:   modulex.ErrInvalidModuleName,
 			wantState: modulex.StateConfiguring,
 		},
@@ -986,24 +980,9 @@ func TestRegistrationOrderTieBreak(t *testing.T) {
 			manager := newTestManager(nil)
 
 			var order []string
-			modA := newMockModule(t, mockModuleConfig{
-				name:    "module-a",
-				onInit:  func(reg modulex.Registry) { order = append(order, "module-a") },
-				onStart: func() { order = append(order, "module-a") },
-				onStop:  func() { order = append(order, "module-a") },
-			})
-			modB := newMockModule(t, mockModuleConfig{
-				name:    "module-b",
-				onInit:  func(reg modulex.Registry) { order = append(order, "module-b") },
-				onStart: func() { order = append(order, "module-b") },
-				onStop:  func() { order = append(order, "module-b") },
-			})
-			modC := newMockModule(t, mockModuleConfig{
-				name:    "module-c",
-				onInit:  func(reg modulex.Registry) { order = append(order, "module-c") },
-				onStart: func() { order = append(order, "module-c") },
-				onStop:  func() { order = append(order, "module-c") },
-			})
+			modA := newOrderRecordingModule(t, &order, "module-a")
+			modB := newOrderRecordingModule(t, &order, "module-b")
+			modC := newOrderRecordingModule(t, &order, "module-c")
 
 			// Register in a specific order; independent modules should initialize in that order.
 			require.NoError(t, manager.RegisterModule(modC))
@@ -1028,19 +1007,8 @@ func TestDependencyOrderOverridesRegistrationOrder(t *testing.T) {
 			manager := newTestManager(nil)
 
 			var order []string
-			modA := newMockModule(t, mockModuleConfig{
-				name:    "module-a",
-				onInit:  func(reg modulex.Registry) { order = append(order, "module-a") },
-				onStart: func() { order = append(order, "module-a") },
-				onStop:  func() { order = append(order, "module-a") },
-			})
-			modB := newMockModule(t, mockModuleConfig{
-				name:    "module-b",
-				deps:    []string{"module-a"},
-				onInit:  func(reg modulex.Registry) { order = append(order, "module-b") },
-				onStart: func() { order = append(order, "module-b") },
-				onStop:  func() { order = append(order, "module-b") },
-			})
+			modA := newOrderRecordingModule(t, &order, "module-a")
+			modB := newOrderRecordingModule(t, &order, "module-b", "module-a")
 
 			// Register dependent module first.
 			require.NoError(t, manager.RegisterModule(modB))
@@ -1350,8 +1318,7 @@ func TestLifecycleStateTransitions(t *testing.T) {
 		{
 			name: "initialized -> running",
 			setup: func(t *testing.T, manager *modulex.Manager) {
-				require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "module-a"})))
-				require.NoError(t, manager.InitModules(context.Background()))
+				initializedManagerSetup(t, manager)
 			},
 			act: func(t *testing.T, manager *modulex.Manager) error {
 				return manager.StartModules(context.Background())
@@ -1361,52 +1328,38 @@ func TestLifecycleStateTransitions(t *testing.T) {
 		{
 			name: "running -> stopped",
 			setup: func(t *testing.T, manager *modulex.Manager) {
-				require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "module-a"})))
-				require.NoError(t, manager.InitModules(context.Background()))
-				require.NoError(t, manager.StartModules(context.Background()))
+				runningManagerSetup(t, manager)
 			},
-			act: func(t *testing.T, manager *modulex.Manager) error {
-				return manager.StopModules(context.Background())
-			},
+			act:       stopModulesAct,
 			wantState: modulex.StateStopped,
 		},
 		{
 			name: "stop is idempotent",
 			setup: func(t *testing.T, manager *modulex.Manager) {
-				require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "module-a"})))
-				require.NoError(t, manager.InitModules(context.Background()))
-				require.NoError(t, manager.StartModules(context.Background()))
+				runningManagerSetup(t, manager)
 				require.NoError(t, manager.StopModules(context.Background()))
 			},
-			act: func(t *testing.T, manager *modulex.Manager) error {
-				return manager.StopModules(context.Background())
-			},
+			act:       stopModulesAct,
 			wantState: modulex.StateStopped,
 		},
 		{
-			name:  "stop from configured state",
-			setup: func(t *testing.T, manager *modulex.Manager) {},
-			act: func(t *testing.T, manager *modulex.Manager) error {
-				return manager.StopModules(context.Background())
-			},
+			name:      "stop from configured state",
+			setup:     func(t *testing.T, manager *modulex.Manager) {},
+			act:       stopModulesAct,
 			wantState: modulex.StateStopped,
 		},
 		{
 			name: "stop from initialized state",
 			setup: func(t *testing.T, manager *modulex.Manager) {
-				require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "module-a"})))
-				require.NoError(t, manager.InitModules(context.Background()))
+				initializedManagerSetup(t, manager)
 			},
-			act: func(t *testing.T, manager *modulex.Manager) error {
-				return manager.StopModules(context.Background())
-			},
+			act:       stopModulesAct,
 			wantState: modulex.StateStopped,
 		},
 		{
 			name: "init cannot be called twice",
 			setup: func(t *testing.T, manager *modulex.Manager) {
-				require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "module-a"})))
-				require.NoError(t, manager.InitModules(context.Background()))
+				initializedManagerSetup(t, manager)
 			},
 			act: func(t *testing.T, manager *modulex.Manager) error {
 				return manager.InitModules(context.Background())
@@ -1660,20 +1613,7 @@ func TestStartFailureDoesNotStopUnattemptedModule(t *testing.T) {
 		{name: "start failure does not stop unattempted module", run: func(t *testing.T) {
 			manager := newTestManager(nil)
 
-			var stopCalls []string
-			modA := newMockModule(t, mockModuleConfig{
-				name:     "module-a",
-				startErr: errors.New("module-a start failed"),
-				onStop:   func() { stopCalls = append(stopCalls, "module-a") },
-			})
-			modB := newMockModule(t, mockModuleConfig{
-				name:   "module-b",
-				deps:   []string{"module-a"},
-				onStop: func() { stopCalls = append(stopCalls, "module-b") },
-			})
-
-			require.NoError(t, manager.RegisterModule(modA))
-			require.NoError(t, manager.RegisterModule(modB))
+			stopCalls := registerStopRecorderPair(t, manager, "module-a start failed")
 			require.NoError(t, manager.InitModules(context.Background()))
 
 			err := manager.StartModules(context.Background())
@@ -1683,7 +1623,7 @@ func TestStartFailureDoesNotStopUnattemptedModule(t *testing.T) {
 			// module-a's own Start failed, so it is stopped (it may have partially
 			// acquired something); module-b's Start was never reached and must not
 			// be stopped.
-			assert.Equal(t, []string{"module-a"}, stopCalls)
+			assert.Equal(t, []string{"module-a"}, *stopCalls)
 			assert.Equal(t, modulex.StateStopped, manager.State())
 		}},
 	}
@@ -1864,10 +1804,7 @@ func TestInitContextCancellation(t *testing.T) {
 		{name: "init context cancellation", run: func(t *testing.T) {
 			manager := newTestManager(nil)
 
-			modA := newMockModule(t, mockModuleConfig{name: "module-a"})
-			modB := newMockModule(t, mockModuleConfig{name: "module-b", deps: []string{"module-a"}})
-			require.NoError(t, manager.RegisterModule(modA))
-			require.NoError(t, manager.RegisterModule(modB))
+			registerDependentPair(t, manager)
 
 			ctx, cancel := context.WithCancel(context.Background())
 			cancel()
@@ -1891,10 +1828,7 @@ func TestStartContextCancellation(t *testing.T) {
 		{name: "start context cancellation", run: func(t *testing.T) {
 			manager := newTestManager(nil)
 
-			modA := newMockModule(t, mockModuleConfig{name: "module-a"})
-			modB := newMockModule(t, mockModuleConfig{name: "module-b", deps: []string{"module-a"}})
-			require.NoError(t, manager.RegisterModule(modA))
-			require.NoError(t, manager.RegisterModule(modB))
+			registerDependentPair(t, manager)
 			require.NoError(t, manager.InitModules(context.Background()))
 
 			ctx, cancel := context.WithCancel(context.Background())
@@ -2146,19 +2080,7 @@ func TestStopModulesFromInitializedStopsInitializedModules(t *testing.T) {
 		{name: "stop modules from initialized stops initialized modules", run: func(t *testing.T) {
 			manager := newTestManager(nil)
 
-			var stopCalls []string
-			modA := newMockModule(t, mockModuleConfig{
-				name:   "module-a",
-				onStop: func() { stopCalls = append(stopCalls, "module-a") },
-			})
-			modB := newMockModule(t, mockModuleConfig{
-				name:   "module-b",
-				deps:   []string{"module-a"},
-				onStop: func() { stopCalls = append(stopCalls, "module-b") },
-			})
-
-			require.NoError(t, manager.RegisterModule(modA))
-			require.NoError(t, manager.RegisterModule(modB))
+			stopCalls := registerStopRecorderPair(t, manager, "")
 			require.NoError(t, manager.InitModules(context.Background()))
 			require.Equal(t, modulex.StateInitialized, manager.State())
 
@@ -2166,7 +2088,7 @@ func TestStopModulesFromInitializedStopsInitializedModules(t *testing.T) {
 
 			// Both initialized modules must be stopped, in reverse dependency order,
 			// even though StartModules was never called.
-			assert.Equal(t, []string{"module-b", "module-a"}, stopCalls)
+			assert.Equal(t, []string{"module-b", "module-a"}, *stopCalls)
 			assert.Equal(t, modulex.StateStopped, manager.State())
 		}},
 	}
@@ -2192,19 +2114,7 @@ func TestStopModulesContinuesStoppingAfterCancelledContext(t *testing.T) {
 		{name: "stop modules continues stopping after cancelled context", run: func(t *testing.T) {
 			manager := newTestManager(nil)
 
-			var stopCalls []string
-			modA := newMockModule(t, mockModuleConfig{
-				name:   "module-a",
-				onStop: func() { stopCalls = append(stopCalls, "module-a") },
-			})
-			modB := newMockModule(t, mockModuleConfig{
-				name:   "module-b",
-				deps:   []string{"module-a"},
-				onStop: func() { stopCalls = append(stopCalls, "module-b") },
-			})
-
-			require.NoError(t, manager.RegisterModule(modA))
-			require.NoError(t, manager.RegisterModule(modB))
+			stopCalls := registerStopRecorderPair(t, manager, "")
 			require.NoError(t, manager.InitModules(context.Background()))
 			require.NoError(t, manager.StartModules(context.Background()))
 
@@ -2217,7 +2127,7 @@ func TestStopModulesContinuesStoppingAfterCancelledContext(t *testing.T) {
 
 			// Both modules must still be stopped, in reverse order, despite the
 			// context already being cancelled before the stop loop started.
-			assert.Equal(t, []string{"module-b", "module-a"}, stopCalls)
+			assert.Equal(t, []string{"module-b", "module-a"}, *stopCalls)
 			assert.Equal(t, modulex.StateStopped, manager.State())
 		}},
 	}
@@ -2657,13 +2567,7 @@ func TestStopModulesCollectsTaskErrorDespiteTimeout(t *testing.T) {
 				},
 			})
 
-			require.NoError(t, manager.RegisterModule(mod))
-			require.NoError(t, manager.InitModules(context.Background()))
-			require.NoError(t, manager.StartModules(context.Background()))
-
-			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-			defer cancel()
-			err := manager.StopModules(ctx)
+			err := stopWithTimeoutAfterStart(t, manager, mod)
 
 			assertStopModulesTimedOutWithTaskError(t, err, taskErr, "failing-task")
 		}},
@@ -2704,13 +2608,7 @@ func TestStopModulesCollectsAlreadyFinishedTaskErrorDespiteTimeout(t *testing.T)
 				},
 			})
 
-			require.NoError(t, manager.RegisterModule(mod))
-			require.NoError(t, manager.InitModules(context.Background()))
-			require.NoError(t, manager.StartModules(context.Background()))
-
-			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-			defer cancel()
-			err := manager.StopModules(ctx)
+			err := stopWithTimeoutAfterStart(t, manager, mod)
 
 			assertStopModulesTimedOutWithTaskError(t, err, taskErr, "already-finished-task")
 		}},
@@ -3191,4 +3089,92 @@ func TestExportDAGSyntheticIDsNeverCollideWithALiteralSafeName(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, tt.run)
 	}
+}
+
+// registerStopRecorderPair registers module-a and module-b (depends on a) whose
+// Stop calls are appended to the returned slice. A non-empty startErrMsg makes
+// module-a's Start fail with that message.
+func registerStopRecorderPair(t *testing.T, manager *modulex.Manager, startErrMsg string) *[]string {
+	t.Helper()
+
+	stopCalls := &[]string{}
+	cfgA := mockModuleConfig{
+		name:   "module-a",
+		onStop: func() { *stopCalls = append(*stopCalls, "module-a") },
+	}
+	if startErrMsg != "" {
+		cfgA.startErr = errors.New(startErrMsg)
+	}
+	cfgB := mockModuleConfig{
+		name:   "module-b",
+		deps:   []string{"module-a"},
+		onStop: func() { *stopCalls = append(*stopCalls, "module-b") },
+	}
+	require.NoError(t, manager.RegisterModule(newMockModule(t, cfgA)))
+	require.NoError(t, manager.RegisterModule(newMockModule(t, cfgB)))
+
+	return stopCalls
+}
+
+// registerDependentPair registers module-a and module-b (depends on a).
+func registerDependentPair(t *testing.T, manager *modulex.Manager) {
+	t.Helper()
+
+	require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "module-a"})))
+	require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "module-b", deps: []string{"module-a"}})))
+}
+
+func initializedManagerSetup(t *testing.T, manager *modulex.Manager) {
+	t.Helper()
+
+	require.NoError(t, manager.RegisterModule(newMockModule(t, mockModuleConfig{name: "module-a"})))
+	require.NoError(t, manager.InitModules(context.Background()))
+}
+
+func runningManagerSetup(t *testing.T, manager *modulex.Manager) {
+	t.Helper()
+
+	initializedManagerSetup(t, manager)
+	require.NoError(t, manager.StartModules(context.Background()))
+}
+
+func stopModulesAct(_ *testing.T, manager *modulex.Manager) error {
+	return manager.StopModules(context.Background())
+}
+
+func registerNamedModuleAct(name string) func(t *testing.T, manager *modulex.Manager) error {
+	return func(t *testing.T, manager *modulex.Manager) error {
+		return manager.RegisterModule(newMockModule(t, mockModuleConfig{name: name}))
+	}
+}
+
+// newOrderRecordingModule returns a module that appends its name to order on
+// every lifecycle callback.
+func newOrderRecordingModule(t *testing.T, order *[]string, name string, deps ...string) *testModule {
+	t.Helper()
+
+	record := func() { *order = append(*order, name) }
+
+	return newMockModule(t, mockModuleConfig{
+		name:    name,
+		deps:    deps,
+		onInit:  func(modulex.Registry) { record() },
+		onStart: record,
+		onStop:  record,
+	})
+}
+
+// stopWithTimeoutAfterStart registers mod, starts the manager, and stops it
+// with a short deadline, returning StopModules' error.
+func stopWithTimeoutAfterStart(t *testing.T, manager *modulex.Manager, mod *testModule) error {
+	t.Helper()
+
+	require.NoError(t, manager.RegisterModule(mod))
+	require.NoError(t, manager.InitModules(context.Background()))
+	require.NoError(t, manager.StartModules(context.Background()))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	return manager.StopModules(ctx)
 }
