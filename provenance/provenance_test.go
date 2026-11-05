@@ -195,7 +195,7 @@ func TestRedact_RemovesSecretAndValidatePasses(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			env := validEnvelope()
-			env.Commands[0].Output = "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY, ghp_1234567890abcdefghijklmnopqrstuvwxyz"
+			env.Commands[0].Output = "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY, ghp_1234567890abcdefghijklmnopqrstuvwxyz" // nosecret: fake credentials fixture for redaction test
 
 			if err := env.Validate(); err == nil {
 				t.Fatalf("Validate() = nil before Redact(), want error")
