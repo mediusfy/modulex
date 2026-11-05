@@ -10,12 +10,12 @@ import (
 	"sync"
 
 	amqp "github.com/rabbitmq/amqp091-go"
+	"go.opentelemetry.io/otel"
 
 	"github.com/mediusfy/modulex"
 	"github.com/mediusfy/modulex/internal/busshutdown"
 	"github.com/mediusfy/modulex/internal/handlerpanic"
 	"github.com/mediusfy/modulex/workerpool"
-	"go.opentelemetry.io/otel"
 )
 
 const (
@@ -23,6 +23,8 @@ const (
 	logKeyQueue = "queue"
 	// logKeyError is the structured log key for an error value.
 	logKeyError = "error"
+	// logKeyRequeue is the structured log key for whether a nack requeues.
+	logKeyRequeue = "requeue"
 )
 
 // EventBus implements modulex.EventBus by wrapping a RabbitMQ channel.
@@ -148,7 +150,11 @@ func WithPublisherConfirms() Option {
 // the underlying *amqp.Channel (and its connection), typically after
 // modulex.Manager.StopModules has closed the EventBus. This lets a single
 // channel or connection be shared across multiple concerns outside the
-// module lifecycle if desired.
+// module lifecycle if desired. Because a consumer's goroutine issues
+// basic.cancel RPCs on ch when its subscription ends, call EventBus.Close
+// (which waits for those goroutines) before closing ch: amqp091-go matches
+// synchronous replies per channel, not per request, so a concurrent
+// Channel.Close can be handed another RPC's reply and block forever.
 func NewEventBus(ch *amqp.Channel, opts ...Option) *EventBus {
 	stopped := make(chan struct{})
 	close(stopped)
@@ -498,14 +504,8 @@ func (r *EventBus) submitDelivery(ctx context.Context, topic string, handler mod
 	// running. Header extraction is deferred to the worker goroutine below
 	// so it runs in parallel across workers instead of serializing on this
 	// single consume-loop goroutine.
-	_, err := processor.Submit(ctx, func(taskCtx context.Context) (herr error) {
-		var headers amqp.Table
-		if d.Headers != nil {
-			headers = d.Headers
-		} else {
-			headers = make(amqp.Table)
-		}
-		msgCtx := otel.GetTextMapPropagator().Extract(r.handlerCtx, amqpHeadersCarrier(headers))
+	_, err := processor.Submit(ctx, func(context.Context) (herr error) {
+		msgCtx := r.deliveryContext(d)
 
 		// This defer guarantees the delivery is always resolved (acked or
 		// nacked) exactly once, even if handler panics: workerpool.runTask's
@@ -523,27 +523,7 @@ func (r *EventBus) submitDelivery(ctx context.Context, topic string, handler mod
 				}
 				panic(p)
 			}
-			if herr != nil {
-				requeue := isContextDoneErr(herr)
-				r.logger.ErrorContext(msgCtx, "handler error, message nacked",
-					slog.String(logKeyQueue, topic),
-					slog.Any(logKeyError, herr),
-					slog.Bool("requeue", requeue),
-				)
-				if nackErr := d.Nack(false, requeue); nackErr != nil {
-					r.logger.ErrorContext(msgCtx, "failed to nack message",
-						slog.String(logKeyQueue, topic),
-						slog.Any(logKeyError, nackErr),
-					)
-				}
-				return
-			}
-			if ackErr := d.Ack(false); ackErr != nil {
-				r.logger.ErrorContext(msgCtx, "failed to ack message",
-					slog.String(logKeyQueue, topic),
-					slog.Any(logKeyError, ackErr),
-				)
-			}
+			r.resolveDelivery(msgCtx, topic, d, herr)
 		}()
 
 		return handler(msgCtx, d.Body)
@@ -566,26 +546,34 @@ func (r *EventBus) submitDelivery(ctx context.Context, topic string, handler mod
 }
 
 func (r *EventBus) handleDelivery(topic string, handler modulex.EventHandler, d amqp.Delivery) {
-	var headers amqp.Table
-	if d.Headers != nil {
-		headers = d.Headers
-	} else {
+	msgCtx := r.deliveryContext(d)
+	err := handlerpanic.Recover(func() error { return handler(msgCtx, d.Body) })
+	r.resolveDelivery(msgCtx, topic, d, err)
+}
+
+// deliveryContext builds the context a handler runs under for d. r.handlerCtx
+// (not the consume loop's subscription-scoped context) is the base, so
+// cancelling the subscription's own context does not cancel a handler
+// invocation out from under it; see handlerCtx's doc comment. Trace context
+// carried in d's headers is layered on top.
+func (r *EventBus) deliveryContext(d amqp.Delivery) context.Context {
+	headers := d.Headers
+	if headers == nil {
 		headers = make(amqp.Table)
 	}
-	// r.handlerCtx (not the consume loop's subscription-scoped context) is
-	// the base here, so cancelling the subscription's own context does not
-	// cancel this handler invocation out from under it; see handlerCtx's
-	// doc comment.
-	msgCtx := otel.GetTextMapPropagator().Extract(r.handlerCtx, amqpHeadersCarrier(headers))
+	return otel.GetTextMapPropagator().Extract(r.handlerCtx, amqpHeadersCarrier(headers))
+}
 
-	err := handlerpanic.Recover(func() error { return handler(msgCtx, d.Body) })
-
-	if err != nil {
-		requeue := isContextDoneErr(err)
+// resolveDelivery acknowledges d when the handler succeeded (herr == nil) and
+// otherwise logs herr and nacks it, requeuing only when herr is a context
+// ending error (see isContextDoneErr).
+func (r *EventBus) resolveDelivery(msgCtx context.Context, topic string, d amqp.Delivery, herr error) {
+	if herr != nil {
+		requeue := isContextDoneErr(herr)
 		r.logger.ErrorContext(msgCtx, "handler error, message nacked",
 			slog.String(logKeyQueue, topic),
-			slog.Any(logKeyError, err),
-			slog.Bool("requeue", requeue),
+			slog.Any(logKeyError, herr),
+			slog.Bool(logKeyRequeue, requeue),
 		)
 		if nackErr := d.Nack(false, requeue); nackErr != nil {
 			r.logger.ErrorContext(msgCtx, "failed to nack message",
