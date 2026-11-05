@@ -53,6 +53,27 @@ func connectRabbitMQ(t testing.TB) (*amqp.Connection, *amqp.Channel) {
 	return conn, ch
 }
 
+// newTimedBus connects to the broker and returns the channel, an EventBus, a
+// 10s context and a unique queue name using prefix. The EventBus must be
+// closed before connectRabbitMQ's cleanup closes the channel (t.Cleanup runs
+// LIFO, so registering it after connectRabbitMQ makes it run first). A
+// subscription's deferred ctx cancel makes the consume loop issue a
+// basic.cancel RPC on the shared channel from its own goroutine; if
+// ch.Close() races with it, amqp091-go v1.16.0 can hand the channel.close-ok
+// reply to the basic.cancel waiter (both share one unkeyed rpc chan), leaving
+// Channel.Close blocked forever. eb.Close waits for the consume loop, and so
+// for its basic.cancel, to finish first.
+func newTimedBus(t *testing.T, prefix string) (*amqp.Channel, *rabbitadapter.EventBus, context.Context, string) {
+	t.Helper()
+	_, ch := connectRabbitMQ(t)
+	eb := rabbitadapter.NewEventBus(ch)
+	t.Cleanup(func() { _ = eb.Close(context.Background()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+	return ch, eb, ctx, fmt.Sprintf("test.queue.%s.%d", prefix, time.Now().UnixNano())
+}
+
 func TestEventBus_PublishSubscribe(t *testing.T) {
 	tests := []struct {
 		name string
@@ -296,25 +317,7 @@ func TestEventBus_PlainHandlerPanicIsRecovered(t *testing.T) {
 		{
 			name: "event bus plain handler panic is recovered",
 			run: func(t *testing.T) {
-				_, ch := connectRabbitMQ(t)
-
-				eb := rabbitadapter.NewEventBus(ch)
-				// The EventBus must be closed before connectRabbitMQ's cleanup closes
-				// the channel (t.Cleanup runs LIFO, so registering it here, after
-				// connectRabbitMQ, makes it run first). The deferred cancel below ends
-				// the subscription context when the test body returns, which makes the
-				// consume loop issue a basic.cancel RPC on the shared channel from its
-				// own goroutine. If ch.Close() races with that in-flight RPC,
-				// amqp091-go v1.16.0 can hand the channel.close-ok reply to the
-				// basic.cancel waiter (both share one unkeyed rpc chan), leaving
-				// Channel.Close blocked forever. eb.Close waits for the consume loop,
-				// and so for its basic.cancel, to finish first.
-				t.Cleanup(func() { _ = eb.Close(context.Background()) })
-
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-
-				queue := fmt.Sprintf("test.queue.panic.%d", time.Now().UnixNano())
+				_, eb, ctx, queue := newTimedBus(t, "panic")
 				panicPayload := []byte("panic-trigger")
 				subsequentPayload := []byte("after-panic")
 				received := make(chan []byte, 1)
@@ -379,15 +382,7 @@ func TestEventBus_HandlerErrorNacksWithoutRequeue(t *testing.T) {
 		{
 			name: "event bus handler error nacks without requeue",
 			run: func(t *testing.T) {
-				_, ch := connectRabbitMQ(t)
-
-				eb := rabbitadapter.NewEventBus(ch)
-				t.Cleanup(func() { _ = eb.Close(context.Background()) })
-
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-
-				queue := fmt.Sprintf("test.queue.nack.%d", time.Now().UnixNano())
+				ch, eb, ctx, queue := newTimedBus(t, "nack")
 				firstAttempt := make(chan struct{})
 				var firstAttemptOnce bool
 
@@ -603,15 +598,7 @@ func TestEventBus_HandlerContextCancelledErrorRequeues(t *testing.T) {
 		{
 			name: "event bus handler context cancelled error requeues",
 			run: func(t *testing.T) {
-				_, ch := connectRabbitMQ(t)
-
-				eb := rabbitadapter.NewEventBus(ch)
-				t.Cleanup(func() { _ = eb.Close(context.Background()) })
-
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-
-				queue := fmt.Sprintf("test.queue.ctxcancel.%d", time.Now().UnixNano())
+				_, eb, ctx, queue := newTimedBus(t, "ctxcancel")
 				var attempts int32
 				done := make(chan struct{})
 
