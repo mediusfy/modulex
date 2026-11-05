@@ -83,83 +83,135 @@ func newTestLogger() *slog.Logger {
 }
 
 func TestRun_FullLifecycle(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "scenario",
+			run: func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
 
-	mod := &recordingModule{name: "mod-a", startedCh: make(chan struct{})}
+				mod := &recordingModule{name: "mod-a", startedCh: make(chan struct{})}
 
-	var mgr *modulex.Manager
-	runErr := make(chan error, 1)
-	go func() {
-		runErr <- app.Run(newTestLogger(), nil, []modulex.Module{mod},
-			app.WithContext(ctx),
-			app.WithSetup(func(m *modulex.Manager) error {
-				mgr = m
-				return nil
-			}),
-		)
-	}()
+				var mgr *modulex.Manager
+				runErr := make(chan error, 1)
+				go func() {
+					runErr <- app.Run(newTestLogger(), nil, []modulex.Module{mod},
+						app.WithContext(ctx),
+						app.WithSetup(func(m *modulex.Manager) error {
+							mgr = m
+							return nil
+						}),
+					)
+				}()
 
-	select {
-	case <-mod.startedCh:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for module to start")
+				select {
+				case <-mod.startedCh:
+				case <-time.After(2 * time.Second):
+					t.Fatal("timed out waiting for module to start")
+				}
+
+				cancel()
+
+				select {
+				case err := <-runErr:
+					require.NoError(t, err)
+				case <-time.After(2 * time.Second):
+					t.Fatal("timed out waiting for Run to return")
+				}
+
+				assert.Equal(t, []string{"init", "start", "stop"}, mod.Events())
+				require.NotNil(t, mgr)
+				assert.Equal(t, modulex.StateStopped, mgr.State())
+			},
+		},
 	}
-
-	cancel()
-
-	select {
-	case err := <-runErr:
-		require.NoError(t, err)
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for Run to return")
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
 	}
-
-	assert.Equal(t, []string{"init", "start", "stop"}, mod.Events())
-	require.NotNil(t, mgr)
-	assert.Equal(t, modulex.StateStopped, mgr.State())
 }
 
 func TestRun_NilLoggerUsesDefaultLogger(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "scenario",
+			run: func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
 
-	mod := &recordingModule{name: "nil-logger", startedCh: make(chan struct{})}
-	runErr := make(chan error, 1)
-	go func() {
-		runErr <- app.Run(nil, nil, []modulex.Module{mod}, app.WithContext(ctx))
-	}()
+				mod := &recordingModule{name: "nil-logger", startedCh: make(chan struct{})}
+				runErr := make(chan error, 1)
+				go func() {
+					runErr <- app.Run(nil, nil, []modulex.Module{mod}, app.WithContext(ctx))
+				}()
 
-	select {
-	case <-mod.startedCh:
-		cancel()
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for module to start")
+				select {
+				case <-mod.startedCh:
+					cancel()
+				case <-time.After(2 * time.Second):
+					t.Fatal("timed out waiting for module to start")
+				}
+
+				select {
+				case err := <-runErr:
+					require.NoError(t, err)
+				case <-time.After(2 * time.Second):
+					t.Fatal("timed out waiting for Run to return")
+				}
+			},
+		},
 	}
-
-	select {
-	case err := <-runErr:
-		require.NoError(t, err)
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for Run to return")
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
 	}
 }
 
 func TestRun_ManagerConstructionFailure(t *testing.T) {
-	err := app.Run(newTestLogger(), nil, nil,
-		app.WithManagerOptions(modulex.WithPanicPolicy(modulex.PanicPolicy(99))),
-	)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, modulex.ErrInvalidPanicPolicy)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "scenario",
+			run: func(t *testing.T) {
+				err := app.Run(newTestLogger(), nil, nil,
+					app.WithManagerOptions(modulex.WithPanicPolicy(modulex.PanicPolicy(99))),
+				)
+				require.Error(t, err)
+				assert.ErrorIs(t, err, modulex.ErrInvalidPanicPolicy)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestRun_RegisterModuleFailure(t *testing.T) {
-	modA := &recordingModule{name: "dup"}
-	modB := &recordingModule{name: "dup"}
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "scenario",
+			run: func(t *testing.T) {
+				modA := &recordingModule{name: "dup"}
+				modB := &recordingModule{name: "dup"}
 
-	err := app.Run(newTestLogger(), nil, []modulex.Module{modA, modB})
-	require.Error(t, err)
-	assert.ErrorIs(t, err, modulex.ErrDuplicateModule)
+				err := app.Run(newTestLogger(), nil, []modulex.Module{modA, modB})
+				require.Error(t, err)
+				assert.ErrorIs(t, err, modulex.ErrDuplicateModule)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 // fakeEventBus is a minimal modulex.EventBus used to prove app.Run cleans up
@@ -193,34 +245,47 @@ func (b *fakeEventBus) CloseCount() int {
 // and any registered pre/post-stop hooks were never invoked at all on this
 // path.
 func TestRun_SetupFailureRunsCleanup(t *testing.T) {
-	eb := &fakeEventBus{}
-	setupErr := errors.New("setup boom")
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "scenario",
+			run: func(t *testing.T) {
+				eb := &fakeEventBus{}
+				setupErr := errors.New("setup boom")
 
-	var mu sync.Mutex
-	var order []string
-	record := func(name string) func(context.Context) error {
-		return func(context.Context) error {
-			mu.Lock()
-			order = append(order, name)
-			mu.Unlock()
-			return nil
-		}
+				var mu sync.Mutex
+				var order []string
+				record := func(name string) func(context.Context) error {
+					return func(context.Context) error {
+						mu.Lock()
+						order = append(order, name)
+						mu.Unlock()
+						return nil
+					}
+				}
+
+				err := app.Run(newTestLogger(), nil, nil,
+					app.WithManagerOptions(modulex.WithEventBus(eb)),
+					app.WithSetup(func(*modulex.Manager) error { return setupErr }),
+					app.WithPreStop(record("pre")),
+					app.WithPostStop(record("post")),
+				)
+
+				require.Error(t, err)
+				assert.ErrorIs(t, err, setupErr)
+
+				mu.Lock()
+				defer mu.Unlock()
+				assert.Equal(t, []string{"pre", "post"}, order, "pre/post-stop hooks must run even when WithSetup fails")
+				assert.Equal(t, 1, eb.CloseCount(), "the event bus constructed via WithManagerOptions must be closed on a setup failure")
+			},
+		},
 	}
-
-	err := app.Run(newTestLogger(), nil, nil,
-		app.WithManagerOptions(modulex.WithEventBus(eb)),
-		app.WithSetup(func(*modulex.Manager) error { return setupErr }),
-		app.WithPreStop(record("pre")),
-		app.WithPostStop(record("post")),
-	)
-
-	require.Error(t, err)
-	assert.ErrorIs(t, err, setupErr)
-
-	mu.Lock()
-	defer mu.Unlock()
-	assert.Equal(t, []string{"pre", "post"}, order, "pre/post-stop hooks must run even when WithSetup fails")
-	assert.Equal(t, 1, eb.CloseCount(), "the event bus constructed via WithManagerOptions must be closed on a setup failure")
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 // TestRun_RegisterModuleFailureRunsCleanup is the module-registration
@@ -229,182 +294,234 @@ func TestRun_SetupFailureRunsCleanup(t *testing.T) {
 // the pre/post-stop hooks nor an already-constructed EventBus were ever
 // touched.
 func TestRun_RegisterModuleFailureRunsCleanup(t *testing.T) {
-	eb := &fakeEventBus{}
-	modA := &recordingModule{name: "dup"}
-	modB := &recordingModule{name: "dup"}
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "scenario",
+			run: func(t *testing.T) {
+				eb := &fakeEventBus{}
+				modA := &recordingModule{name: "dup"}
+				modB := &recordingModule{name: "dup"}
 
-	var mu sync.Mutex
-	var order []string
-	record := func(name string) func(context.Context) error {
-		return func(context.Context) error {
-			mu.Lock()
-			order = append(order, name)
-			mu.Unlock()
-			return nil
-		}
+				var mu sync.Mutex
+				var order []string
+				record := func(name string) func(context.Context) error {
+					return func(context.Context) error {
+						mu.Lock()
+						order = append(order, name)
+						mu.Unlock()
+						return nil
+					}
+				}
+
+				err := app.Run(newTestLogger(), nil, []modulex.Module{modA, modB},
+					app.WithManagerOptions(modulex.WithEventBus(eb)),
+					app.WithPreStop(record("pre")),
+					app.WithPostStop(record("post")),
+				)
+
+				require.Error(t, err)
+				assert.ErrorIs(t, err, modulex.ErrDuplicateModule)
+
+				mu.Lock()
+				defer mu.Unlock()
+				assert.Equal(t, []string{"pre", "post"}, order, "pre/post-stop hooks must run even when module registration fails")
+				assert.Equal(t, 1, eb.CloseCount(), "the event bus constructed via WithManagerOptions must be closed on a register failure")
+			},
+		},
 	}
-
-	err := app.Run(newTestLogger(), nil, []modulex.Module{modA, modB},
-		app.WithManagerOptions(modulex.WithEventBus(eb)),
-		app.WithPreStop(record("pre")),
-		app.WithPostStop(record("post")),
-	)
-
-	require.Error(t, err)
-	assert.ErrorIs(t, err, modulex.ErrDuplicateModule)
-
-	mu.Lock()
-	defer mu.Unlock()
-	assert.Equal(t, []string{"pre", "post"}, order, "pre/post-stop hooks must run even when module registration fails")
-	assert.Equal(t, 1, eb.CloseCount(), "the event bus constructed via WithManagerOptions must be closed on a register failure")
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestRun_SetupHookRunsBeforeInit(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "scenario",
+			run: func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
 
-	foundMarker := make(chan bool, 1)
-	mod := &recordingModule{
-		name:      "mod-a",
-		startedCh: make(chan struct{}),
-		onInit: func(reg modulex.Registry) {
-			_, err := reg.ResolveService("setup.marker")
-			foundMarker <- err == nil
+				foundMarker := make(chan bool, 1)
+				mod := &recordingModule{
+					name:      "mod-a",
+					startedCh: make(chan struct{}),
+					onInit: func(reg modulex.Registry) {
+						_, err := reg.ResolveService("setup.marker")
+						foundMarker <- err == nil
+					},
+				}
+
+				runErr := make(chan error, 1)
+				go func() {
+					runErr <- app.Run(newTestLogger(), nil, []modulex.Module{mod},
+						app.WithContext(ctx),
+						app.WithSetup(func(m *modulex.Manager) error {
+							return m.RegisterService("setup.marker", "present")
+						}),
+					)
+				}()
+
+				select {
+				case ok := <-foundMarker:
+					assert.True(t, ok, "setup hook should have registered the service before Init ran")
+				case <-time.After(2 * time.Second):
+					t.Fatal("timed out waiting for module Init")
+				}
+
+				// Wait for StartModules to finish before cancelling, otherwise StartModules
+				// may race with the cancelled context and return "start cancelled".
+				select {
+				case <-mod.startedCh:
+				case <-time.After(2 * time.Second):
+					t.Fatal("timed out waiting for module to start")
+				}
+
+				cancel()
+
+				select {
+				case err := <-runErr:
+					require.NoError(t, err)
+				case <-time.After(2 * time.Second):
+					t.Fatal("timed out waiting for Run to return")
+				}
+			},
 		},
 	}
-
-	runErr := make(chan error, 1)
-	go func() {
-		runErr <- app.Run(newTestLogger(), nil, []modulex.Module{mod},
-			app.WithContext(ctx),
-			app.WithSetup(func(m *modulex.Manager) error {
-				return m.RegisterService("setup.marker", "present")
-			}),
-		)
-	}()
-
-	select {
-	case ok := <-foundMarker:
-		assert.True(t, ok, "setup hook should have registered the service before Init ran")
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for module Init")
-	}
-
-	// Wait for StartModules to finish before cancelling, otherwise StartModules
-	// may race with the cancelled context and return "start cancelled".
-	select {
-	case <-mod.startedCh:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for module to start")
-	}
-
-	cancel()
-
-	select {
-	case err := <-runErr:
-		require.NoError(t, err)
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for Run to return")
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
 	}
 }
 
 func TestRun_PreStopAndPostStopHooksRunAroundStopModules(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "scenario",
+			run: func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
 
-	mod := &recordingModule{name: "mod-a", startedCh: make(chan struct{})}
+				mod := &recordingModule{name: "mod-a", startedCh: make(chan struct{})}
 
-	var mu sync.Mutex
-	var order []string
-	record := func(name string) func(context.Context) error {
-		return func(context.Context) error {
-			mu.Lock()
-			order = append(order, name)
-			mu.Unlock()
-			return nil
-		}
+				var mu sync.Mutex
+				var order []string
+				record := func(name string) func(context.Context) error {
+					return func(context.Context) error {
+						mu.Lock()
+						order = append(order, name)
+						mu.Unlock()
+						return nil
+					}
+				}
+
+				runErr := make(chan error, 1)
+				go func() {
+					runErr <- app.Run(newTestLogger(), nil, []modulex.Module{mod},
+						app.WithContext(ctx),
+						app.WithPreStop(record("pre-1")),
+						app.WithPreStop(record("pre-2")),
+						app.WithPostStop(record("post-1")),
+						app.WithPostStop(record("post-2")),
+					)
+				}()
+
+				select {
+				case <-mod.startedCh:
+				case <-time.After(2 * time.Second):
+					t.Fatal("timed out waiting for module to start")
+				}
+
+				cancel()
+
+				select {
+				case err := <-runErr:
+					require.NoError(t, err)
+				case <-time.After(2 * time.Second):
+					t.Fatal("timed out waiting for Run to return")
+				}
+
+				mu.Lock()
+				defer mu.Unlock()
+				assert.Equal(t, []string{"pre-1", "pre-2", "post-1", "post-2"}, order)
+			},
+		},
 	}
-
-	runErr := make(chan error, 1)
-	go func() {
-		runErr <- app.Run(newTestLogger(), nil, []modulex.Module{mod},
-			app.WithContext(ctx),
-			app.WithPreStop(record("pre-1")),
-			app.WithPreStop(record("pre-2")),
-			app.WithPostStop(record("post-1")),
-			app.WithPostStop(record("post-2")),
-		)
-	}()
-
-	select {
-	case <-mod.startedCh:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for module to start")
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
 	}
-
-	cancel()
-
-	select {
-	case err := <-runErr:
-		require.NoError(t, err)
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for Run to return")
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	assert.Equal(t, []string{"pre-1", "pre-2", "post-1", "post-2"}, order)
 }
 
 func TestRun_PostStopHookRunsEvenWhenPreStopAndStopModulesFail(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "scenario",
+			run: func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
 
-	mod := &recordingModule{
-		name:      "slow-stop",
-		startedCh: make(chan struct{}),
-		stopDelay: 2 * time.Second,
+				mod := &recordingModule{
+					name:      "slow-stop",
+					startedCh: make(chan struct{}),
+					stopDelay: 2 * time.Second,
+				}
+
+				preStopErr := errors.New("pre-stop boom")
+				postStopRan := make(chan struct{})
+
+				runErr := make(chan error, 1)
+				go func() {
+					runErr <- app.Run(newTestLogger(), nil, []modulex.Module{mod},
+						app.WithContext(ctx),
+						app.WithShutdownTimeout(100*time.Millisecond),
+						app.WithPreStop(func(context.Context) error {
+							return preStopErr
+						}),
+						app.WithPostStop(func(context.Context) error {
+							close(postStopRan)
+							return nil
+						}),
+					)
+				}()
+
+				select {
+				case <-mod.startedCh:
+				case <-time.After(2 * time.Second):
+					t.Fatal("timed out waiting for module to start")
+				}
+
+				cancel()
+
+				select {
+				case <-postStopRan:
+				case <-time.After(3 * time.Second):
+					t.Fatal("timed out waiting for post-stop hook to run")
+				}
+
+				select {
+				case err := <-runErr:
+					require.Error(t, err)
+					assert.ErrorIs(t, err, preStopErr)
+					assert.ErrorIs(t, err, context.DeadlineExceeded)
+				case <-time.After(3 * time.Second):
+					t.Fatal("timed out waiting for Run to return")
+				}
+			},
+		},
 	}
-
-	preStopErr := errors.New("pre-stop boom")
-	postStopRan := make(chan struct{})
-
-	runErr := make(chan error, 1)
-	go func() {
-		runErr <- app.Run(newTestLogger(), nil, []modulex.Module{mod},
-			app.WithContext(ctx),
-			app.WithShutdownTimeout(100*time.Millisecond),
-			app.WithPreStop(func(context.Context) error {
-				return preStopErr
-			}),
-			app.WithPostStop(func(context.Context) error {
-				close(postStopRan)
-				return nil
-			}),
-		)
-	}()
-
-	select {
-	case <-mod.startedCh:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for module to start")
-	}
-
-	cancel()
-
-	select {
-	case <-postStopRan:
-	case <-time.After(3 * time.Second):
-		t.Fatal("timed out waiting for post-stop hook to run")
-	}
-
-	select {
-	case err := <-runErr:
-		require.Error(t, err)
-		assert.ErrorIs(t, err, preStopErr)
-		assert.ErrorIs(t, err, context.DeadlineExceeded)
-	case <-time.After(3 * time.Second):
-		t.Fatal("timed out waiting for Run to return")
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
 	}
 }
 
@@ -413,31 +530,44 @@ func TestRun_PostStopHookRunsEvenWhenPreStopAndStopModulesFail(t *testing.T) {
 // run on the early-exit cleanup path when InitModules fails, not just on a
 // normal shutdown after the application fully started.
 func TestRun_PreStopAndPostStopHooksRunOnInitFailure(t *testing.T) {
-	initErr := errors.New("init boom")
-	mod := &recordingModule{name: "failing-init", initErr: initErr}
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "scenario",
+			run: func(t *testing.T) {
+				initErr := errors.New("init boom")
+				mod := &recordingModule{name: "failing-init", initErr: initErr}
 
-	var mu sync.Mutex
-	var order []string
-	record := func(name string) func(context.Context) error {
-		return func(context.Context) error {
-			mu.Lock()
-			order = append(order, name)
-			mu.Unlock()
-			return nil
-		}
+				var mu sync.Mutex
+				var order []string
+				record := func(name string) func(context.Context) error {
+					return func(context.Context) error {
+						mu.Lock()
+						order = append(order, name)
+						mu.Unlock()
+						return nil
+					}
+				}
+
+				err := app.Run(newTestLogger(), nil, []modulex.Module{mod},
+					app.WithPreStop(record("pre")),
+					app.WithPostStop(record("post")),
+				)
+
+				require.Error(t, err)
+				assert.ErrorIs(t, err, initErr)
+
+				mu.Lock()
+				defer mu.Unlock()
+				assert.Equal(t, []string{"pre", "post"}, order)
+			},
+		},
 	}
-
-	err := app.Run(newTestLogger(), nil, []modulex.Module{mod},
-		app.WithPreStop(record("pre")),
-		app.WithPostStop(record("post")),
-	)
-
-	require.Error(t, err)
-	assert.ErrorIs(t, err, initErr)
-
-	mu.Lock()
-	defer mu.Unlock()
-	assert.Equal(t, []string{"pre", "post"}, order)
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 // TestRun_CleanupHookErrorJoinedOnEarlyExit locks in WithPreStop/WithPostStop's
@@ -449,50 +579,76 @@ func TestRun_PreStopAndPostStopHooksRunOnInitFailure(t *testing.T) {
 // value never saw a failed cleanup hook (e.g. a tracer-provider shutdown
 // failure) on that path.
 func TestRun_CleanupHookErrorJoinedOnEarlyExit(t *testing.T) {
-	initErr := errors.New("init boom")
-	preStopErr := errors.New("pre-stop cleanup boom")
-	mod := &recordingModule{name: "failing-init", initErr: initErr}
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "scenario",
+			run: func(t *testing.T) {
+				initErr := errors.New("init boom")
+				preStopErr := errors.New("pre-stop cleanup boom")
+				mod := &recordingModule{name: "failing-init", initErr: initErr}
 
-	err := app.Run(newTestLogger(), nil, []modulex.Module{mod},
-		app.WithPreStop(func(context.Context) error { return preStopErr }),
-	)
+				err := app.Run(newTestLogger(), nil, []modulex.Module{mod},
+					app.WithPreStop(func(context.Context) error { return preStopErr }),
+				)
 
-	require.Error(t, err)
-	assert.ErrorIs(t, err, initErr)
-	assert.ErrorIs(t, err, preStopErr)
+				require.Error(t, err)
+				assert.ErrorIs(t, err, initErr)
+				assert.ErrorIs(t, err, preStopErr)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestRun_ShutdownTimeout(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "scenario",
+			run: func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
 
-	mod := &recordingModule{
-		name:      "slow-stop",
-		startedCh: make(chan struct{}),
-		stopDelay: 2 * time.Second,
+				mod := &recordingModule{
+					name:      "slow-stop",
+					startedCh: make(chan struct{}),
+					stopDelay: 2 * time.Second,
+				}
+
+				runErr := make(chan error, 1)
+				go func() {
+					runErr <- app.Run(newTestLogger(), nil, []modulex.Module{mod},
+						app.WithContext(ctx),
+						app.WithShutdownTimeout(100*time.Millisecond),
+					)
+				}()
+
+				select {
+				case <-mod.startedCh:
+				case <-time.After(2 * time.Second):
+					t.Fatal("timed out waiting for module to start")
+				}
+
+				cancel()
+
+				select {
+				case err := <-runErr:
+					require.Error(t, err)
+					assert.ErrorIs(t, err, context.DeadlineExceeded)
+				case <-time.After(3 * time.Second):
+					t.Fatal("timed out waiting for Run to return")
+				}
+			},
+		},
 	}
-
-	runErr := make(chan error, 1)
-	go func() {
-		runErr <- app.Run(newTestLogger(), nil, []modulex.Module{mod},
-			app.WithContext(ctx),
-			app.WithShutdownTimeout(100*time.Millisecond),
-		)
-	}()
-
-	select {
-	case <-mod.startedCh:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for module to start")
-	}
-
-	cancel()
-
-	select {
-	case err := <-runErr:
-		require.Error(t, err)
-		assert.ErrorIs(t, err, context.DeadlineExceeded)
-	case <-time.After(3 * time.Second):
-		t.Fatal("timed out waiting for Run to return")
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
 	}
 }

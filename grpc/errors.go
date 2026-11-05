@@ -9,32 +9,34 @@ import (
 	googlegrpc "google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"github.com/mediusfy/modulex/apperrors"
 )
 
 // Sentinel errors a client can compare against with errors.Is after calling
 // TranslateError on an error returned by a gRPC call. Each corresponds to a
 // commonly used gRPC status code; see TranslateError's doc comment for the
 // full code table.
-var (
+const (
 	// ErrInvalidInput corresponds to codes.InvalidArgument.
-	ErrInvalidInput = errors.New("grpc: invalid input")
+	ErrInvalidInput apperrors.Error = "grpc: invalid input"
 	// ErrNotFound corresponds to codes.NotFound.
-	ErrNotFound = errors.New("grpc: not found")
+	ErrNotFound apperrors.Error = "grpc: not found"
 	// ErrAlreadyExists corresponds to codes.AlreadyExists.
-	ErrAlreadyExists = errors.New("grpc: already exists")
+	ErrAlreadyExists apperrors.Error = "grpc: already exists"
 	// ErrPermissionDenied corresponds to codes.PermissionDenied.
-	ErrPermissionDenied = errors.New("grpc: permission denied")
+	ErrPermissionDenied apperrors.Error = "grpc: permission denied"
 	// ErrUnauthenticated corresponds to codes.Unauthenticated.
-	ErrUnauthenticated = errors.New("grpc: unauthenticated")
+	ErrUnauthenticated apperrors.Error = "grpc: unauthenticated"
 	// ErrUnavailable corresponds to codes.Unavailable.
-	ErrUnavailable = errors.New("grpc: unavailable")
+	ErrUnavailable apperrors.Error = "grpc: unavailable"
 	// ErrDeadlineExceeded corresponds to codes.DeadlineExceeded.
-	ErrDeadlineExceeded = errors.New("grpc: deadline exceeded")
+	ErrDeadlineExceeded apperrors.Error = "grpc: deadline exceeded"
 	// ErrCanceled corresponds to codes.Canceled.
-	ErrCanceled = errors.New("grpc: canceled")
+	ErrCanceled apperrors.Error = "grpc: canceled"
 	// ErrInternal is returned for any other non-OK code, including
 	// codes.Internal itself and codes.Unknown.
-	ErrInternal = errors.New("grpc: internal error")
+	ErrInternal apperrors.Error = "grpc: internal error"
 )
 
 // codeSentinels maps a gRPC status code to the sentinel error TranslateError
@@ -69,6 +71,13 @@ type ErrorMapping func(err error) codes.Code
 // path, a SQL fragment) most often ends up — and this interceptor's
 // callers are frequently unauthenticated RPC clients.
 const genericInternalErrorMessage = "internal error"
+
+// Log attribute keys used by UnaryServerErrorInterceptor.
+const (
+	logKeyMethod = "method"
+	logKeyCode   = "code"
+	logKeyError  = "error"
+)
 
 // clientSafeStatusCodes are status codes whose associated error message is
 // safe to send back to an RPC caller verbatim, because they correspond to
@@ -175,9 +184,9 @@ func UnaryServerErrorInterceptor(mapping ErrorMapping, opts ...ServerErrorInterc
 		msg := err.Error()
 		if !cfg.exposeInternal && !clientSafeStatusCodes[code] {
 			cfg.logger.ErrorContext(ctx, "grpc: unary handler returned an internal error",
-				slog.String("method", info.FullMethod),
-				slog.String("code", code.String()),
-				slog.Any("error", err))
+				slog.String(logKeyMethod, info.FullMethod),
+				slog.String(logKeyCode, code.String()),
+				slog.Any(logKeyError, err))
 			msg = genericInternalErrorMessage
 		}
 		return resp, status.Error(code, msg)

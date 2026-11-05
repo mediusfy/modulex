@@ -25,6 +25,16 @@ import (
 // vector on a public endpoint.
 const maxBodyBytes = 1 << 20
 
+// Structured-log attribute keys.
+const (
+	logKeyDelivery     = "delivery"
+	logKeyError        = "error"
+	logKeyInstallation = "installation"
+	logKeyPR           = "pr"
+	logKeyRepo         = "repo"
+	logKeySHA          = "sha"
+)
+
 // Handler is the webhook HTTP handler.
 type Handler struct {
 	Secret   []byte
@@ -88,7 +98,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Failing open would double-review; failing closed (non-2xx) makes
 		// GitHub retry into the same error. 500 is honest: the retry will
 		// land once the store recovers, and dedup absorbs any duplicate.
-		h.Log.Error("dedup store", "error", err, "delivery", deliveryID)
+		h.Log.Error("dedup store", logKeyError, err, logKeyDelivery, deliveryID)
 		http.Error(w, "dedup unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -101,24 +111,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// redelivering, and not enqueueing caps the tenant's blast radius.
 	if !h.Limiter.Allow(req.InstallationID) {
 		h.Log.Warn("installation over quota; delivery dropped",
-			"installation", req.InstallationID, "delivery", deliveryID)
+			logKeyInstallation, req.InstallationID, logKeyDelivery, deliveryID)
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 
 	if err := h.Queue.Enqueue(r.Context(), req); err != nil {
-		h.Log.Error("enqueue", "error", err, "delivery", deliveryID)
+		h.Log.Error("enqueue", logKeyError, err, logKeyDelivery, deliveryID)
 		if ferr := h.Dedup.Forget(r.Context(), dedupKey); ferr != nil {
 			// Worst case the review waits out the dedup TTL; log loudly.
 			h.Log.Error("dedup forget failed; redelivery will be swallowed until TTL",
-				"error", ferr, "delivery", deliveryID)
+				logKeyError, ferr, logKeyDelivery, deliveryID)
 		}
 		http.Error(w, "enqueue failed", http.StatusInternalServerError)
 		return
 	}
 	h.Log.Info("review enqueued",
-		"installation", req.InstallationID, "repo", req.Owner+"/"+req.Repo,
-		"pr", req.PRNumber, "sha", req.HeadSHA, "delivery", deliveryID)
+		logKeyInstallation, req.InstallationID, logKeyRepo, req.Owner+"/"+req.Repo,
+		logKeyPR, req.PRNumber, logKeySHA, req.HeadSHA, logKeyDelivery, deliveryID)
 	w.WriteHeader(http.StatusAccepted)
 }
 

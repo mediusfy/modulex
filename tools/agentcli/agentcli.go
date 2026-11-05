@@ -24,12 +24,7 @@ import (
 	"github.com/mediusfy/modulex/verify"
 )
 
-// ContractFileName is the well-known repository contract file name, per
-// docs/planning/agent-repository-contract-guide.md. Alias of
-// contract.FileName, kept for existing callers and tests in this package.
-const ContractFileName = contract.FileName
-
-// LoadContract reads and unmarshals <root>/ContractFileName (via
+// LoadContract reads and unmarshals <root>/contract.FileName (via
 // contract.Load), then validates it. Unlike tools/mcpserver's readContract,
 // LoadContract has no "not present" tri-state: `modulex agent generate` has
 // nothing useful to do without a contract, so a missing or invalid file is
@@ -40,11 +35,11 @@ func LoadContract(root string) (contract.Contract, error) {
 		return contract.Contract{}, err
 	}
 	if !present {
-		path := filepath.Join(root, ContractFileName)
+		path := filepath.Join(root, contract.FileName)
 		return contract.Contract{}, fmt.Errorf("reading %s: %w", path, os.ErrNotExist)
 	}
 	if err := c.Validate(); err != nil {
-		path := filepath.Join(root, ContractFileName)
+		path := filepath.Join(root, contract.FileName)
 		return contract.Contract{}, fmt.Errorf("%s failed validation: %w", path, err)
 	}
 	return *c, nil

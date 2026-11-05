@@ -12,12 +12,14 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/mediusfy/modulex/apperrors"
 )
 
 // ErrBadSignature is returned when X-Hub-Signature-256 does not match the
 // body under the webhook secret. The receiver must reject the delivery
 // without processing any of its content.
-var ErrBadSignature = errors.New("webhook signature mismatch")
+const ErrBadSignature apperrors.Error = "webhook signature mismatch"
 
 // VerifySignature checks a GitHub X-Hub-Signature-256 header ("sha256=<hex>")
 // against the raw request body using constant-time comparison.
@@ -55,7 +57,7 @@ type ReviewRequest struct {
 // ErrIgnore is returned by ParsePullRequestEvent for deliveries the service
 // deliberately does not review (wrong event type or action). The receiver
 // acks them with 200 and does no further work.
-var ErrIgnore = errors.New("delivery ignored")
+const ErrIgnore apperrors.Error = "delivery ignored"
 
 // reviewedActions are the pull_request actions that trigger a review,
 // matching the modulex pr-review.yml trigger set.

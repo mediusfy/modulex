@@ -10,11 +10,6 @@ import (
 	"github.com/mediusfy/modulex/contract"
 )
 
-// contractFileName is the well-known repository contract file name, per
-// docs/planning/agent-repository-contract-guide.md. Alias of
-// contract.FileName, kept for existing callers and tests in this package.
-const contractFileName = contract.FileName
-
 // ReadContractIn is read_contract's input.
 type ReadContractIn struct {
 	// Root is the repository root expected to contain modulex.agent.yaml.

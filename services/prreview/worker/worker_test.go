@@ -436,20 +436,25 @@ func TestComposeCommentSanitizesAICommentary(t *testing.T) {
 // otherwise a secret introduced by an earlier push could be hidden by a
 // later, unrelated push whose incremental diff never touches it.
 func TestReviewOnceAlwaysUsesFullBaseRangeForGating(t *testing.T) {
-	ctx := context.Background()
-	f := newFixture("")
-	// Simulate a job that already completed one review, whose
-	// LastReviewedSHA is unrelated history (as after a force-push, it may
-	// not even be an ancestor of the new head).
-	_, _ = f.mem.Mutate(ctx, key(), func(j store.Job) store.Job {
-		j.LastReviewedSHA = "sha-rewritten-away"
-		j.CommentID = 555
-		return j
-	})
-	if err := f.w.Handle(ctx, req()); err != nil {
-		t.Fatalf("Handle: %v", err)
-	}
-	if len(f.fetcher.baseRefs) != 1 || f.fetcher.baseRefs[0] != "main" {
-		t.Fatalf("fetch base refs = %v, want [main] (full base...head range, not the stale LastReviewedSHA)", f.fetcher.baseRefs)
+	tests := []struct{ name string }{{name: "gating fetch uses full base range after prior review"}}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			f := newFixture("")
+			// Simulate a job that already completed one review, whose
+			// LastReviewedSHA is unrelated history (as after a force-push, it may
+			// not even be an ancestor of the new head).
+			_, _ = f.mem.Mutate(ctx, key(), func(j store.Job) store.Job {
+				j.LastReviewedSHA = "sha-rewritten-away"
+				j.CommentID = 555
+				return j
+			})
+			if err := f.w.Handle(ctx, req()); err != nil {
+				t.Fatalf("Handle: %v", err)
+			}
+			if len(f.fetcher.baseRefs) != 1 || f.fetcher.baseRefs[0] != "main" {
+				t.Fatalf("fetch base refs = %v, want [main] (full base...head range, not the stale LastReviewedSHA)", f.fetcher.baseRefs)
+			}
+		})
 	}
 }
