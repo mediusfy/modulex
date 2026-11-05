@@ -47,18 +47,29 @@ func TestIsTerminalFetchError(t *testing.T) {
 // hot-spin retrying as fast as possible) and must be capped at
 // maxDurableFetchBackoff (so it does not grow unboundedly either).
 func TestNextDurableFetchBackoff(t *testing.T) {
-	backoff := initialDurableFetchBackoff
-	seen := []time.Duration{backoff}
-	for i := 0; i < 10; i++ {
-		backoff = nextDurableFetchBackoff(backoff)
-		seen = append(seen, backoff)
+	tests := []struct {
+		name  string
+		start time.Duration
+		steps int
+	}{
+		{name: "grows monotonically and caps from initial backoff", start: initialDurableFetchBackoff, steps: 10},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			backoff := tt.start
+			seen := []time.Duration{backoff}
+			for i := 0; i < tt.steps; i++ {
+				backoff = nextDurableFetchBackoff(backoff)
+				seen = append(seen, backoff)
+			}
 
-	for i := 1; i < len(seen); i++ {
-		assert.GreaterOrEqual(t, seen[i], seen[i-1], "backoff must never shrink")
+			for i := 1; i < len(seen); i++ {
+				assert.GreaterOrEqual(t, seen[i], seen[i-1], "backoff must never shrink")
+			}
+			assert.Equal(t, maxDurableFetchBackoff, seen[len(seen)-1], "backoff must eventually cap at maxDurableFetchBackoff")
+			assert.LessOrEqual(t, seen[1], maxDurableFetchBackoff)
+		})
 	}
-	assert.Equal(t, maxDurableFetchBackoff, seen[len(seen)-1], "backoff must eventually cap at maxDurableFetchBackoff")
-	assert.LessOrEqual(t, seen[1], maxDurableFetchBackoff)
 }
 
 // TestJetStreamEventBus_NakDelay locks in the fix for M4: the delay passed
@@ -66,17 +77,26 @@ func TestNextDurableFetchBackoff(t *testing.T) {
 // at the configured AckWait) instead of nacking immediately, and must be
 // capped at maxDurableNakDelay.
 func TestJetStreamEventBus_NakDelay(t *testing.T) {
-	j := &JetStreamEventBus{durableAckWait: 1 * time.Second}
-
-	assert.Equal(t, 1*time.Second, j.nakDelay(0), "deliveryCount < 1 must be treated as 1")
-	assert.Equal(t, 1*time.Second, j.nakDelay(1))
-	assert.Equal(t, 2*time.Second, j.nakDelay(2))
-	assert.Equal(t, 4*time.Second, j.nakDelay(3))
-	assert.Equal(t, 8*time.Second, j.nakDelay(4))
-
-	// A very large delivery count must still cap at maxDurableNakDelay,
-	// rather than overflowing time.Duration via repeated doubling.
-	assert.Equal(t, maxDurableNakDelay, j.nakDelay(1000))
+	tests := []struct {
+		name          string
+		deliveryCount int
+		want          time.Duration
+	}{
+		{"deliveryCount < 1 must be treated as 1", 0, 1 * time.Second},
+		{"first delivery", 1, 1 * time.Second},
+		{"second delivery", 2, 2 * time.Second},
+		{"third delivery", 3, 4 * time.Second},
+		{"fourth delivery", 4, 8 * time.Second},
+		// A very large delivery count must still cap at maxDurableNakDelay,
+		// rather than overflowing time.Duration via repeated doubling.
+		{"very large delivery count caps at maxDurableNakDelay", 1000, maxDurableNakDelay},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			j := &JetStreamEventBus{durableAckWait: 1 * time.Second}
+			assert.Equal(t, tt.want, j.nakDelay(tt.deliveryCount))
+		})
+	}
 }
 
 type stubConsumerInfoJS struct {
