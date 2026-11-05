@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so sentinel errors can be declared as constants.
 - `integration`: hermetic smoke tests that build and run every `package main`
   entry point (`make test-integration`).
+- Smoke-test rows cover every `package main` entry point and a completeness test fails when a new one is added without a row.
 
 ### Changed
 
