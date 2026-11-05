@@ -71,7 +71,7 @@ func TestGrant_StringNeverIncludesRawToken(t *testing.T) {
 			name: "Grant_StringNeverIncludesRawToken",
 			run: func(t *testing.T) {
 				g := Grant{
-					Token:      "super-secret-raw-token-value",
+					Token:      "super-secret-raw-token-value", // nosecret: fake token fixture
 					TokenHash:  "abc123",
 					Scope:      Scope{Action: "push", Resource: "main"},
 					ApprovedBy: "drew@jocham.io",
@@ -156,7 +156,7 @@ func TestGrant_ToProvenanceApproval(t *testing.T) {
 			run: func(t *testing.T) {
 				approvedAt := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 				g := Grant{
-					Token:      "raw-token-should-not-appear",
+					Token:      "raw-token-should-not-appear", // nosecret: fake token fixture
 					TokenHash:  "deadbeef",
 					Scope:      Scope{Action: "release", Resource: "v1.2.0"},
 					ApprovedBy: "drew@jocham.io",

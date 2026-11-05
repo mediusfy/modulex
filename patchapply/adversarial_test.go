@@ -427,7 +427,7 @@ func TestApply_SecretRedactedInPriorContentMismatchError(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
-			fakeToken := "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+			fakeToken := "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" // nosecret: fake token fixture
 			actualContent := []byte("config line before\n" + fakeToken + "\nconfig line after")
 			writeFile(t, dir, "config.txt", actualContent)
 
