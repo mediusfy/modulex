@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `patchapply`, `approval`, `verify`, `provenance`, `contract`: sentinel errors are typed constants (**BREAKING** for code that reassigns them); `contract.RenderText` was split into helpers with byte-identical output.
 - **BREAKING:** exported sentinel errors in the root package, `grpc`,
   `patchapply`, `approval`, `nats`, `review`, `workerpool` and `webhook` are now
   typed constants (`apperrors.Error`) instead of `var` values created with
