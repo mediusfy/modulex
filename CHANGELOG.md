@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `modboundary`, `prreview`, `webhook`: `webhook.ErrBadSignature` and `webhook.ErrIgnore` are typed constants; the receiver and worker share one bootstrap package; the `ContractFileName` shims were removed.
 - `rabbitmq`: the integration test now closes the event bus before the channel,
   removing a shutdown hang in `TestEventBus_PlainHandlerPanicIsRecovered`.
 
