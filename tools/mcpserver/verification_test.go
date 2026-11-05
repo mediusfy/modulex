@@ -74,122 +74,109 @@ func mustRunVerification(t *testing.T, root string, checks []CheckSpecIn, allowN
 // TestRunVerification_ApprovalStatusReflectsFileStoreGrant), so it never
 // writes into this repository's real working tree.
 func TestRunVerification(t *testing.T) {
+	const repoRoot = "../.."
+	pass, blocked := provenance.StatusPass, provenance.StatusApprovalRequired
 	tests := []struct {
-		name string
-		run  func(t *testing.T)
+		name         string
+		root         string // defaults to repoRoot
+		checks       []CheckSpecIn
+		allowNetwork bool
+		wantErr      bool
+		wantNames    []string // when set, Results names must match in order
+		wantStatuses []provenance.Status
+		wantReason   bool // blocked Results[0] must carry ClassifyCommand's explanation
 	}{
 		{
 			name: "missing required tool is reported unavailable, never run",
-			run: func(t *testing.T) {
-				out := mustRunVerification(t, "../..", []CheckSpecIn{
-					{
-						Name:         "fake-check",
-						Command:      "go vet ./...",
-						Category:     provenance.VerificationFull,
-						RequiredTool: "definitely-not-a-real-tool-xyz",
-					},
-				}, false)
-				if len(out.Results) != 1 {
-					t.Fatalf("len(Results) = %d, want 1", len(out.Results))
-				}
-				if out.Results[0].Status != provenance.StatusUnavailable {
-					t.Errorf("Status = %q, want %q", out.Results[0].Status, provenance.StatusUnavailable)
-				}
-			},
+			checks: []CheckSpecIn{{
+				Name: "fake-check", Command: "go vet ./...", Category: provenance.VerificationFull,
+				RequiredTool: "definitely-not-a-real-tool-xyz",
+			}},
+			wantStatuses: []provenance.Status{provenance.StatusUnavailable},
 		},
 		{
 			name: "networked check skipped without allow_network",
-			run: func(t *testing.T) {
-				out := mustRunVerification(t, "../..", []CheckSpecIn{
-					{Name: "networked", Command: "go vet ./...", Category: provenance.VerificationFull, Networked: true},
-				}, false)
-				if out.Results[0].Status != provenance.StatusSkipped {
-					t.Errorf("Status = %q, want %q", out.Results[0].Status, provenance.StatusSkipped)
-				}
+			checks: []CheckSpecIn{
+				{Name: "networked", Command: "go vet ./...", Category: provenance.VerificationFull, Networked: true},
 			},
+			wantStatuses: []provenance.Status{provenance.StatusSkipped},
 		},
 		{
 			name: "a trivial passing command",
-			run: func(t *testing.T) {
-				out := mustRunVerification(t, "../..", []CheckSpecIn{
-					{Name: "trivial", Command: "go vet ./...", Category: provenance.VerificationFocused},
-				}, false)
-				if out.Results[0].Status != provenance.StatusPass {
-					t.Errorf("Status = %q, want %q; Message: %s", out.Results[0].Status, provenance.StatusPass, out.Results[0].Message)
-				}
+			checks: []CheckSpecIn{
+				{Name: "trivial", Command: "go vet ./...", Category: provenance.VerificationFocused},
 			},
+			wantStatuses: []provenance.Status{pass},
 		},
 		{
-			name: "invalid root returns an error",
-			run: func(t *testing.T) {
-				_, err := runVerification(context.Background(), "/does/not/exist/at/all", nil, false)
-				if err == nil {
-					t.Fatal("runVerification() error = nil, want an error for an invalid root")
-				}
-			},
+			name:    "invalid root returns an error",
+			root:    "/does/not/exist/at/all",
+			wantErr: true,
 		},
 		{
 			name: "destructive command is blocked without running",
-			run: func(t *testing.T) {
-				out := mustRunVerification(t, "../..", []CheckSpecIn{
-					{Name: "danger", Command: "git reset --hard", Category: provenance.VerificationFull},
-				}, false)
-				if out.Results[0].Status != provenance.StatusApprovalRequired {
-					t.Errorf("Status = %q, want %q", out.Results[0].Status, provenance.StatusApprovalRequired)
-				}
-				if out.Results[0].Reason == "" {
-					t.Error("Reason is empty, want ClassifyCommand's explanation")
-				}
+			checks: []CheckSpecIn{
+				{Name: "danger", Command: "git reset --hard", Category: provenance.VerificationFull},
 			},
+			wantStatuses: []provenance.Status{blocked},
+			wantReason:   true,
 		},
 		{
+			// A read-only tool must never run a mutating command, not just
+			// destructive/approval-required ones.
 			name: "mutating command is blocked without running, not just destructive",
-			run: func(t *testing.T) {
-				out := mustRunVerification(t, "../..", []CheckSpecIn{
-					{Name: "would-mutate", Command: "make fmt", Category: provenance.VerificationFull},
-				}, false)
-				if out.Results[0].Status != provenance.StatusApprovalRequired {
-					t.Errorf("Status = %q, want %q (a read-only tool must never run a mutating command, not just destructive/approval-required ones)", out.Results[0].Status, provenance.StatusApprovalRequired)
-				}
+			checks: []CheckSpecIn{
+				{Name: "would-mutate", Command: "make fmt", Category: provenance.VerificationFull},
 			},
+			wantStatuses: []provenance.Status{blocked},
 		},
 		{
+			// Unrecognized commands must fail safe, never silently pass.
 			name: "unrecognized command defaults to approval-required, fail-safe",
-			run: func(t *testing.T) {
-				out := mustRunVerification(t, "../..", []CheckSpecIn{
-					{Name: "mystery", Command: "some-arbitrary-unrecognized-command", Category: provenance.VerificationFull},
-				}, false)
-				if out.Results[0].Status != provenance.StatusApprovalRequired {
-					t.Errorf("Status = %q, want %q (unrecognized commands must fail safe, never silently pass)", out.Results[0].Status, provenance.StatusApprovalRequired)
-				}
+			checks: []CheckSpecIn{
+				{Name: "mystery", Command: "some-arbitrary-unrecognized-command", Category: provenance.VerificationFull},
 			},
+			wantStatuses: []provenance.Status{blocked},
 		},
 		{
 			name: "a mix of blocked and runnable checks preserves order and count",
-			run: func(t *testing.T) {
-				out := mustRunVerification(t, "../..", []CheckSpecIn{
-					{Name: "first-blocked", Command: "git push origin main", Category: provenance.VerificationFull},
-					{Name: "second-runs", Command: "go vet ./...", Category: provenance.VerificationFull},
-					{Name: "third-blocked", Command: "git reset --hard", Category: provenance.VerificationFull},
-				}, false)
-				if len(out.Results) != 3 {
-					t.Fatalf("len(Results) = %d, want 3", len(out.Results))
-				}
-				wantNames := []string{"first-blocked", "second-runs", "third-blocked"}
-				wantStatuses := []provenance.Status{provenance.StatusApprovalRequired, provenance.StatusPass, provenance.StatusApprovalRequired}
-				for i, r := range out.Results {
-					if r.Name != wantNames[i] {
-						t.Errorf("Results[%d].Name = %q, want %q (order must match input)", i, r.Name, wantNames[i])
-					}
-					if r.Status != wantStatuses[i] {
-						t.Errorf("Results[%d].Status = %q, want %q", i, r.Status, wantStatuses[i])
-					}
-				}
+			checks: []CheckSpecIn{
+				{Name: "first-blocked", Command: "git push origin main", Category: provenance.VerificationFull},
+				{Name: "second-runs", Command: "go vet ./...", Category: provenance.VerificationFull},
+				{Name: "third-blocked", Command: "git reset --hard", Category: provenance.VerificationFull},
 			},
+			wantNames:    []string{"first-blocked", "second-runs", "third-blocked"},
+			wantStatuses: []provenance.Status{blocked, pass, blocked},
 		},
 	}
 	for _, tt := range tests {
-		t.Run(tt.name, tt.run)
+		t.Run(tt.name, func(t *testing.T) {
+			root := tt.root
+			if root == "" {
+				root = repoRoot
+			}
+			if tt.wantErr {
+				if _, err := runVerification(context.Background(), root, tt.checks, tt.allowNetwork); err == nil {
+					t.Fatal("runVerification() error = nil, want an error")
+				}
+				return
+			}
+			out := mustRunVerification(t, root, tt.checks, tt.allowNetwork)
+			if len(out.Results) != len(tt.wantStatuses) {
+				t.Fatalf("len(Results) = %d, want %d", len(out.Results), len(tt.wantStatuses))
+			}
+			for i, r := range out.Results {
+				if r.Status != tt.wantStatuses[i] {
+					t.Errorf("Results[%d].Status = %q, want %q; Message: %s", i, r.Status, tt.wantStatuses[i], r.Message)
+				}
+				if tt.wantNames != nil && r.Name != tt.wantNames[i] {
+					t.Errorf("Results[%d].Name = %q, want %q (order must match input)", i, r.Name, tt.wantNames[i])
+				}
+			}
+			if tt.wantReason && out.Results[0].Reason == "" {
+				t.Error("Reason is empty, want ClassifyCommand's explanation")
+			}
+		})
 	}
 }
 

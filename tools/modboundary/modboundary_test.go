@@ -23,133 +23,34 @@ func resetFlags(t *testing.T) {
 	}
 }
 
-func TestAllowedImportGraph(t *testing.T) {
+func TestBoundaryAnalysis(t *testing.T) {
+	const dbGlob = "*/migrations/*.sql"
 	tests := []struct {
 		name     string
 		root     string
 		dbschema string
 		pattern  string
 	}{
-		{name: "allowed", root: "allowed", pattern: "allowed/..."},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			resetFlags(t)
-			testdata := analysistest.TestData()
-			if err := modboundary.Analyzer.Flags.Set("root", tt.root); err != nil {
-				t.Fatal(err)
-			}
-			if tt.dbschema != "" {
-				if err := modboundary.Analyzer.Flags.Set("dbschema", tt.dbschema); err != nil {
-					t.Fatal(err)
-				}
-			}
-			analysistest.Run(t, testdata, modboundary.Analyzer, tt.pattern)
-		})
-	}
-}
-
-func TestForbiddenImportGraph(t *testing.T) {
-	tests := []struct {
-		name     string
-		root     string
-		dbschema string
-		pattern  string
-	}{
-		{name: "forbidden", root: "forbidden", pattern: "forbidden/..."},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			resetFlags(t)
-			testdata := analysistest.TestData()
-			if err := modboundary.Analyzer.Flags.Set("root", tt.root); err != nil {
-				t.Fatal(err)
-			}
-			if tt.dbschema != "" {
-				if err := modboundary.Analyzer.Flags.Set("dbschema", tt.dbschema); err != nil {
-					t.Fatal(err)
-				}
-			}
-			analysistest.Run(t, testdata, modboundary.Analyzer, tt.pattern)
-		})
-	}
-}
-
-func TestForbiddenDatabaseCrossReference(t *testing.T) {
-	tests := []struct {
-		name     string
-		root     string
-		dbschema string
-		pattern  string
-	}{
-		{name: "moda references modb table", root: "forbidden-db", dbschema: "*/migrations/*.sql", pattern: "forbidden-db/moda"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			resetFlags(t)
-			testdata := analysistest.TestData()
-			if err := modboundary.Analyzer.Flags.Set("root", tt.root); err != nil {
-				t.Fatal(err)
-			}
-			if tt.dbschema != "" {
-				if err := modboundary.Analyzer.Flags.Set("dbschema", tt.dbschema); err != nil {
-					t.Fatal(err)
-				}
-			}
-			analysistest.Run(t, testdata, modboundary.Analyzer, tt.pattern)
-		})
-	}
-}
-
-func TestForbiddenDatabaseNoCrossReference(t *testing.T) {
-	tests := []struct {
-		name     string
-		root     string
-		dbschema string
-		pattern  string
-	}{
+		{name: "allowed import graph", root: "allowed", pattern: "allowed/..."},
+		{name: "forbidden import graph", root: "forbidden", pattern: "forbidden/..."},
+		{name: "moda references modb table", root: "forbidden-db", dbschema: dbGlob, pattern: "forbidden-db/moda"},
 		// modb owns the users table and has no cross-module references.
-		{name: "modb owns its table", root: "forbidden-db", dbschema: "*/migrations/*.sql", pattern: "forbidden-db/modb"},
+		{name: "modb owns its table", root: "forbidden-db", dbschema: dbGlob, pattern: "forbidden-db/modb"},
+		{name: "allowed database self reference", root: "allowed-db", dbschema: dbGlob, pattern: "allowed-db/..."},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			resetFlags(t)
-			testdata := analysistest.TestData()
-			if err := modboundary.Analyzer.Flags.Set("root", tt.root); err != nil {
-				t.Fatal(err)
-			}
+			flags := map[string]string{"root": tt.root}
 			if tt.dbschema != "" {
-				if err := modboundary.Analyzer.Flags.Set("dbschema", tt.dbschema); err != nil {
-					t.Fatal(err)
+				flags["dbschema"] = tt.dbschema
+			}
+			for name, value := range flags {
+				if err := modboundary.Analyzer.Flags.Set(name, value); err != nil {
+					t.Fatalf("setting -%s: %v", name, err)
 				}
 			}
-			analysistest.Run(t, testdata, modboundary.Analyzer, tt.pattern)
-		})
-	}
-}
-
-func TestAllowedDatabaseSelfReference(t *testing.T) {
-	tests := []struct {
-		name     string
-		root     string
-		dbschema string
-		pattern  string
-	}{
-		{name: "self reference", root: "allowed-db", dbschema: "*/migrations/*.sql", pattern: "allowed-db/..."},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			resetFlags(t)
-			testdata := analysistest.TestData()
-			if err := modboundary.Analyzer.Flags.Set("root", tt.root); err != nil {
-				t.Fatal(err)
-			}
-			if tt.dbschema != "" {
-				if err := modboundary.Analyzer.Flags.Set("dbschema", tt.dbschema); err != nil {
-					t.Fatal(err)
-				}
-			}
-			analysistest.Run(t, testdata, modboundary.Analyzer, tt.pattern)
+			analysistest.Run(t, analysistest.TestData(), modboundary.Analyzer, tt.pattern)
 		})
 	}
 }

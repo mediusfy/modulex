@@ -254,11 +254,6 @@ func TestGitFetcher_TokenNeverAppearsInArgv(t *testing.T) {
 // the head side, so a file changed between base and head is exactly the case
 // whose base-side blob a lazy clone would still be missing at diff time.
 func TestGitFetcher_MaterializesBlobsForOfflineDiff(t *testing.T) {
-	realGit, err := exec.LookPath("git")
-	if err != nil {
-		t.Skip("git not found in PATH")
-	}
-
 	tests := []struct {
 		name       string
 		headFiles  map[string]string
@@ -279,34 +274,8 @@ func TestGitFetcher_MaterializesBlobsForOfflineDiff(t *testing.T) {
 	const token = "regression-fixture-token" // nosecret: test fixture, not a real credential
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			origin := gitRepo(t, nil, tc.headFiles)
-			// file:// + allowFilter is what makes --filter=blob:none actually
-			// defer blobs; without it the local transport copies everything
-			// and the bug cannot be reproduced.
-			runGit(t, origin, "config", "uploadpack.allowFilter", "true")
-			runGit(t, origin, "config", "uploadpack.allowAnySHA1InWant", "true")
-			headSHA := strings.TrimSpace(runGit(t, origin, "rev-parse", "feature"))
-
-			dir, cleanup, err := GitFetcher{}.Fetch(context.Background(), "file://"+origin, token, "main", headSHA)
-			if err != nil {
-				t.Fatalf("Fetch: %v", err)
-			}
-			defer cleanup()
-
-			// Sever the promisor remote: any blob not already local now makes
-			// an on-demand diff-time fetch fail, exactly as the unauthenticated
-			// production fetch did.
-			runGit(t, dir, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "severed"))
-
-			// Emulate a review check: `git diff base...HEAD` with no auth env
-			// (cmd.Env defaults to this process's environment, which carries no
-			// token — the condition under which the bug fired).
-			cmd := exec.Command(realGit, "-C", dir, "diff", "--unified=0", BaseRefName+"...HEAD")
-			out, err := cmd.CombinedOutput()
-			if err != nil {
-				t.Fatalf("offline diff after Fetch failed — changed blobs were not materialized:\n%v\n%s", err, out)
-			}
-			if !strings.Contains(string(out), tc.wantInDiff) {
+			out := fetchAndDiffOffline(t, gitRepo(t, nil, tc.headFiles))
+			if !strings.Contains(out, tc.wantInDiff) {
 				t.Fatalf("diff missing %q; got:\n%s", tc.wantInDiff, out)
 			}
 		})
@@ -329,11 +298,6 @@ func TestGitFetcher_MaterializesRenamedFileBlobs(t *testing.T) {
 	tests := []struct{ name string }{{name: "renamed file blobs materialized"}}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			realGit, err := exec.LookPath("git")
-			if err != nil {
-				t.Skip("git not found in PATH")
-			}
-
 			// Built directly (not via gitRepo) so the large content lives on main
 			// itself: the three-dot diff below compares feature's tip against the
 			// merge-base (main's tip), so the rename's old and new content must be
@@ -365,28 +329,11 @@ func TestGitFetcher_MaterializesRenamedFileBlobs(t *testing.T) {
 			runGit(t, origin, "add", "-A")
 			runGit(t, origin, "commit", "-q", "-m", "rename with small edit")
 
-			runGit(t, origin, "config", "uploadpack.allowFilter", "true")
-			runGit(t, origin, "config", "uploadpack.allowAnySHA1InWant", "true")
-			headSHA := strings.TrimSpace(runGit(t, origin, "rev-parse", "feature"))
-
-			const token = "regression-fixture-token" // nosecret: test fixture, not a real credential
-			dir, cleanup, err := GitFetcher{}.Fetch(context.Background(), "file://"+origin, token, "main", headSHA)
-			if err != nil {
-				t.Fatalf("Fetch: %v", err)
-			}
-			defer cleanup()
-
-			runGit(t, dir, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "severed"))
-
-			cmd := exec.Command(realGit, "-C", dir, "diff", "--unified=0", BaseRefName+"...HEAD")
-			out, err := cmd.CombinedOutput()
-			if err != nil {
-				t.Fatalf("offline diff after Fetch failed — renamed file's blobs were not materialized:\n%v\n%s", err, out)
-			}
-			if !strings.Contains(string(out), "rename from README.md") {
+			out := fetchAndDiffOffline(t, origin)
+			if !strings.Contains(out, "rename from README.md") {
 				t.Fatalf("diff did not detect the rename as expected (so this test didn't exercise the rename codepath); got:\n%s", out)
 			}
-			if !strings.Contains(string(out), "one more line") {
+			if !strings.Contains(out, "one more line") {
 				t.Fatalf("diff missing the renamed file's edit; got:\n%s", out)
 			}
 		})
@@ -419,6 +366,41 @@ func TestGitFetcher_WarmUpFailureIsDistinctlyLabeled(t *testing.T) {
 			}
 		})
 	}
+}
+
+// fetchAndDiffOffline fetches origin's feature head through GitFetcher over
+// a file:// remote that honors --filter=blob:none, severs the promisor
+// remote, and returns the output of an unauthenticated
+// `git diff --unified=0 prreview-base...HEAD`, failing the test if any
+// changed blob was left for a lazy fetch.
+func fetchAndDiffOffline(t *testing.T, origin string) string {
+	t.Helper()
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not found in PATH")
+	}
+	runGit(t, origin, "config", "uploadpack.allowFilter", "true")
+	runGit(t, origin, "config", "uploadpack.allowAnySHA1InWant", "true")
+	headSHA := strings.TrimSpace(runGit(t, origin, "rev-parse", "feature"))
+
+	const token = "regression-fixture-token" // nosecret: test fixture, not a real credential
+	dir, cleanup, err := GitFetcher{}.Fetch(context.Background(), "file://"+origin, token, "main", headSHA)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	t.Cleanup(cleanup)
+
+	// Sever the promisor remote: any blob not already local now makes an
+	// on-demand diff-time fetch fail, exactly as the unauthenticated
+	// production fetch did.
+	runGit(t, dir, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "severed"))
+
+	// cmd.Env defaults to this process's environment, which carries no token.
+	out, err := exec.Command(realGit, "-C", dir, "diff", "--unified=0", BaseRefName+"...HEAD").CombinedOutput()
+	if err != nil {
+		t.Fatalf("offline diff after Fetch failed: changed blobs were not materialized:\n%v\n%s", err, out)
+	}
+	return string(out)
 }
 
 // runGit runs git with args in dir and returns combined stdout+stderr,

@@ -50,44 +50,38 @@ import (
 	"time"
 
 	cloudtasks "cloud.google.com/go/cloudtasks/apiv2"
-	"cloud.google.com/go/firestore"
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
-	"github.com/nats-io/nats.go"
 
 	natsadapter "github.com/mediusfy/modulex/nats"
 	"github.com/mediusfy/modulex/services/prreview/ai"
 	"github.com/mediusfy/modulex/services/prreview/engine"
 	"github.com/mediusfy/modulex/services/prreview/githubauth"
+	"github.com/mediusfy/modulex/services/prreview/internal/bootstrap"
 	"github.com/mediusfy/modulex/services/prreview/queue"
-	"github.com/mediusfy/modulex/services/prreview/store"
 	"github.com/mediusfy/modulex/services/prreview/tenants"
 	"github.com/mediusfy/modulex/services/prreview/webhook"
 	"github.com/mediusfy/modulex/services/prreview/worker"
 )
 
-// Structured-log attribute keys.
+// Structured-log attribute keys specific to the worker.
 const (
-	logKeyBackend     = "backend"
 	logKeyConcurrency = "concurrency"
 	logKeyConsumer    = "consumer"
-	logKeyError       = "error"
-	logKeyName        = "name"
-	logKeyPort        = "port"
 )
 
 func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	ctx := context.Background()
 
-	project := mustEnv(log, "GOOGLE_CLOUD_PROJECT")
+	project := bootstrap.MustEnv(log, "GOOGLE_CLOUD_PROJECT")
 	secrets, err := secretmanager.NewClient(ctx)
 	if err != nil {
-		log.Error("secret manager client", logKeyError, err)
+		log.Error("secret manager client", bootstrap.LogKeyError, err)
 		os.Exit(1)
 	}
-	appKey, err := githubauth.ParsePrivateKey([]byte(mustEnv(log, "GITHUB_APP_PRIVATE_KEY")))
+	appKey, err := githubauth.ParsePrivateKey([]byte(bootstrap.MustEnv(log, "GITHUB_APP_PRIVATE_KEY")))
 	if err != nil {
-		log.Error("app private key", logKeyError, err)
+		log.Error("app private key", bootstrap.LogKeyError, err)
 		os.Exit(1)
 	}
 	// Defense in depth: the parsed key lives only in process memory from
@@ -105,13 +99,13 @@ func main() {
 		}
 	}
 
-	jobsStore := newJobsStore(ctx, log)
+	jobsStore := bootstrap.OpenStore(ctx, log)
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 	githubREST := &githubauth.RESTCommenter{BaseURL: "https://api.github.com", HTTP: httpClient}
 	w := &worker.Worker{
 		Jobs: jobsStore,
 		Tokens: &githubauth.AppAuth{
-			AppID:      mustEnv(log, "GITHUB_APP_ID"),
+			AppID:      bootstrap.MustEnv(log, "GITHUB_APP_ID"),
 			PrivateKey: appKey,
 			BaseURL:    "https://api.github.com",
 			HTTP:       httpClient,
@@ -127,46 +121,14 @@ func main() {
 		Log:        log,
 	}
 
-	switch backend := envOr("QUEUE_BACKEND", "cloudtasks"); backend {
+	switch backend := bootstrap.EnvOr("QUEUE_BACKEND", "cloudtasks"); backend {
 	case "cloudtasks":
 		runCloudTasksWorker(w, log)
 	case "nats":
 		runNATSWorker(ctx, w, log)
 	default:
-		log.Error("unknown QUEUE_BACKEND", logKeyBackend, backend)
+		log.Error("unknown QUEUE_BACKEND", bootstrap.LogKeyBackend, backend)
 		os.Exit(1)
-	}
-}
-
-// jobsAndLedgerStore is the capability the worker needs from whichever
-// backend STORE_BACKEND selects; store.Firestore and store.Postgres both
-// satisfy it.
-type jobsAndLedgerStore interface {
-	store.JobStore
-	store.Ledger
-}
-
-func newJobsStore(ctx context.Context, log *slog.Logger) jobsAndLedgerStore {
-	switch backend := envOr("STORE_BACKEND", "firestore"); backend {
-	case "firestore":
-		project := mustEnv(log, "GOOGLE_CLOUD_PROJECT")
-		fs, err := firestore.NewClient(ctx, project)
-		if err != nil {
-			log.Error("firestore client", logKeyError, err)
-			os.Exit(1)
-		}
-		return &store.Firestore{Client: fs}
-	case "postgres":
-		pg, err := store.NewPostgres(mustEnv(log, "POSTGRES_DSN"))
-		if err != nil {
-			log.Error("postgres open", logKeyError, err)
-			os.Exit(1)
-		}
-		return pg
-	default:
-		log.Error("unknown STORE_BACKEND", logKeyBackend, backend)
-		os.Exit(1)
-		return nil
 	}
 }
 
@@ -177,13 +139,13 @@ func runCloudTasksWorker(w *worker.Worker, log *slog.Logger) {
 	ctx := context.Background()
 	tasks, err := cloudtasks.NewClient(ctx)
 	if err != nil {
-		log.Error("cloud tasks client", logKeyError, err)
+		log.Error("cloud tasks client", bootstrap.LogKeyError, err)
 		os.Exit(1)
 	}
 	queueTemplate := queue.CloudTasks{
 		Client:                tasks,
-		QueuePath:             mustEnv(log, "TASKS_QUEUE_PATH"),
-		InvokerServiceAccount: mustEnv(log, "INVOKER_SERVICE_ACCOUNT"),
+		QueuePath:             bootstrap.MustEnv(log, "TASKS_QUEUE_PATH"),
+		InvokerServiceAccount: bootstrap.MustEnv(log, "INVOKER_SERVICE_ACCOUNT"),
 		// WorkerURL is set per request from the incoming task's Host: the
 		// service cannot know its own Cloud Run URL at deploy time without
 		// a Terraform self-reference cycle, and the URL the task actually
@@ -211,17 +173,15 @@ func runCloudTasksWorker(w *worker.Worker, log *slog.Logger) {
 		requestWorker := *w
 		requestWorker.Queue = &followUpQueue
 		if err := requestWorker.Handle(r.Context(), req); err != nil {
-			log.Error("review failed; task will retry", logKeyError, err)
+			log.Error("review failed; task will retry", bootstrap.LogKeyError, err)
 			http.Error(rw, "review failed", http.StatusInternalServerError)
 			return
 		}
 		rw.WriteHeader(http.StatusOK)
 	})
-	mux.HandleFunc("/health", func(rw http.ResponseWriter, _ *http.Request) {
-		rw.WriteHeader(http.StatusOK)
-	})
+	bootstrap.AddHealth(mux)
 
-	serve(mux, log, "cloud tasks")
+	bootstrap.Serve(mux, log, "worker listening", bootstrap.LogKeyBackend, "cloud tasks")
 }
 
 // runNATSWorker starts `concurrency` competing durable-consumer pull loops
@@ -229,21 +189,7 @@ func runCloudTasksWorker(w *worker.Worker, log *slog.Logger) {
 // the review pipeline itself runs on those pull loops (see
 // queue.Consume), not on an HTTP handler.
 func runNATSWorker(ctx context.Context, w *worker.Worker, log *slog.Logger) {
-	conn, err := nats.Connect(envOr("NATS_URL", nats.DefaultURL))
-	if err != nil {
-		log.Error("nats connect", logKeyError, err)
-		os.Exit(1)
-	}
-	js, err := conn.JetStream()
-	if err != nil {
-		log.Error("nats jetstream", logKeyError, err)
-		os.Exit(1)
-	}
-	stream := envOr("NATS_STREAM", "PRREVIEW_REVIEWS")
-	if err := queue.EnsureStream(js, stream, queue.ReviewsStreamSubjects...); err != nil {
-		log.Error("nats ensure stream", logKeyError, err)
-		os.Exit(1)
-	}
+	js := bootstrap.ConnectJetStream(log)
 
 	// MaxDeliver 8 / AckWait 10s approximate the Cloud Tasks queue this
 	// replaces (infra/prreview: max_attempts 8, min_backoff 10s); see
@@ -256,7 +202,7 @@ func runNATSWorker(ctx context.Context, w *worker.Worker, log *slog.Logger) {
 	)
 	w.Queue = &queue.NATS{Bus: bus}
 
-	consumerName := envOr("NATS_CONSUMER", "prreview-worker")
+	consumerName := bootstrap.EnvOr("NATS_CONSUMER", "prreview-worker")
 	concurrency := 5
 	if v := os.Getenv("NATS_WORKER_CONCURRENCY"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -270,54 +216,11 @@ func runNATSWorker(ctx context.Context, w *worker.Worker, log *slog.Logger) {
 	// nearest NATS equivalent to Cloud Tasks' max_concurrent_dispatches.
 	for i := 0; i < concurrency; i++ {
 		if err := queue.Consume(ctx, bus, queue.ReviewsSubject, consumerName, w.Handle); err != nil {
-			log.Error("nats consume", logKeyError, err)
+			log.Error("nats consume", bootstrap.LogKeyError, err)
 			os.Exit(1)
 		}
 	}
-	log.Info("worker consuming", logKeyBackend, "nats", logKeyConsumer, consumerName, logKeyConcurrency, concurrency)
+	log.Info("worker consuming", bootstrap.LogKeyBackend, "nats", logKeyConsumer, consumerName, logKeyConcurrency, concurrency)
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/health", func(rw http.ResponseWriter, _ *http.Request) {
-		rw.WriteHeader(http.StatusOK)
-	})
-	serve(mux, log, "nats")
-}
-
-func serve(mux *http.ServeMux, log *slog.Logger, backend string) {
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
-	// Explicit server timeouts: the default http.Server has none, which
-	// leaves the endpoint open to slowloris-style connection exhaustion.
-	server := &http.Server{
-		Addr:              ":" + port,
-		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		IdleTimeout:       2 * time.Minute,
-	}
-	log.Info("worker listening", logKeyPort, port, logKeyBackend, backend)
-	if err := server.ListenAndServe(); err != nil {
-		log.Error("serve", logKeyError, err)
-		os.Exit(1)
-	}
-}
-
-func mustEnv(log *slog.Logger, name string) string {
-	v := os.Getenv(name)
-	if v == "" {
-		log.Error("missing required environment variable", logKeyName, name)
-		os.Exit(1)
-	}
-	return v
-}
-
-// envOr returns the named environment variable, or def if it is unset or
-// empty.
-func envOr(name, def string) string {
-	if v := os.Getenv(name); v != "" {
-		return v
-	}
-	return def
+	bootstrap.Serve(bootstrap.HealthMux(), log, "worker listening", bootstrap.LogKeyBackend, "nats")
 }
