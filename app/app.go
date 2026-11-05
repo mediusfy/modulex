@@ -121,14 +121,7 @@ func Run(logger *slog.Logger, configLoader func(target interface{}) error, modul
 		logger = slog.Default()
 	}
 
-	cfg := &options{
-		ctx:             context.Background,
-		signals:         []os.Signal{os.Interrupt, syscall.SIGTERM},
-		shutdownTimeout: defaultShutdownTimeout,
-	}
-	for _, opt := range opts {
-		opt(cfg)
-	}
+	cfg := newOptions(opts)
 
 	managerOpts := append([]modulex.ManagerOption{
 		modulex.WithLogger(logger),
@@ -143,32 +136,6 @@ func Run(logger *slog.Logger, configLoader func(target interface{}) error, modul
 	ctx, stop := signal.NotifyContext(cfg.ctx(), cfg.signals...)
 	defer stop()
 
-	// runStop drives the shared pre-stop -> StopModules -> post-stop sequence.
-	// It is used both by the normal shutdown path below and by the early-exit
-	// cleanup path if setup, module registration, Init, or Start fails
-	// midway, so WithPostStop hooks (e.g. shutting down a tracer provider)
-	// are never skipped regardless of why Run is returning.
-	runStop := func() error {
-		stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cfg.shutdownTimeout)
-		defer cancel()
-
-		var errs []error
-		for _, hook := range cfg.preStop {
-			if err := hook(stopCtx); err != nil {
-				errs = append(errs, fmt.Errorf("app: pre-stop hook failed: %w", err))
-			}
-		}
-		if err := mgr.StopModules(stopCtx); err != nil {
-			errs = append(errs, fmt.Errorf("app: stop failed: %w", err))
-		}
-		for _, hook := range cfg.postStop {
-			if err := hook(stopCtx); err != nil {
-				errs = append(errs, fmt.Errorf("app: post-stop hook failed: %w", err))
-			}
-		}
-		return errors.Join(errs...)
-	}
-
 	// Ensure resources are stopped if setup, module registration, Init, or
 	// Start fails midway. This defer is registered immediately after mgr and
 	// the signal-aware ctx exist -- before cfg.setup and RegisterModule run
@@ -182,32 +149,14 @@ func Run(logger *slog.Logger, configLoader func(target interface{}) error, modul
 	var fullyStarted bool
 	defer func() {
 		if !fullyStarted {
-			if stopErr := runStop(); stopErr != nil {
+			if stopErr := cfg.runStop(ctx, mgr); stopErr != nil {
 				err = errors.Join(err, stopErr)
 			}
 		}
 	}()
 
-	if cfg.setup != nil {
-		if err := cfg.setup(mgr); err != nil {
-			return fmt.Errorf("app: setup failed: %w", err)
-		}
-	}
-
-	for i, mod := range modules {
-		if mod == nil {
-			return fmt.Errorf("app: module at index %d must not be nil", i)
-		}
-		if err := mgr.RegisterModule(mod); err != nil {
-			return fmt.Errorf("app: failed to register module %q: %w", mod.Name(), err)
-		}
-	}
-
-	if initErr := mgr.InitModules(ctx); initErr != nil {
-		return fmt.Errorf("app: init failed: %w", initErr)
-	}
-	if startErr := mgr.StartModules(ctx); startErr != nil {
-		return fmt.Errorf("app: start failed: %w", startErr)
+	if err := cfg.startModules(ctx, mgr, modules); err != nil {
+		return err
 	}
 
 	fullyStarted = true
@@ -226,5 +175,71 @@ func Run(logger *slog.Logger, configLoader func(target interface{}) error, modul
 	stop()
 	logger.Info("shutdown signal received, stopping modules")
 
-	return runStop()
+	return cfg.runStop(ctx, mgr)
+}
+
+// newOptions applies opts on top of the defaults.
+func newOptions(opts []Option) *options {
+	cfg := &options{
+		ctx:             context.Background,
+		signals:         []os.Signal{os.Interrupt, syscall.SIGTERM},
+		shutdownTimeout: defaultShutdownTimeout,
+	}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+	return cfg
+}
+
+// runStop drives the shared pre-stop -> StopModules -> post-stop sequence.
+// It is used both by the normal shutdown path and by the early-exit cleanup
+// path if setup, module registration, Init, or Start fails midway, so
+// WithPostStop hooks (e.g. shutting down a tracer provider) are never
+// skipped regardless of why Run is returning.
+func (cfg *options) runStop(ctx context.Context, mgr *modulex.Manager) error {
+	stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cfg.shutdownTimeout)
+	defer cancel()
+
+	var errs []error
+	for _, hook := range cfg.preStop {
+		if err := hook(stopCtx); err != nil {
+			errs = append(errs, fmt.Errorf("app: pre-stop hook failed: %w", err))
+		}
+	}
+	if err := mgr.StopModules(stopCtx); err != nil {
+		errs = append(errs, fmt.Errorf("app: stop failed: %w", err))
+	}
+	for _, hook := range cfg.postStop {
+		if err := hook(stopCtx); err != nil {
+			errs = append(errs, fmt.Errorf("app: post-stop hook failed: %w", err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// startModules runs the setup hook, registers modules, then initializes and
+// starts them.
+func (cfg *options) startModules(ctx context.Context, mgr *modulex.Manager, modules []modulex.Module) error {
+	if cfg.setup != nil {
+		if err := cfg.setup(mgr); err != nil {
+			return fmt.Errorf("app: setup failed: %w", err)
+		}
+	}
+
+	for i, mod := range modules {
+		if mod == nil {
+			return fmt.Errorf("app: module at index %d must not be nil", i)
+		}
+		if err := mgr.RegisterModule(mod); err != nil {
+			return fmt.Errorf("app: failed to register module %q: %w", mod.Name(), err)
+		}
+	}
+
+	if err := mgr.InitModules(ctx); err != nil {
+		return fmt.Errorf("app: init failed: %w", err)
+	}
+	if err := mgr.StartModules(ctx); err != nil {
+		return fmt.Errorf("app: start failed: %w", err)
+	}
+	return nil
 }

@@ -1,14 +1,15 @@
 package modulex
 
 import (
-	"errors"
 	"fmt"
+
+	"github.com/mediusfy/modulex/apperrors"
 )
 
 // ErrConfigTypeMismatch is returned by the config loader installed via
 // WithTypedConfig when GetConfig's target is not a pointer to the configured
 // type.
-var ErrConfigTypeMismatch = errors.New("config target type mismatch")
+const ErrConfigTypeMismatch apperrors.Error = "config target type mismatch"
 
 // Example:
 //
