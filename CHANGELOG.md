@@ -7,37 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-05
+
+This release also ships the `0.12.1` fixes below; `v0.12.1` was prepared but
+never tagged.
+
 ### Added
 
-- `modulex`, `app`, `workerpool`, `otel`: exported sentinel errors are now typed constants; long functions (`app.Run`, module sorting, `Manager.Go`, exporter setup) were split without behaviour changes.
 - `apperrors`: new package with `apperrors.Error`, a string-backed error type
   so sentinel errors can be declared as constants.
-- `scaffold`: generated module and service tests are now table-driven; `examples/scaffolded-sample` was regenerated from the templates.
 - `integration`: hermetic smoke tests that build and run every `package main`
-  entry point (`make test-integration`).
-- Smoke-test rows cover every `package main` entry point and a completeness test fails when a new one is added without a row.
+  entry point (`make test-integration`). A completeness test fails when a new
+  entry point is added without a row.
 
 ### Changed
 
-- `patchapply`, `approval`, `verify`, `provenance`, `contract`: sentinel errors are typed constants (**BREAKING** for code that reassigns them); `contract.RenderText` was split into helpers with byte-identical output.
-- **BREAKING:** exported sentinel errors in the root package, `grpc`,
-  `patchapply`, `approval`, `nats`, `review`, `workerpool` and `webhook` are now
-  typed constants (`apperrors.Error`) instead of `var` values created with
-  `errors.New`. `errors.Is` and `errors.As` behave as before; code that
-  reassigns a sentinel or takes its address no longer compiles. Requires a
-  minor release (v0.13.0).
-- `review`, `discovery`: `review.ErrContractUnparseable` is now a typed constant (**BREAKING** for code that reassigns it); composition-root discovery and diff parsing were split into smaller functions.
-- Table-driven tests throughout, scaffold templates now generate table-driven
-  tests, and several high-complexity functions were split without behaviour
+- **BREAKING:** 45 exported sentinel errors are now typed constants
+  (`apperrors.Error`) instead of `var` values created with `errors.New`, across
+  the root package, `app`, `workerpool`, `grpc`, `patchapply`, `approval`,
+  `nats`, `review` and `webhook`. `errors.Is` and `errors.As` behave as before;
+  code that reassigns a sentinel or takes its address no longer compiles. See
+  the v0.13.0 section of the migration guide.
+- `grpc`: the health-check timeout is a per-`HealthServer` setting rather than
+  a package variable.
+- `scaffold`: generated module and service tests are table-driven, and
+  `examples/scaffolded-sample` was regenerated from the templates.
+- Tests are table-driven throughout, slog attribute keys are `logKey…`
+  constants, and long functions (`app.Run`, module sorting, `Manager.Go`,
+  exporter setup, `contract.RenderText`, composition-root discovery, diff
+  parsing, JetStream and RabbitMQ consume paths) were split without behaviour
   changes.
-- `grpc`, `httpx`, `modtest`: sentinel errors are typed constants (**BREAKING** for code that reassigns them); the health-check timeout is now a per-`HealthServer` setting rather than a package variable.
+- `prreview`: the receiver and worker share one internal bootstrap package.
+
+### Removed
+
+- `modboundary`: the `ContractFileName` shims.
 
 ### Fixed
 
-- `modboundary`, `prreview`, `webhook`: `webhook.ErrBadSignature` and `webhook.ErrIgnore` are typed constants; the receiver and worker share one bootstrap package; the `ContractFileName` shims were removed.
-- `rabbitmq`: the integration test now closes the event bus before the channel,
+- `rabbitmq`: the integration test closes the event bus before the channel,
   removing a shutdown hang in `TestEventBus_PlainHandlerPanicIsRecovered`.
-- `nats`, `rabbitmq`, `watermill`: `nats` sentinel errors are typed constants (**BREAKING** for code that reassigns them); long consume and delivery functions were split without behaviour changes.
 
 ## [0.12.1] - 2026-11-01
 
@@ -1668,8 +1677,8 @@ Initial v0 prerelease.
   service locator, and pluggable event-bus adapters (Chi, NATS, RabbitMQ,
   Watermill, OpenTelemetry).
 
-[Unreleased]: https://github.com/mediusfy/modulex/compare/v0.12.1...HEAD
-[0.12.1]: https://github.com/mediusfy/modulex/compare/v0.12.0...v0.12.1
+[Unreleased]: https://github.com/mediusfy/modulex/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/mediusfy/modulex/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/mediusfy/modulex/compare/v0.11.2...v0.12.0
 [0.11.2]: https://github.com/mediusfy/modulex/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/mediusfy/modulex/compare/v0.11.0...v0.11.1
