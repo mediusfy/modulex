@@ -3,7 +3,6 @@ package review
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/mediusfy/modulex/apperrors"
 	"github.com/mediusfy/modulex/contract"
 	"github.com/mediusfy/modulex/provenance"
 )
@@ -106,7 +106,7 @@ var contractMissingAtRefSubstrings = []string{
 // treats a bad ref as a non-fatal StatusUnavailable result, but a broken
 // contract as a hard error, can distinguish the two with errors.Is(err,
 // ErrContractUnparseable).
-var ErrContractUnparseable = errors.New("contract is present but unparseable")
+const ErrContractUnparseable apperrors.Error = "contract is present but unparseable"
 
 // LoadProtectedPathsAtRef returns the protected_paths modulex.agent.yaml
 // declares as of ref — NOT the checked-out working tree — via `git show

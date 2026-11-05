@@ -52,55 +52,96 @@ func newTestRepo(t *testing.T) string {
 	return root
 }
 
-func TestScanSecrets_NoFindings(t *testing.T) {
-	root := newTestRepo(t)
+// scanCase describes one ScanSecrets scenario: a base commit holding
+// baseFiles, a head commit that adds or rewrites headFiles, and the
+// expectations on the resulting check result.
+type scanCase struct {
+	name         string
+	baseFiles    map[string]string
+	headFiles    map[string]string
+	wantStatus   provenance.Status
+	wantName     string
+	wantCategory string
+	msgHas       []string
+	msgNot       []string
+}
 
-	writeFile(t, root, "app.go", "package app\n")
-	runGit(t, root, "add", "app.go")
-	runGit(t, root, "commit", "--quiet", "-m", "base")
-	runGit(t, root, "branch", "base")
-
-	writeFile(t, root, "app.go", "package app\n\nfunc Hello() string { return \"hi\" }\n")
-	runGit(t, root, "commit", "--quiet", "-am", "add hello")
-
-	result := ScanSecrets(context.Background(), root, "base", "HEAD")
-
-	if result.Status != "pass" {
-		t.Fatalf("Status = %q, want pass; Message: %s", result.Status, result.Message)
+// commitAll writes files into root, stages everything and commits it.
+func commitAll(t *testing.T, root string, files map[string]string, msg string) {
+	t.Helper()
+	for name, content := range files {
+		writeFile(t, root, name, content)
 	}
-	if result.Name != "check-secrets" {
-		t.Errorf("Name = %q, want check-secrets", result.Name)
+	runGit(t, root, "add", "-A")
+	runGit(t, root, "commit", "--quiet", "-m", msg)
+}
+
+// assertScanResult checks result against the expectations in tt.
+func assertScanResult(t *testing.T, tt scanCase, result provenance.VerificationResult) {
+	t.Helper()
+	if result.Status != tt.wantStatus {
+		t.Fatalf("Status = %q, want %q; Message: %s, Reason: %s", result.Status, tt.wantStatus, result.Message, result.Reason)
 	}
-	if result.Category != "secret_scan" {
-		t.Errorf("Category = %q, want secret_scan", result.Category)
+	if tt.wantName != "" && result.Name != tt.wantName {
+		t.Errorf("Name = %q, want %s", result.Name, tt.wantName)
+	}
+	if tt.wantCategory != "" && string(result.Category) != tt.wantCategory {
+		t.Errorf("Category = %q, want %s", result.Category, tt.wantCategory)
+	}
+	for _, s := range tt.msgHas {
+		if !strings.Contains(result.Message, s) {
+			t.Errorf("Message = %q, want it to contain %q", result.Message, s)
+		}
+	}
+	for _, s := range tt.msgNot {
+		if strings.Contains(result.Message, s) {
+			t.Fatalf("Message leaks %q: %s", s, result.Message)
+		}
 	}
 }
 
+// runScanCases builds the base/head repo of each case and asserts on
+// ScanSecrets(base, HEAD).
+func runScanCases(t *testing.T, tests []scanCase) {
+	t.Helper()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := newTestRepo(t)
+			commitAll(t, root, tt.baseFiles, "base")
+			runGit(t, root, "branch", "base")
+			commitAll(t, root, tt.headFiles, "head")
+
+			assertScanResult(t, tt, ScanSecrets(context.Background(), root, "base", "HEAD"))
+		})
+	}
+}
+
+func TestScanSecrets_NoFindings(t *testing.T) {
+	tests := []scanCase{
+		{
+			name:         "benign function added",
+			baseFiles:    map[string]string{"app.go": "package app\n"},
+			headFiles:    map[string]string{"app.go": "package app\n\nfunc Hello() string { return \"hi\" }\n"},
+			wantStatus:   provenance.StatusPass,
+			wantName:     "check-secrets",
+			wantCategory: "secret_scan",
+		},
+	}
+	runScanCases(t, tests)
+}
+
 func TestScanSecrets_FindsSecretAddedLine(t *testing.T) {
-	root := newTestRepo(t)
-
-	writeFile(t, root, "config.go", "package config\n")
-	runGit(t, root, "add", "config.go")
-	runGit(t, root, "commit", "--quiet", "-m", "base")
-	runGit(t, root, "branch", "base")
-
-	writeFile(t, root, "config.go", "package config\n\nconst apiKey = \"api_key=supersecretvalue123\"\n")
-	runGit(t, root, "commit", "--quiet", "-am", "oops, hardcoded a key")
-
-	result := ScanSecrets(context.Background(), root, "base", "HEAD")
-
-	if result.Status != "fail" {
-		t.Fatalf("Status = %q, want fail; Message: %s", result.Status, result.Message)
+	tests := []scanCase{
+		{
+			name:       "hardcoded api key is flagged and redacted",
+			baseFiles:  map[string]string{"config.go": "package config\n"},
+			headFiles:  map[string]string{"config.go": "package config\n\nconst apiKey = \"api_key=supersecretvalue123\"\n"},
+			wantStatus: provenance.StatusFail,
+			msgHas:     []string{"config.go:3", "[REDACTED]"},
+			msgNot:     []string{"supersecretvalue123"},
+		},
 	}
-	if strings.Contains(result.Message, "supersecretvalue123") {
-		t.Fatalf("Message leaks the raw secret value: %s", result.Message)
-	}
-	if !strings.Contains(result.Message, "config.go:3") {
-		t.Errorf("Message = %q, want it to name config.go:3", result.Message)
-	}
-	if !strings.Contains(result.Message, "[REDACTED]") {
-		t.Errorf("Message = %q, want a redaction marker in place of the secret", result.Message)
-	}
+	runScanCases(t, tests)
 }
 
 // TestScanSecrets_IgnoresUnquotedCodeAssignments covers the false-positive
@@ -110,84 +151,77 @@ func TestScanSecrets_FindsSecretAddedLine(t *testing.T) {
 // assign a quoted string literal. See strictGenericSecretPattern's doc
 // comment for why the quote requirement rules each of these out.
 func TestScanSecrets_IgnoresUnquotedCodeAssignments(t *testing.T) {
-	root := newTestRepo(t)
-
-	writeFile(t, root, "app.go", "package app\n")
-	runGit(t, root, "add", "app.go")
-	runGit(t, root, "commit", "--quiet", "-m", "base")
-	runGit(t, root, "branch", "base")
-
-	writeFile(t, root, "app.go", strings.Join([]string{
-		"package app",
-		"",
-		`func genToken() string { token = hex.EncodeToString(buf); return token }`,
-		`var ServiceKey = modulex.NewKey[Sender]("notification.Service")`,
-		`var _ = secretService{APIKey: secretValue}`,
-		"// Wrong scope with the right token: denied.",
-		"",
-	}, "\n"))
-	runGit(t, root, "commit", "--quiet", "-am", "add code that merely mentions key/token/secret")
-
-	result := ScanSecrets(context.Background(), root, "base", "HEAD")
-
-	if result.Status != "pass" {
-		t.Fatalf("Status = %q, want pass (no quoted secret-shaped literal was added); Message: %s", result.Status, result.Message)
+	tests := []scanCase{
+		{
+			name:      "code that merely mentions key/token/secret",
+			baseFiles: map[string]string{"app.go": "package app\n"},
+			headFiles: map[string]string{"app.go": strings.Join([]string{
+				"package app",
+				"",
+				`func genToken() string { token = hex.EncodeToString(buf); return token }`,
+				`var ServiceKey = modulex.NewKey[Sender]("notification.Service")`,
+				`var _ = secretService{APIKey: secretValue}`,
+				"// Wrong scope with the right token: denied.",
+				"",
+			}, "\n")},
+			wantStatus: provenance.StatusPass,
+		},
 	}
+	runScanCases(t, tests)
 }
 
 // TestScanSecrets_NosecretMarkerSuppressesFinding covers the escape hatch
 // for a line that is secret-shaped on purpose, e.g. a test fixture
 // asserting redaction behavior.
 func TestScanSecrets_NosecretMarkerSuppressesFinding(t *testing.T) {
-	root := newTestRepo(t)
-
-	writeFile(t, root, "fixture_test.go", "package fixture\n")
-	runGit(t, root, "add", "fixture_test.go")
-	runGit(t, root, "commit", "--quiet", "-m", "base")
-	runGit(t, root, "branch", "base")
-
-	writeFile(t, root, "fixture_test.go", "package fixture\n\n"+
-		`var fakeToken = "api_key=supersecretvalue123" // nosecret: test fixture`+"\n")
-	runGit(t, root, "commit", "--quiet", "-am", "add annotated test fixture")
-
-	result := ScanSecrets(context.Background(), root, "base", "HEAD")
-
-	if result.Status != "pass" {
-		t.Fatalf("Status = %q, want pass (line carries a nosecret marker); Message: %s", result.Status, result.Message)
+	tests := []scanCase{
+		{
+			name:      "annotated test fixture line",
+			baseFiles: map[string]string{"fixture_test.go": "package fixture\n"},
+			headFiles: map[string]string{"fixture_test.go": "package fixture\n\n" +
+				`var fakeToken = "api_key=supersecretvalue123" // nosecret: test fixture` + "\n"},
+			wantStatus: provenance.StatusPass,
+		},
 	}
+	runScanCases(t, tests)
 }
 
+// The secret-shaped line is already present at the base commit, so it must
+// not be flagged: ScanSecrets only scans lines *added* between baseRef and
+// headRef, not the whole file content at headRef.
 func TestScanSecrets_IgnoresPreexistingSecretOutsideDiff(t *testing.T) {
-	root := newTestRepo(t)
-
-	// The secret-shaped line is already present at the base commit, so it
-	// must not be flagged: ScanSecrets only scans lines *added* between
-	// baseRef and headRef, not the whole file content at headRef.
-	writeFile(t, root, "config.go", "package config\n\nconst apiKey = \"api_key=preexistingsecret456\"\n")
-	runGit(t, root, "add", "config.go")
-	runGit(t, root, "commit", "--quiet", "-m", "base")
-	runGit(t, root, "branch", "base")
-
-	writeFile(t, root, "config.go", "package config\n\nconst apiKey = \"api_key=preexistingsecret456\"\n\nfunc Unrelated() {}\n")
-	runGit(t, root, "commit", "--quiet", "-am", "unrelated change")
-
-	result := ScanSecrets(context.Background(), root, "base", "HEAD")
-
-	if result.Status != "pass" {
-		t.Fatalf("Status = %q, want pass (pre-existing secret is outside the diff); Message: %s", result.Status, result.Message)
+	tests := []scanCase{
+		{
+			name:       "pre-existing secret outside the diff",
+			baseFiles:  map[string]string{"config.go": "package config\n\nconst apiKey = \"api_key=preexistingsecret456\"\n"},
+			headFiles:  map[string]string{"config.go": "package config\n\nconst apiKey = \"api_key=preexistingsecret456\"\n\nfunc Unrelated() {}\n"},
+			wantStatus: provenance.StatusPass,
+		},
 	}
+	runScanCases(t, tests)
 }
 
 func TestScanSecrets_BadRefReturnsUnavailable(t *testing.T) {
-	root := newTestRepo(t)
-
-	result := ScanSecrets(context.Background(), root, "this-ref-does-not-exist", "HEAD")
-
-	if result.Status != "unavailable" {
-		t.Fatalf("Status = %q, want unavailable", result.Status)
+	tests := []struct {
+		name    string
+		baseRef string
+	}{
+		{name: "nonexistent ref", baseRef: "this-ref-does-not-exist"},
 	}
-	if result.Reason == "" {
-		t.Error("Reason is empty, want an explanation naming the failed diff computation")
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := newTestRepo(t)
+
+			result := ScanSecrets(context.Background(), root, tt.baseRef, "HEAD")
+
+			if result.Status != "unavailable" {
+				t.Fatalf("Status = %q, want unavailable", result.Status)
+			}
+			if result.Reason == "" {
+				t.Error("Reason is empty, want an explanation naming the failed diff computation")
+			}
+		})
 	}
 }
 
@@ -199,28 +233,43 @@ func TestScanSecrets_BadRefReturnsUnavailable(t *testing.T) {
 // separate real repo at dir carries the actual base/HEAD commits and a
 // secret-shaped added line; the scan must find it there.
 func TestScanSecrets_UsesDirRegardlessOfProcessCwd(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available on PATH")
+	tests := []struct {
+		name       string
+		baseSrc    string
+		headSrc    string
+		wantStatus provenance.Status
+	}{
+		{
+			name:       "secret added in a repo other than the process cwd",
+			baseSrc:    "package config\n",
+			headSrc:    "package config\n\nconst apiKey = \"api_key=supersecretvalue123\"\n",
+			wantStatus: provenance.StatusFail,
+		},
 	}
 
-	nonGitCwd := t.TempDir()
-	t.Chdir(nonGitCwd)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := exec.LookPath("git"); err != nil {
+				t.Skip("git not available on PATH")
+			}
 
-	repo := t.TempDir()
-	runGit(t, repo, "init", "--quiet")
-	runGit(t, repo, "config", "user.email", "test@example.com")
-	runGit(t, repo, "config", "user.name", "Test")
-	writeFile(t, repo, "config.go", "package config\n")
-	runGit(t, repo, "add", "config.go")
-	runGit(t, repo, "commit", "--quiet", "-m", "base")
-	runGit(t, repo, "branch", "base")
-	writeFile(t, repo, "config.go", "package config\n\nconst apiKey = \"api_key=supersecretvalue123\"\n")
-	runGit(t, repo, "commit", "--quiet", "-am", "oops, hardcoded a key")
+			nonGitCwd := t.TempDir()
+			t.Chdir(nonGitCwd)
 
-	result := ScanSecrets(context.Background(), repo, "base", "HEAD")
+			repo := t.TempDir()
+			runGit(t, repo, "init", "--quiet")
+			runGit(t, repo, "config", "user.email", "test@example.com")
+			runGit(t, repo, "config", "user.name", "Test")
+			commitAll(t, repo, map[string]string{"config.go": tt.baseSrc}, "base")
+			runGit(t, repo, "branch", "base")
+			commitAll(t, repo, map[string]string{"config.go": tt.headSrc}, "oops, hardcoded a key")
 
-	if result.Status != "fail" {
-		t.Fatalf("Status = %q, want fail (dir must be honored regardless of the process's cwd); Message: %s, Reason: %s", result.Status, result.Message, result.Reason)
+			result := ScanSecrets(context.Background(), repo, "base", "HEAD")
+
+			if result.Status != tt.wantStatus {
+				t.Fatalf("Status = %q, want %q (dir must be honored regardless of the process's cwd); Message: %s, Reason: %s", result.Status, tt.wantStatus, result.Message, result.Reason)
+			}
+		})
 	}
 }
 
@@ -468,23 +517,16 @@ func TestHasNosecretMarker(t *testing.T) {
 // "nosecret" (not a well-formed "// nosecret: <reason>" comment) must now
 // still be flagged.
 func TestScanSecrets_BareNosecretSubstringNoLongerSuppresses(t *testing.T) {
-	root := newTestRepo(t)
-
-	writeFile(t, root, "config.go", "package config\n")
-	runGit(t, root, "add", "config.go")
-	runGit(t, root, "commit", "--quiet", "-m", "base")
-	runGit(t, root, "branch", "base")
-
-	writeFile(t, root, "config.go", "package config\n\n"+
-		`const nosecretAPIKey = "api_key=supersecretvalue123"`+"\n")
-	runGit(t, root, "commit", "--quiet", "-am", "identifier merely contains nosecret")
-
-	result := ScanSecrets(context.Background(), root, "base", "HEAD")
-
-	if result.Status != provenance.StatusFail {
-		t.Fatalf("Status = %q, want fail (an identifier merely containing \"nosecret\" must not suppress the finding); Message: %s",
-			result.Status, result.Message)
+	tests := []scanCase{
+		{
+			name:      "identifier merely contains nosecret",
+			baseFiles: map[string]string{"config.go": "package config\n"},
+			headFiles: map[string]string{"config.go": "package config\n\n" +
+				`const nosecretAPIKey = "api_key=supersecretvalue123"` + "\n"}, // nosecret: fixture proving an identifier containing "nosecret" is not an escape hatch
+			wantStatus: provenance.StatusFail,
+		},
 	}
+	runScanCases(t, tests)
 }
 
 // TestScanSecrets_IdentifierLikeValuesAreNotFlagged: a short chain of
@@ -493,37 +535,26 @@ func TestScanSecrets_BareNosecretSubstringNoLongerSuppresses(t *testing.T) {
 // in practice as `ticket_key="pr-42-fix"` in a consumer repository's tests.
 // A long value keeps being flagged even when separator-joined.
 func TestScanSecrets_IdentifierLikeValuesAreNotFlagged(t *testing.T) {
-	root := newTestRepo(t)
-	writeFile(t, root, "base.txt", "base\n")
-	runGit(t, root, "add", "base.txt")
-	runGit(t, root, "commit", "--quiet", "-m", "base")
-	runGit(t, root, "branch", "base")
-	writeFile(t, root, "conf.py",
-		"ticket_key=\"pr-42-fix\"\n"+
-			"branch_token = \"my_branch_v2\"\n")
-	runGit(t, root, "add", "conf.py")
-	runGit(t, root, "commit", "--quiet", "-m", "identifier-shaped values")
-
-	result := ScanSecrets(context.Background(), root, "base", "HEAD")
-	if result.Status != provenance.StatusPass {
-		t.Fatalf("Status = %q, want pass (identifier-like values are not secrets); Message: %s",
-			result.Status, result.Message)
+	tests := []scanCase{
+		{
+			name:      "identifier-shaped values",
+			baseFiles: map[string]string{"base.txt": "base\n"},
+			headFiles: map[string]string{"conf.py": "ticket_key=\"pr-42-fix\"\n" +
+				"branch_token = \"my_branch_v2\"\n"},
+			wantStatus: provenance.StatusPass,
+		},
 	}
+	runScanCases(t, tests)
 }
 
 func TestScanSecrets_LongSeparatorJoinedValueStillFlagged(t *testing.T) {
-	root := newTestRepo(t)
-	writeFile(t, root, "base.txt", "base\n")
-	runGit(t, root, "add", "base.txt")
-	runGit(t, root, "commit", "--quiet", "-m", "base")
-	runGit(t, root, "branch", "base")
-	writeFile(t, root, "conf.py", "api_key = \"prod-4f9a-1c2b-88ee-secret\"\n")
-	runGit(t, root, "add", "conf.py")
-	runGit(t, root, "commit", "--quiet", "-m", "long separator-joined secret")
-
-	result := ScanSecrets(context.Background(), root, "base", "HEAD")
-	if result.Status != provenance.StatusFail {
-		t.Fatalf("Status = %q, want fail (>=16 chars stays flagged regardless of separators); Message: %s",
-			result.Status, result.Message)
+	tests := []scanCase{
+		{
+			name:       "long separator-joined secret",
+			baseFiles:  map[string]string{"base.txt": "base\n"},
+			headFiles:  map[string]string{"conf.py": "api_key = \"prod-4f9a-1c2b-88ee-secret\"\n"},
+			wantStatus: provenance.StatusFail,
+		},
 	}
+	runScanCases(t, tests)
 }

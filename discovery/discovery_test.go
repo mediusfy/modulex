@@ -62,104 +62,163 @@ func buildFixture(t *testing.T) string {
 }
 
 func TestDiscover_Fixture(t *testing.T) {
-	root := buildFixture(t)
-
-	repo, err := Discover(root)
-	if err != nil {
-		t.Fatalf("Discover: %v", err)
+	tests := []struct {
+		name              string
+		wantInstruction   InstructionFile
+		wantMakeTargets   []string
+		unwantedMakeTgt   string
+		wantCIWorkflow    string
+		wantCompositionRt []string
+	}{
+		{
+			name:            "mock-git fixture",
+			wantInstruction: InstructionFile{Path: "AGENTS.md", Name: "AGENTS.md"},
+			wantMakeTargets: []string{"build", "test"},
+			unwantedMakeTgt: "VERSION",
+			wantCIWorkflow:  "ci.yml",
+			// Every direct child of examples/ is a composition root
+			// unconditionally (per the discovery spec), regardless of
+			// whether it has a func main() — examples/nomain deliberately
+			// has none, to prove this; cmd/tool is found via func main()
+			// outside examples/.
+			wantCompositionRt: []string{"examples/quickstart", "examples/nomain", "cmd/tool"},
+		},
 	}
 
-	if !repo.IsGitRepo {
-		t.Errorf("IsGitRepo = false, want true (mock .git directory present)")
-	}
-	if repo.Dirty {
-		t.Errorf("Dirty = true, want false (mock .git dir cannot report real status)")
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := buildFixture(t)
 
-	wantInstruction := InstructionFile{Path: "AGENTS.md", Name: "AGENTS.md"}
-	if !containsInstruction(repo.InstructionFiles, wantInstruction) {
-		t.Errorf("InstructionFiles = %+v, want to contain %+v", repo.InstructionFiles, wantInstruction)
-	}
+			repo, err := Discover(root)
+			if err != nil {
+				t.Fatalf("Discover: %v", err)
+			}
 
-	for _, want := range []string{"build", "test"} {
-		if !containsString(repo.MakeTargets, want) {
-			t.Errorf("MakeTargets = %v, want to contain %q", repo.MakeTargets, want)
+			if !repo.IsGitRepo {
+				t.Errorf("IsGitRepo = false, want true (mock .git directory present)")
+			}
+			if repo.Dirty {
+				t.Errorf("Dirty = true, want false (mock .git dir cannot report real status)")
+			}
+
+			if !containsInstruction(repo.InstructionFiles, tt.wantInstruction) {
+				t.Errorf("InstructionFiles = %+v, want to contain %+v", repo.InstructionFiles, tt.wantInstruction)
+			}
+
+			assertContainsAll(t, "MakeTargets", repo.MakeTargets, tt.wantMakeTargets)
+			if containsString(repo.MakeTargets, tt.unwantedMakeTgt) {
+				t.Errorf("MakeTargets = %v, should not contain variable assignment %q", repo.MakeTargets, tt.unwantedMakeTgt)
+			}
+			assertContainsAll(t, "CIWorkflows", repo.CIWorkflows, []string{tt.wantCIWorkflow})
+
+			for _, want := range tt.wantCompositionRt {
+				if !containsCompositionRoot(repo.CompositionRoots, want) {
+					t.Errorf("CompositionRoots = %+v, want to contain %s", repo.CompositionRoots, want)
+				}
+			}
+		})
+	}
+}
+
+// assertContainsAll fails the test for every entry of want missing from got.
+func assertContainsAll(t *testing.T, label string, got, want []string) {
+	t.Helper()
+	for _, w := range want {
+		if !containsString(got, w) {
+			t.Errorf("%s = %v, want to contain %q", label, got, w)
 		}
-	}
-	if containsString(repo.MakeTargets, "VERSION") {
-		t.Errorf("MakeTargets = %v, should not contain variable assignment %q", repo.MakeTargets, "VERSION")
-	}
-
-	if !containsString(repo.CIWorkflows, "ci.yml") {
-		t.Errorf("CIWorkflows = %v, want to contain %q", repo.CIWorkflows, "ci.yml")
-	}
-
-	if !containsCompositionRoot(repo.CompositionRoots, "examples/quickstart") {
-		t.Errorf("CompositionRoots = %+v, want to contain examples/quickstart", repo.CompositionRoots)
-	}
-	// Every direct child of examples/ is a composition root unconditionally
-	// (per the discovery spec), regardless of whether it has a func
-	// main() — examples/nomain deliberately has none, to prove this.
-	if !containsCompositionRoot(repo.CompositionRoots, "examples/nomain") {
-		t.Errorf("CompositionRoots = %+v, want to contain examples/nomain (direct child of examples/, even without func main())", repo.CompositionRoots)
-	}
-	if !containsCompositionRoot(repo.CompositionRoots, "cmd/tool") {
-		t.Errorf("CompositionRoots = %+v, want to contain cmd/tool (func main() outside examples/)", repo.CompositionRoots)
 	}
 }
 
 func TestDiscover_NestedModules(t *testing.T) {
-	root := buildFixture(t)
-
-	repo, err := Discover(root)
-	if err != nil {
-		t.Fatalf("Discover: %v", err)
+	tests := []struct {
+		name      string
+		want      map[string]string
+		wantAbsen string
+	}{
+		{
+			name: "walk stops at the nested go.mod",
+			want: map[string]string{
+				".":       "example.com/root",
+				"pkg/sub": "example.com/root/pkg/sub",
+			},
+			wantAbsen: "pkg/sub/deeper",
+		},
 	}
 
-	want := map[string]string{
-		".":       "example.com/root",
-		"pkg/sub": "example.com/root/pkg/sub",
-	}
-	got := make(map[string]string, len(repo.Modules))
-	for _, m := range repo.Modules {
-		got[m.Path] = m.ModulePath
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := buildFixture(t)
 
-	for path, modulePath := range want {
-		gotModulePath, ok := got[path]
-		if !ok {
-			t.Errorf("Modules missing entry for %q", path)
-			continue
-		}
-		if gotModulePath != modulePath {
-			t.Errorf("Modules[%q].ModulePath = %q, want %q", path, gotModulePath, modulePath)
-		}
-	}
+			repo, err := Discover(root)
+			if err != nil {
+				t.Fatalf("Discover: %v", err)
+			}
 
-	if _, ok := got["pkg/sub/deeper"]; ok {
-		t.Errorf("Modules contains pkg/sub/deeper, but the walk must stop descending once pkg/sub's go.mod is found")
-	}
-	if len(repo.Modules) != len(want) {
-		t.Errorf("Modules = %+v, want exactly %d entries (%v)", repo.Modules, len(want), want)
+			got := make(map[string]string, len(repo.Modules))
+			for _, m := range repo.Modules {
+				got[m.Path] = m.ModulePath
+			}
+
+			for path, modulePath := range tt.want {
+				gotModulePath, ok := got[path]
+				if !ok {
+					t.Errorf("Modules missing entry for %q", path)
+					continue
+				}
+				if gotModulePath != modulePath {
+					t.Errorf("Modules[%q].ModulePath = %q, want %q", path, gotModulePath, modulePath)
+				}
+			}
+
+			if _, ok := got[tt.wantAbsen]; ok {
+				t.Errorf("Modules contains %s, but the walk must stop descending once pkg/sub's go.mod is found", tt.wantAbsen)
+			}
+			if len(repo.Modules) != len(tt.want) {
+				t.Errorf("Modules = %+v, want exactly %d entries (%v)", repo.Modules, len(tt.want), tt.want)
+			}
+		})
 	}
 }
 
 func TestDiscover_RejectsNonDirectory(t *testing.T) {
-	root := t.TempDir()
-	filePath := filepath.Join(root, "not-a-dir")
-	writeFile(t, root, "not-a-dir", "hello\n")
+	tests := []struct {
+		name    string
+		file    string
+		content string
+	}{
+		{name: "regular file as root", file: "not-a-dir", content: "hello\n"},
+	}
 
-	if _, err := Discover(filePath); err == nil {
-		t.Errorf("Discover(%q) = nil error, want error since path is not a directory", filePath)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			filePath := filepath.Join(root, tt.file)
+			writeFile(t, root, tt.file, tt.content)
+
+			if _, err := Discover(filePath); err == nil {
+				t.Errorf("Discover(%q) = nil error, want error since path is not a directory", filePath)
+			}
+		})
 	}
 }
 
 func TestDiscover_MissingRoot(t *testing.T) {
-	root := t.TempDir()
-	missing := filepath.Join(root, "does-not-exist")
+	tests := []struct {
+		name    string
+		missing string
+	}{
+		{name: "nonexistent root", missing: "does-not-exist"},
+	}
 
-	if _, err := Discover(missing); err == nil {
-		t.Errorf("Discover(%q) = nil error, want error since root does not exist", missing)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			missing := filepath.Join(t.TempDir(), tt.missing)
+
+			if _, err := Discover(missing); err == nil {
+				t.Errorf("Discover(%q) = nil error, want error since root does not exist", missing)
+			}
+		})
 	}
 }
 
@@ -167,38 +226,60 @@ func TestDiscover_MissingRoot(t *testing.T) {
 // dirty-vs-clean detection depends on real `git status --porcelain`
 // output, which a mock .git directory cannot produce.
 func TestDiscover_GitDirtyDetection(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available on PATH")
+	tests := []struct {
+		name         string
+		file         string
+		initial      string
+		modified     string
+		wantCleanAt0 bool
+		wantDirtyAt1 bool
+	}{
+		{
+			name:         "clean after commit, dirty after edit",
+			file:         "tracked.txt",
+			initial:      "hello\n",
+			modified:     "modified\n",
+			wantCleanAt0: true,
+			wantDirtyAt1: true,
+		},
 	}
 
-	root := t.TempDir()
-	runGit(t, root, "init")
-	runGit(t, root, "config", "user.email", "test@example.com")
-	runGit(t, root, "config", "user.name", "Test")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := exec.LookPath("git"); err != nil {
+				t.Skip("git not available on PATH")
+			}
 
-	writeFile(t, root, "tracked.txt", "hello\n")
-	runGit(t, root, "add", "tracked.txt")
-	runGit(t, root, "commit", "-m", "initial commit")
+			root := t.TempDir()
+			runGit(t, root, "init")
+			runGit(t, root, "config", "user.email", "test@example.com")
+			runGit(t, root, "config", "user.name", "Test")
 
-	repo, err := Discover(root)
-	if err != nil {
-		t.Fatalf("Discover: %v", err)
-	}
-	if !repo.IsGitRepo {
-		t.Errorf("IsGitRepo = false, want true")
-	}
-	if repo.Dirty {
-		t.Errorf("Dirty = true, want false right after a clean commit")
-	}
+			writeFile(t, root, tt.file, tt.initial)
+			runGit(t, root, "add", tt.file)
+			runGit(t, root, "commit", "-m", "initial commit")
 
-	writeFile(t, root, "tracked.txt", "modified\n")
+			repo, err := Discover(root)
+			if err != nil {
+				t.Fatalf("Discover: %v", err)
+			}
+			if !repo.IsGitRepo {
+				t.Errorf("IsGitRepo = false, want true")
+			}
+			if repo.Dirty == tt.wantCleanAt0 {
+				t.Errorf("Dirty = %v, want %v right after a clean commit", repo.Dirty, !tt.wantCleanAt0)
+			}
 
-	repo, err = Discover(root)
-	if err != nil {
-		t.Fatalf("Discover (after edit): %v", err)
-	}
-	if !repo.Dirty {
-		t.Errorf("Dirty = false, want true after modifying a tracked file")
+			writeFile(t, root, tt.file, tt.modified)
+
+			repo, err = Discover(root)
+			if err != nil {
+				t.Fatalf("Discover (after edit): %v", err)
+			}
+			if repo.Dirty != tt.wantDirtyAt1 {
+				t.Errorf("Dirty = %v, want %v after modifying a tracked file", repo.Dirty, tt.wantDirtyAt1)
+			}
+		})
 	}
 }
 
@@ -211,95 +292,131 @@ func runGit(t *testing.T, dir string, args ...string) {
 }
 
 func TestDiscoverTools_MissingToolReportedExplicitly(t *testing.T) {
-	fakeName := "definitely-not-a-real-binary-xyz123"
-	tools := discoverTools([]string{"go", fakeName})
-
-	var found bool
-	for _, tool := range tools {
-		if tool.Name == fakeName {
-			found = true
-			if tool.Present {
-				t.Errorf("ToolStatus for %q reports Present = true, want false", fakeName)
-			}
-			if tool.Path != "" {
-				t.Errorf("ToolStatus for %q has Path = %q, want empty", fakeName, tool.Path)
-			}
-		}
+	tests := []struct {
+		name     string
+		fakeName string
+	}{
+		{name: "nonexistent binary", fakeName: "definitely-not-a-real-binary-xyz123"},
 	}
-	if !found {
-		t.Errorf("discoverTools result %+v does not contain an entry for %q; missing tools must be reported explicitly, not dropped", tools, fakeName)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tools := discoverTools([]string{"go", tt.fakeName})
+
+			var found bool
+			for _, tool := range tools {
+				if tool.Name == tt.fakeName {
+					found = true
+					if tool.Present {
+						t.Errorf("ToolStatus for %q reports Present = true, want false", tt.fakeName)
+					}
+					if tool.Path != "" {
+						t.Errorf("ToolStatus for %q has Path = %q, want empty", tt.fakeName, tool.Path)
+					}
+				}
+			}
+			if !found {
+				t.Errorf("discoverTools result %+v does not contain an entry for %q; missing tools must be reported explicitly, not dropped", tools, tt.fakeName)
+			}
+		})
 	}
 }
 
 func TestDiscoverIndexes_MissingIndexReportedExplicitly(t *testing.T) {
-	root := t.TempDir()
-	// Only create .git; .codegraph and .tokensave are absent.
-	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
-		t.Fatalf("MkdirAll(.git): %v", err)
+	tests := []struct {
+		name string
+		dirs []string
+		want map[string]bool
+	}{
+		{
+			// Only .git is created; .codegraph and .tokensave are absent.
+			name: "only .git present",
+			dirs: []string{".git"},
+			want: map[string]bool{".codegraph": false, ".git": true, ".tokensave": false},
+		},
 	}
 
-	indexes := discoverIndexes(root, defaultIndexNames)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			for _, d := range tt.dirs {
+				if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
+					t.Fatalf("MkdirAll(%s): %v", d, err)
+				}
+			}
 
-	want := map[string]bool{".codegraph": false, ".git": true, ".tokensave": false}
-	got := make(map[string]bool, len(indexes))
-	for _, idx := range indexes {
-		got[idx.Name] = idx.Present
-	}
-	for name, present := range want {
-		gotPresent, ok := got[name]
-		if !ok {
-			t.Errorf("Indexes missing entry for %q", name)
-			continue
-		}
-		if gotPresent != present {
-			t.Errorf("Indexes[%q].Present = %v, want %v", name, gotPresent, present)
-		}
+			indexes := discoverIndexes(root, defaultIndexNames)
+
+			got := make(map[string]bool, len(indexes))
+			for _, idx := range indexes {
+				got[idx.Name] = idx.Present
+			}
+			for name, present := range tt.want {
+				gotPresent, ok := got[name]
+				if !ok {
+					t.Errorf("Indexes missing entry for %q", name)
+					continue
+				}
+				if gotPresent != present {
+					t.Errorf("Indexes[%q].Present = %v, want %v", name, gotPresent, present)
+				}
+			}
+		})
 	}
 }
 
 func TestRepository_JSONMarshalDeterministic(t *testing.T) {
-	repo := Repository{
-		Root:      "/repo",
-		IsGitRepo: true,
-		Dirty:     false,
-		Modules: []GoModule{
-			{Path: ".", ModulePath: "example.com/root"},
-			{Path: "tools/sub", ModulePath: "example.com/root/tools/sub"},
-		},
-		CompositionRoots: []CompositionRoot{
-			{Path: "examples/quickstart", Reason: "direct child directory of examples/"},
-			{Path: "cmd/tool", Reason: "contains a func main() declaration"},
-		},
-		InstructionFiles: []InstructionFile{
-			{Path: "AGENTS.md", Name: "AGENTS.md"},
-			{Path: ".github/copilot-instructions.md", Name: "copilot-instructions.md"},
-		},
-		MakeTargets: []string{"build", "deps", "test"},
-		CIWorkflows: []string{"ci.yml"},
-		Indexes: []IndexStatus{
-			{Name: ".codegraph", Present: false},
-			{Name: ".git", Present: true},
-			{Name: ".tokensave", Present: false},
-		},
-		Tools: []ToolStatus{
-			{Name: "docker", Present: false},
-			{Name: "git", Present: true, Path: "/usr/bin/git"},
-			{Name: "go", Present: true, Path: "/usr/local/go/bin/go"},
-			{Name: "gofmt", Present: true, Path: "/usr/local/go/bin/gofmt"},
-			{Name: "golangci-lint", Present: false},
-		},
+	tests := []struct {
+		name string
+		repo Repository
+	}{
+		{name: "fully populated repository", repo: Repository{
+			Root:      "/repo",
+			IsGitRepo: true,
+			Dirty:     false,
+			Modules: []GoModule{
+				{Path: ".", ModulePath: "example.com/root"},
+				{Path: "tools/sub", ModulePath: "example.com/root/tools/sub"},
+			},
+			CompositionRoots: []CompositionRoot{
+				{Path: "examples/quickstart", Reason: "direct child directory of examples/"},
+				{Path: "cmd/tool", Reason: "contains a func main() declaration"},
+			},
+			InstructionFiles: []InstructionFile{
+				{Path: "AGENTS.md", Name: "AGENTS.md"},
+				{Path: ".github/copilot-instructions.md", Name: "copilot-instructions.md"},
+			},
+			MakeTargets: []string{"build", "deps", "test"},
+			CIWorkflows: []string{"ci.yml"},
+			Indexes: []IndexStatus{
+				{Name: ".codegraph", Present: false},
+				{Name: ".git", Present: true},
+				{Name: ".tokensave", Present: false},
+			},
+			Tools: []ToolStatus{
+				{Name: "docker", Present: false},
+				{Name: "git", Present: true, Path: "/usr/bin/git"},
+				{Name: "go", Present: true, Path: "/usr/local/go/bin/go"},
+				{Name: "gofmt", Present: true, Path: "/usr/local/go/bin/gofmt"},
+				{Name: "golangci-lint", Present: false},
+			},
+		}},
 	}
 
-	b1, err := json.Marshal(repo)
-	if err != nil {
-		t.Fatalf("json.Marshal (1st): %v", err)
-	}
-	b2, err := json.Marshal(repo)
-	if err != nil {
-		t.Fatalf("json.Marshal (2nd): %v", err)
-	}
-	if string(b1) != string(b2) {
-		t.Errorf("json.Marshal is not deterministic:\n1st: %s\n2nd: %s", b1, b2)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b1, err := json.Marshal(tt.repo)
+			if err != nil {
+				t.Fatalf("json.Marshal (1st): %v", err)
+			}
+			b2, err := json.Marshal(tt.repo)
+			if err != nil {
+				t.Fatalf("json.Marshal (2nd): %v", err)
+			}
+			if string(b1) != string(b2) {
+				t.Errorf("json.Marshal is not deterministic:\n1st: %s\n2nd: %s", b1, b2)
+			}
+		})
 	}
 }
 
