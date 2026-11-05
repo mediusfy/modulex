@@ -38,6 +38,8 @@ never tagged.
   parsing, JetStream and RabbitMQ consume paths) were split without behaviour
   changes.
 - `prreview`: the receiver and worker share one internal bootstrap package.
+- `scripts/pr-prep.sh`: local pre-PR fast-gate helper that runs `agent handoff`
+  against any mediusfy repo, documented in the agent CLI guide.
 
 ### Removed
 
