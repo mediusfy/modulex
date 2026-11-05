@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `errors.New`. `errors.Is` and `errors.As` behave as before; code that
   reassigns a sentinel or takes its address no longer compiles. Requires a
   minor release (v0.13.0).
+- `review`, `discovery`: `review.ErrContractUnparseable` is now a typed constant (**BREAKING** for code that reassigns it); composition-root discovery and diff parsing were split into smaller functions.
 - Table-driven tests throughout, scaffold templates now generate table-driven
   tests, and several high-complexity functions were split without behaviour
   changes.
