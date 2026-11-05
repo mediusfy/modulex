@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mediusfy/modulex"
+	"github.com/mediusfy/modulex/apperrors"
 	"github.com/mediusfy/modulex/internal/busshutdown"
 	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel"
@@ -25,15 +26,26 @@ import (
 // capability. Use EventBus.Subscribe (core NATS, no durability) for
 // fire-and-forget consumption, or SubscribeDurable (modulex.DurableConsumer)
 // on this same type for durable, acknowledged consumption.
-var ErrJetStreamSubscribeUnsupported = errors.New("nats: JetStreamEventBus does not support Subscribe; use nats.EventBus or SubscribeDurable")
+const ErrJetStreamSubscribeUnsupported apperrors.Error = "nats: JetStreamEventBus does not support Subscribe; use nats.EventBus or SubscribeDurable"
 
 // ErrDurableConsumerNameRequired is returned by SubscribeDurable when called
 // without modulex.WithConsumerName (or with an empty/whitespace-only name).
-var ErrDurableConsumerNameRequired = errors.New("nats: SubscribeDurable requires a non-empty ConsumerName")
+const ErrDurableConsumerNameRequired apperrors.Error = "nats: SubscribeDurable requires a non-empty ConsumerName"
 
 const (
 	// logKeyConsumer is the structured log key for a durable consumer name.
 	logKeyConsumer = "consumer_name"
+
+	// logKeyExisting, logKeyRequested, logKeyMatchedVia, logKeyBackoff,
+	// logKeyPanic, logKeyDecision and logKeyDeadLetterSubject are the
+	// structured log keys for the corresponding attributes.
+	logKeyExisting          = "existing"
+	logKeyRequested         = "requested"
+	logKeyMatchedVia        = "matchedVia"
+	logKeyBackoff           = "backoff"
+	logKeyPanic             = "panic"
+	logKeyDecision          = "decision"
+	logKeyDeadLetterSubject = "dead_letter_subject"
 
 	// defaultDurableMaxDeliver is the default maximum number of delivery
 	// attempts (including the first) JetStream makes for a message before
@@ -426,8 +438,8 @@ func (j *JetStreamEventBus) ensureDurableConsumer(ctx context.Context, topic, co
 		j.logger.WarnContext(ctx, "durable consumer exists with a different deliver policy; keeping the existing one (JetStream cannot change it)",
 			slog.String(logKeyTopic, topic),
 			slog.String(logKeyConsumer, consumerName),
-			slog.Any("existing", info.Config.DeliverPolicy),
-			slog.Any("requested", cfg.DeliverPolicy),
+			slog.Any(logKeyExisting, info.Config.DeliverPolicy),
+			slog.Any(logKeyRequested, cfg.DeliverPolicy),
 		)
 		cfg.DeliverPolicy = info.Config.DeliverPolicy
 		cfg.OptStartSeq = info.Config.OptStartSeq
@@ -479,69 +491,92 @@ func (j *JetStreamEventBus) durableConsumeLoop(ctx context.Context, stream, topi
 
 	backoff := initialDurableFetchBackoff
 
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
+	for ctx.Err() == nil {
 		// nats.go rejects passing both nats.Context and nats.MaxWait to
 		// Fetch, so cancellation is not plumbed into the Fetch call itself;
 		// instead each Fetch is bounded by durableFetchWait, and the
-		// ctx.Done() check at the top of this loop re-runs at least that
+		// ctx.Err() check at the top of this loop re-runs at least that
 		// often, bounding cancellation latency by durableFetchWait.
 		msgs, err := sub.Fetch(j.durableBatchSize, nats.MaxWait(j.durableFetchWait))
 		if err != nil {
-			if ctx.Err() != nil {
+			next, stop := j.handleDurableFetchError(ctx, stream, topic, consumerName, err, backoff)
+			if stop {
 				return
 			}
-			if errors.Is(err, nats.ErrTimeout) {
-				// No messages arrived within the fetch window; poll again
-				// immediately, and reset the backoff so a single transient
-				// error followed by healthy timeouts doesn't leave the loop
-				// needlessly slow.
-				backoff = initialDurableFetchBackoff
-				continue
-			}
-			matched, matchedVia := isTerminalFetchErrorMatch(err)
-			if !matched && errors.Is(err, nats.ErrNoResponders) && j.isDurableConsumerGone(ctx, stream, consumerName) {
-				matched, matchedVia = true, "consumer_info"
-			}
-			if matched {
-				j.logger.ErrorContext(ctx, "durable fetch terminal error, stopping consume loop",
-					slog.String(logKeyTopic, topic),
-					slog.String(logKeyConsumer, consumerName),
-					slog.Any(logKeyError, err),
-					slog.String("matchedVia", matchedVia),
-				)
-				return
-			}
-			j.logger.ErrorContext(ctx, "durable fetch error, backing off before retry",
-				slog.String(logKeyTopic, topic),
-				slog.String(logKeyConsumer, consumerName),
-				slog.Any(logKeyError, err),
-				slog.Duration("backoff", backoff),
-			)
-			select {
-			case <-time.After(backoff):
-			case <-ctx.Done():
-				return
-			}
-			backoff = nextDurableFetchBackoff(backoff)
+			backoff = next
 			continue
 		}
 		backoff = initialDurableFetchBackoff
 
-		for _, msg := range msgs {
-			j.handleDurableMessage(ctx, topic, consumerName, msg, handler)
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
+		if !j.handleDurableBatch(ctx, topic, consumerName, msgs, handler) {
+			return
 		}
 	}
+}
+
+// handleDurableFetchError decides what durableConsumeLoop does after a failed
+// Fetch. It returns the backoff to use for the next attempt and whether the
+// loop must stop: ctx cancellation and terminal errors stop the loop, a
+// fetch-window timeout resets the backoff and polls again immediately, and
+// any other error is logged and waited out for backoff (honoring ctx) before
+// the next attempt.
+func (j *JetStreamEventBus) handleDurableFetchError(ctx context.Context, stream, topic, consumerName string, err error, backoff time.Duration) (nextBackoff time.Duration, stop bool) {
+	if ctx.Err() != nil {
+		return backoff, true
+	}
+	if errors.Is(err, nats.ErrTimeout) {
+		// No messages arrived within the fetch window; poll again
+		// immediately, and reset the backoff so a single transient
+		// error followed by healthy timeouts doesn't leave the loop
+		// needlessly slow.
+		return initialDurableFetchBackoff, false
+	}
+	if matched, matchedVia := j.classifyTerminalFetchError(ctx, stream, consumerName, err); matched {
+		j.logger.ErrorContext(ctx, "durable fetch terminal error, stopping consume loop",
+			slog.String(logKeyTopic, topic),
+			slog.String(logKeyConsumer, consumerName),
+			slog.Any(logKeyError, err),
+			slog.String(logKeyMatchedVia, matchedVia),
+		)
+		return backoff, true
+	}
+	j.logger.ErrorContext(ctx, "durable fetch error, backing off before retry",
+		slog.String(logKeyTopic, topic),
+		slog.String(logKeyConsumer, consumerName),
+		slog.Any(logKeyError, err),
+		slog.Duration(logKeyBackoff, backoff),
+	)
+	select {
+	case <-time.After(backoff):
+	case <-ctx.Done():
+		return backoff, true
+	}
+	return nextDurableFetchBackoff(backoff), false
+}
+
+// classifyTerminalFetchError reports whether err means the consume loop can
+// never make progress again, and how that was determined. An ambiguous
+// nats.ErrNoResponders is resolved by asking the server whether the consumer
+// still exists.
+func (j *JetStreamEventBus) classifyTerminalFetchError(ctx context.Context, stream, consumerName string, err error) (matched bool, matchedVia string) {
+	matched, matchedVia = isTerminalFetchErrorMatch(err)
+	if !matched && errors.Is(err, nats.ErrNoResponders) && j.isDurableConsumerGone(ctx, stream, consumerName) {
+		return true, "consumer_info"
+	}
+	return matched, matchedVia
+}
+
+// handleDurableBatch handles each fetched message in order and reports
+// whether the consume loop should keep running; it returns false as soon as
+// ctx is done after a message.
+func (j *JetStreamEventBus) handleDurableBatch(ctx context.Context, topic, consumerName string, msgs []*nats.Msg, handler modulex.DurableHandler) (keepGoing bool) {
+	for _, msg := range msgs {
+		j.handleDurableMessage(ctx, topic, consumerName, msg, handler)
+		if ctx.Err() != nil {
+			return false
+		}
+	}
+	return true
 }
 
 // isDurableConsumerGone checks with the JetStream server whether the durable
@@ -642,7 +677,7 @@ func (j *JetStreamEventBus) invokeDurableHandler(ctx context.Context, topic, con
 			j.logger.ErrorContext(ctx, "durable handler panicked, nacking for retry",
 				slog.String(logKeyTopic, topic),
 				slog.String(logKeyConsumer, consumerName),
-				slog.Any("panic", r),
+				slog.Any(logKeyPanic, r),
 			)
 			decision = modulex.Nack
 		}
@@ -680,7 +715,7 @@ func (j *JetStreamEventBus) handleDurableMessage(ctx context.Context, topic, con
 			j.logger.ErrorContext(msgCtx, "unrecognized ack decision, nacking for retry",
 				slog.String(logKeyTopic, topic),
 				slog.String(logKeyConsumer, consumerName),
-				slog.Any("decision", int(decision)),
+				slog.Any(logKeyDecision, int(decision)),
 			)
 		}
 		if dm.DeliveryCount > 0 && dm.DeliveryCount >= j.durableMaxDeliver {
@@ -755,7 +790,7 @@ func (j *JetStreamEventBus) deadLetter(ctx context.Context, topic, consumerName 
 			j.logger.ErrorContext(ctx, "failed to publish dead-lettered message",
 				slog.String(logKeyTopic, topic),
 				slog.String(logKeyConsumer, consumerName),
-				slog.String("dead_letter_subject", dlSubject),
+				slog.String(logKeyDeadLetterSubject, dlSubject),
 				slog.Any(logKeyError, err),
 			)
 		}
