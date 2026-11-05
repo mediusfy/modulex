@@ -29,37 +29,45 @@ func (c *internalStaticChecker) ReadinessChecks() map[string]func(context.Contex
 // check itself never returns on its own — the gap this test guards against
 // regressing.
 func TestEvaluateChecksBoundsAHungCheck(t *testing.T) {
-	prev := defaultCheckTimeout
-	defaultCheckTimeout = 10 * time.Millisecond
-	t.Cleanup(func() { defaultCheckTimeout = prev })
+	tests := []struct {
+		name         string
+		checkTimeout time.Duration
+	}{
+		{name: "hung check bounded by 10ms timeout", checkTimeout: 10 * time.Millisecond},
+	}
 
-	started := make(chan struct{})
-	checker := &internalStaticChecker{health: map[string]func(context.Context) error{
-		"hung": func(ctx context.Context) error {
-			close(started)
-			<-ctx.Done()
-			return ctx.Err()
-		},
-	}}
-	server := NewHealthServer(checker)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			started := make(chan struct{})
+			checker := &internalStaticChecker{health: map[string]func(context.Context) error{
+				"hung": func(ctx context.Context) error {
+					close(started)
+					<-ctx.Done()
+					return ctx.Err()
+				},
+			}}
+			server := NewHealthServer(checker)
+			server.checkTimeout = tt.checkTimeout
 
-	done := make(chan *healthpb.HealthCheckResponse, 1)
-	go func() {
-		resp, err := server.Check(context.Background(), &healthpb.HealthCheckRequest{})
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		done <- resp
-	}()
+			done := make(chan *healthpb.HealthCheckResponse, 1)
+			go func() {
+				resp, err := server.Check(context.Background(), &healthpb.HealthCheckRequest{})
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				done <- resp
+			}()
 
-	<-started
-	select {
-	case resp := <-done:
-		if resp.GetStatus() != healthpb.HealthCheckResponse_NOT_SERVING {
-			t.Errorf("Status = %v, want NOT_SERVING", resp.GetStatus())
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Check did not return within 2s of a hung check and a 10ms timeout — evaluateChecks is not bounding it")
+			<-started
+			select {
+			case resp := <-done:
+				if resp.GetStatus() != healthpb.HealthCheckResponse_NOT_SERVING {
+					t.Errorf("Status = %v, want NOT_SERVING", resp.GetStatus())
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("Check did not return within 2s of a hung check and a 10ms timeout — evaluateChecks is not bounding it")
+			}
+		})
 	}
 }

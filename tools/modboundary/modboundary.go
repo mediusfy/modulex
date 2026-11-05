@@ -85,34 +85,17 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		return nil, fmt.Errorf("modboundary: -root flag must be set to the import path prefix identifying the module boundary")
 	}
 
-	allowed := make(map[string]bool)
-	for _, name := range strings.Split(allowFlag, ",") {
-		name = strings.TrimSpace(name)
-		if name != "" {
-			allowed[name] = true
-		}
-	}
-
-	allowedSQLTables := make(map[string]bool)
-	for _, name := range strings.Split(sqlTablesFlag, ",") {
-		name = strings.TrimSpace(name)
-		if name != "" {
-			allowedSQLTables[name] = true
-		}
-	}
+	allowed := parseNameSet(allowFlag)
+	allowedSQLTables := parseNameSet(sqlTablesFlag)
 
 	if pass.Pkg.Name() == "main" {
 		return nil, nil
 	}
 
-	rawCurrentModule, ok := moduleOf(pass.Pkg.Path(), root)
+	currentModule, ok := analyzedModule(pass.Pkg.Path(), root)
 	if !ok {
 		return nil, nil
 	}
-	if strings.HasSuffix(rawCurrentModule, ".test") {
-		return nil, nil
-	}
-	currentModule := normalizeTestModule(rawCurrentModule)
 
 	// Load schema table ownership if -dbschema is set.
 	var schemaTables map[string]string // table name -> owning module
@@ -124,6 +107,44 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		}
 	}
 
+	checkImports(pass, root, currentModule, allowed)
+
+	// Check for cross-module table references of string literals.
+	if schemaTables != nil {
+		checkTableReferences(pass, schemaTables, currentModule)
+	}
+
+	return nil, nil
+}
+
+// parseNameSet splits a comma-separated flag value into a set, trimming
+// whitespace and dropping empty entries.
+func parseNameSet(csv string) map[string]bool {
+	set := make(map[string]bool)
+	for _, name := range strings.Split(csv, ",") {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			set[name] = true
+		}
+	}
+	return set
+}
+
+// analyzedModule resolves the feature module the package at pkgPath belongs
+// to (with an external-test suffix normalized away). It reports false when
+// the package is outside root or is a synthesized ".test" main package,
+// neither of which is checked.
+func analyzedModule(pkgPath, root string) (string, bool) {
+	raw, ok := moduleOf(pkgPath, root)
+	if !ok || strings.HasSuffix(raw, ".test") {
+		return "", false
+	}
+	return normalizeTestModule(raw), true
+}
+
+// checkImports reports every import in the package's files that crosses a
+// module boundary through a non-allow-listed subpackage.
+func checkImports(pass *analysis.Pass, root, currentModule string, allowed map[string]bool) {
 	for _, file := range pass.Files {
 		for _, imp := range file.Imports {
 			path, err := strconv.Unquote(imp.Path.Value)
@@ -147,37 +168,36 @@ func run(pass *analysis.Pass) (interface{}, error) {
 				pass.Pkg.Path(), currentModule, path, importedModule, sortedKeys(allowed))
 		}
 	}
+}
 
-	// Check for cross-module table references of string literals.
-	if schemaTables != nil {
-		for _, file := range pass.Files {
-			for _, group := range file.Comments {
-				for _, comment := range group.List {
-					checkSQLTableRef(pass, comment.Text, comment.Pos(), schemaTables, currentModule)
-				}
+// checkTableReferences reports comments and string literals that reference a
+// table owned by a different module.
+func checkTableReferences(pass *analysis.Pass, schemaTables map[string]string, currentModule string) {
+	for _, file := range pass.Files {
+		for _, group := range file.Comments {
+			for _, comment := range group.List {
+				checkSQLTableRef(pass, comment.Text, comment.Pos(), schemaTables, currentModule)
 			}
 		}
-		// Also check basic string literals for table names.
-		// This is best-effort: we look at the AST for string literal tokens.
-		// A full dataflow analysis would be needed for variables, but scanning
-		// literals catches the common case of inline SQL.
-		for _, file := range pass.Files {
-			ast.Inspect(file, func(n ast.Node) bool {
-				lit, ok := n.(*ast.BasicLit)
-				if !ok || lit.Kind != token.STRING {
-					return true
-				}
-				val, err := strconv.Unquote(lit.Value)
-				if err != nil {
-					return true
-				}
-				checkSQLTableRef(pass, val, lit.Pos(), schemaTables, currentModule)
-				return true
-			})
-		}
 	}
-
-	return nil, nil
+	// Also check basic string literals for table names.
+	// This is best-effort: we look at the AST for string literal tokens.
+	// A full dataflow analysis would be needed for variables, but scanning
+	// literals catches the common case of inline SQL.
+	for _, file := range pass.Files {
+		ast.Inspect(file, func(n ast.Node) bool {
+			lit, ok := n.(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				return true
+			}
+			val, err := strconv.Unquote(lit.Value)
+			if err != nil {
+				return true
+			}
+			checkSQLTableRef(pass, val, lit.Pos(), schemaTables, currentModule)
+			return true
+		})
+	}
 }
 
 // checkSQLTableRef reports a diagnostic if val contains a reference to a table
@@ -304,15 +324,10 @@ func loadSchemaTables(pass *analysis.Pass, root, dbschemaGlob string, allowedTab
 
 	// Determine the base directory on disk from the root import path.
 	// We use the first package file's position to derive the filesystem root.
-	if len(pass.Files) == 0 {
+	dir, ok := packageDir(pass)
+	if !ok {
 		return tables, nil
 	}
-	pos := pass.Files[0].Pos()
-	fsetFile := pass.Fset.File(pos)
-	if fsetFile == nil {
-		return tables, nil
-	}
-	dir := filepath.Dir(fsetFile.Name())
 
 	// Walk up to find the root directory. We look for a directory named after
 	// the last segment of the root import path, or we anchor at the package dir.
@@ -322,8 +337,38 @@ func loadSchemaTables(pass *analysis.Pass, root, dbschemaGlob string, allowedTab
 	if err != nil {
 		return nil, err
 	}
+	matches, walkErr := findSchemaFiles(moduleRoot, matcher)
+	if walkErr != nil {
+		if os.IsNotExist(walkErr) {
+			return tables, nil
+		}
+		return nil, walkErr
+	}
+
+	for _, match := range matches {
+		addTablesFromFile(tables, moduleRoot, match, allowedTables)
+	}
+	return tables, nil
+}
+
+// packageDir returns the on-disk directory of the package's first file, or
+// false when the pass has no files or no position information.
+func packageDir(pass *analysis.Pass) (string, bool) {
+	if len(pass.Files) == 0 {
+		return "", false
+	}
+	fsetFile := pass.Fset.File(pass.Files[0].Pos())
+	if fsetFile == nil {
+		return "", false
+	}
+	return filepath.Dir(fsetFile.Name()), true
+}
+
+// findSchemaFiles walks moduleRoot and returns every file whose
+// slash-separated path relative to moduleRoot matches matcher.
+func findSchemaFiles(moduleRoot string, matcher *regexp.Regexp) ([]string, error) {
 	var matches []string
-	walkErr := filepath.WalkDir(moduleRoot, func(path string, d os.DirEntry, err error) error {
+	err := filepath.WalkDir(moduleRoot, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -339,44 +384,41 @@ func loadSchemaTables(pass *analysis.Pass, root, dbschemaGlob string, allowedTab
 		}
 		return nil
 	})
-	if walkErr != nil {
-		if os.IsNotExist(walkErr) {
-			return tables, nil
-		}
-		return nil, walkErr
+	return matches, err
+}
+
+// createStatementRE extracts the object name from a CREATE TABLE/VIEW
+// statement.
+var createStatementRE = regexp.MustCompile(`(?i)CREATE\s+(TABLE|VIEW)\s+(\S+)`)
+
+// addTablesFromFile records the tables and views created in the migration
+// file at path into tables, owned by the module named by path's first
+// directory segment below moduleRoot. Unreadable files are skipped.
+func addTablesFromFile(tables map[string]string, moduleRoot, path string, allowedTables map[string]bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
 	}
+	rel, err := filepath.Rel(moduleRoot, path)
+	if err != nil {
+		return
+	}
+	// The module name is the first directory segment below root.
+	module := strings.SplitN(rel, string(filepath.Separator), 2)[0]
 
-	createRE := regexp.MustCompile(`(?i)CREATE\s+(TABLE|VIEW)\s+(\S+)`)
-
-	for _, match := range matches {
-		data, err := os.ReadFile(match)
-		if err != nil {
+	for _, m := range createStatementRE.FindAllSubmatch(data, -1) {
+		tableName := strings.TrimRight(string(m[2]), " (;\"`")
+		tableName = strings.TrimLeft(tableName, "\"`")
+		if tableName == "" || allowedTables[tableName] {
 			continue
 		}
-		rel, err := filepath.Rel(moduleRoot, match)
-		if err != nil {
+		if existing, ok := tables[tableName]; ok && existing != module {
+			// Table is claimed by two different modules — we still record
+			// the first owner but additional detection will catch cross-refs.
 			continue
 		}
-		// The module name is the first directory segment below root.
-		parts := strings.SplitN(rel, string(filepath.Separator), 2)
-		module := parts[0]
-
-		for _, m := range createRE.FindAllSubmatch(data, -1) {
-			tableName := strings.TrimRight(string(m[2]), " (;\"`")
-			tableName = strings.TrimLeft(tableName, "\"`")
-			if tableName == "" || allowedTables[tableName] {
-				continue
-			}
-			if existing, ok := tables[tableName]; ok && existing != module {
-				// Table is claimed by two different modules — we still record
-				// the first owner but additional detection will catch cross-refs.
-				continue
-			}
-			tables[tableName] = module
-		}
+		tables[tableName] = module
 	}
-
-	return tables, nil
 }
 
 // findModuleRoot walks up from dir to find the directory that corresponds to

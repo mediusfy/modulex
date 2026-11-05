@@ -9,19 +9,28 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestNewRemoteModuleRejectsEmptyBaseURL(t *testing.T) {
-	_, err := notification.NewRemoteModule("", nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "baseURL")
-}
-
-func TestNewRemoteModuleRejectsWhitespaceBaseURL(t *testing.T) {
-	_, err := notification.NewRemoteModule("   ", nil)
-	require.Error(t, err)
-}
-
-func TestNewRemoteModuleAcceptsValidBaseURL(t *testing.T) {
-	mod, err := notification.NewRemoteModule("http://localhost:8080", http.DefaultClient)
-	require.NoError(t, err)
-	assert.NotNil(t, mod)
+func TestNewRemoteModule(t *testing.T) {
+	tests := []struct {
+		name        string
+		baseURL     string
+		client      *http.Client
+		wantErr     bool
+		wantErrText string
+	}{
+		{name: "rejects empty base URL", baseURL: "", wantErr: true, wantErrText: "baseURL"},
+		{name: "rejects whitespace base URL", baseURL: "   ", wantErr: true},
+		{name: "accepts valid base URL", baseURL: "http://localhost:8080", client: http.DefaultClient},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mod, err := notification.NewRemoteModule(tt.baseURL, tt.client)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErrText)
+				return
+			}
+			require.NoError(t, err)
+			assert.NotNil(t, mod)
+		})
+	}
 }

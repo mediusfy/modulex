@@ -227,36 +227,12 @@ var httpClient = &http.Client{Timeout: 30 * time.Second}
 // endpoint: OpenAI itself, DeepSeek, and Ollama's OpenAI-compatibility
 // layer all use this identical wire format.
 func openAICompatibleComment(ctx context.Context, provider, url string, cfg Config, results []provenance.VerificationResult, diff string) (string, int64, error) {
-	if cfg.Model == "" {
-		return "", 0, fmt.Errorf("%s requires a model (provider model catalogs change too often to default safely)", provider)
-	}
-	if cfg.APIKey == "" && provider != "ollama" {
-		// Ollama documents its key as "required, but unused" for an
-		// unauthenticated local server; openai and deepseek always require
-		// one. Checking here surfaces a clear local error instead of an
-		// opaque upstream 401.
-		return "", 0, fmt.Errorf("%s requires api_key", provider)
-	}
-	reqBody, err := json.Marshal(openAIChatRequest{
-		Model: cfg.Model,
-		Messages: []openAIChatMessage{
-			{Role: "system", Content: systemPrompt},
-			{Role: "user", Content: buildPrompt(results, diff)},
-		},
-	})
-	if err != nil {
+	if err := checkOpenAIConfig(provider, cfg); err != nil {
 		return "", 0, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBody))
+	req, err := newOpenAIRequest(ctx, url, cfg, results, diff)
 	if err != nil {
 		return "", 0, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	// Ollama documents its API key as "required, but unused" for a local
-	// unauthenticated server; sending the header only when configured
-	// keeps it absent for installations that never set one.
-	if cfg.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
 	}
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -268,12 +244,7 @@ func openAICompatibleComment(ctx context.Context, provider, url string, cfg Conf
 		return "", 0, fmt.Errorf("%s commentary: reading response: %w", provider, err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		var out openAIChatResponse
-		msg := string(body)
-		if json.Unmarshal(body, &out) == nil && out.Error != nil && out.Error.Message != "" {
-			msg = out.Error.Message
-		}
-		return "", 0, fmt.Errorf("%s commentary: status %d: %s", provider, resp.StatusCode, msg)
+		return "", 0, fmt.Errorf("%s commentary: status %d: %s", provider, resp.StatusCode, upstreamErrorMessage(body))
 	}
 	var out openAIChatResponse
 	if err := json.Unmarshal(body, &out); err != nil {
@@ -288,6 +259,57 @@ func openAICompatibleComment(ctx context.Context, provider, url string, cfg Conf
 		text = out.Choices[0].Message.Content
 	}
 	return text, tokens, nil
+}
+
+// checkOpenAIConfig rejects a config that cannot produce a usable request.
+func checkOpenAIConfig(provider string, cfg Config) error {
+	if cfg.Model == "" {
+		return fmt.Errorf("%s requires a model (provider model catalogs change too often to default safely)", provider)
+	}
+	if cfg.APIKey == "" && provider != "ollama" {
+		// Ollama documents its key as "required, but unused" for an
+		// unauthenticated local server; openai and deepseek always require
+		// one. Checking here surfaces a clear local error instead of an
+		// opaque upstream 401.
+		return fmt.Errorf("%s requires api_key", provider)
+	}
+	return nil
+}
+
+// newOpenAIRequest builds the chat-completions POST for the review results.
+func newOpenAIRequest(ctx context.Context, url string, cfg Config, results []provenance.VerificationResult, diff string) (*http.Request, error) {
+	reqBody, err := json.Marshal(openAIChatRequest{
+		Model: cfg.Model,
+		Messages: []openAIChatMessage{
+			{Role: "system", Content: systemPrompt},
+			{Role: "user", Content: buildPrompt(results, diff)},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBody))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	// Ollama documents its API key as "required, but unused" for a local
+	// unauthenticated server; sending the header only when configured
+	// keeps it absent for installations that never set one.
+	if cfg.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
+	}
+	return req, nil
+}
+
+// upstreamErrorMessage extracts the provider's error message from a
+// non-200 body, falling back to the raw body.
+func upstreamErrorMessage(body []byte) string {
+	var out openAIChatResponse
+	if json.Unmarshal(body, &out) == nil && out.Error != nil && out.Error.Message != "" {
+		return out.Error.Message
+	}
+	return string(body)
 }
 
 // validateBaseURLHook performs the SSRF check below on a tenant-supplied

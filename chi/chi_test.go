@@ -48,39 +48,65 @@ func newTestManager(eb modulex.EventBus) *modulex.Manager {
 }
 
 func TestChiRouterRegistrationAndResolution(t *testing.T) {
-	router := gochi.NewRouter()
-	mgr := newTestManager(nil)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "scenario",
+			run: func(t *testing.T) {
+				router := gochi.NewRouter()
+				mgr := newTestManager(nil)
 
-	require.NoError(t, modulexchi.RegisterRouter(mgr, router))
+				require.NoError(t, modulexchi.RegisterRouter(mgr, router))
 
-	mod := &chiModule{
-		name: "hello",
-		path: "/hello",
-		handle: func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("hello from chi"))
+				mod := &chiModule{
+					name: "hello",
+					path: "/hello",
+					handle: func(w http.ResponseWriter, r *http.Request) {
+						w.WriteHeader(http.StatusOK)
+						_, _ = w.Write([]byte("hello from chi"))
+					},
+				}
+				require.NoError(t, mgr.RegisterModule(mod))
+				require.NoError(t, mgr.InitModules(context.Background()))
+
+				req := httptest.NewRequest(http.MethodGet, "/hello", nil)
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
+
+				assert.Equal(t, http.StatusOK, rec.Code)
+				assert.Equal(t, "hello from chi", rec.Body.String())
+			},
 		},
 	}
-	require.NoError(t, mgr.RegisterModule(mod))
-	require.NoError(t, mgr.InitModules(context.Background()))
-
-	req := httptest.NewRequest(http.MethodGet, "/hello", nil)
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
-
-	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.Equal(t, "hello from chi", rec.Body.String())
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestRouterKeyTypeSafety(t *testing.T) {
-	router := gochi.NewRouter()
-	mgr := newTestManager(nil)
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "scenario",
+			run: func(t *testing.T) {
+				router := gochi.NewRouter()
+				mgr := newTestManager(nil)
 
-	require.NoError(t, modulexchi.RegisterRouter(mgr, router))
+				require.NoError(t, modulexchi.RegisterRouter(mgr, router))
 
-	resolved, err := modulexchi.ResolveRouter(mgr)
-	require.NoError(t, err)
-	assert.Same(t, router, resolved)
+				resolved, err := modulexchi.ResolveRouter(mgr)
+				require.NoError(t, err)
+				assert.Same(t, router, resolved)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
 }
 
 func TestRouterErrorPaths(t *testing.T) {

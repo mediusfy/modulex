@@ -8,14 +8,16 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+
+	"github.com/mediusfy/modulex/apperrors"
 )
 
-var (
+const (
 	// ErrClosed indicates that the processor is no longer accepting work.
-	ErrClosed = errors.New("worker pool is closed")
+	ErrClosed apperrors.Error = "worker pool is closed"
 	// ErrPanic indicates that a task panicked. The original panic value is
 	// retained in the wrapped error.
-	ErrPanic = errors.New("worker pool task panicked")
+	ErrPanic apperrors.Error = "worker pool task panicked"
 )
 
 // Task is one unit of work. The task context is the context supplied to

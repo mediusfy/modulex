@@ -92,47 +92,67 @@ func TestHealthServerCheckReportsReadiness(t *testing.T) {
 // least numChecks*checkDelay; this asserts Check returns in well under
 // that, close to a single checkDelay.
 func TestHealthServerCheckRunsChecksConcurrently(t *testing.T) {
-	const (
-		numChecks  = 5
-		checkDelay = 150 * time.Millisecond
-	)
-
-	checks := make(map[string]func(context.Context) error, numChecks)
-	for i := 0; i < numChecks; i++ {
-		checks[fmt.Sprintf("check-%d", i)] = func(ctx context.Context) error {
-			select {
-			case <-time.After(checkDelay):
-				return nil
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		}
+	tests := []struct {
+		name string
+	}{
+		{name: "five 150ms checks run concurrently"},
 	}
-	checker := &staticChecker{health: checks}
-	server := grpcadapter.NewHealthServer(checker)
 
-	start := time.Now()
-	resp, err := server.Check(context.Background(), &healthpb.HealthCheckRequest{})
-	elapsed := time.Since(start)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			const (
+				numChecks  = 5
+				checkDelay = 150 * time.Millisecond
+			)
 
-	require.NoError(t, err)
-	assert.Equal(t, healthpb.HealthCheckResponse_SERVING, resp.GetStatus())
-	// Serial evaluation of numChecks checks would take at least
-	// numChecks*checkDelay (750ms). Concurrent evaluation takes roughly one
-	// checkDelay; allow generous headroom for scheduling jitter while still
-	// catching a regression to serial evaluation.
-	assert.Less(t, elapsed, 3*checkDelay,
-		"Check took %s for %d checks of %s each -- checks appear to run serially, not concurrently",
-		elapsed, numChecks, checkDelay)
+			checks := make(map[string]func(context.Context) error, numChecks)
+			for i := 0; i < numChecks; i++ {
+				checks[fmt.Sprintf("check-%d", i)] = func(ctx context.Context) error {
+					select {
+					case <-time.After(checkDelay):
+						return nil
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+				}
+			}
+			checker := &staticChecker{health: checks}
+			server := grpcadapter.NewHealthServer(checker)
+
+			start := time.Now()
+			resp, err := server.Check(context.Background(), &healthpb.HealthCheckRequest{})
+			elapsed := time.Since(start)
+
+			require.NoError(t, err)
+			assert.Equal(t, healthpb.HealthCheckResponse_SERVING, resp.GetStatus())
+			// Serial evaluation of numChecks checks would take at least
+			// numChecks*checkDelay (750ms). Concurrent evaluation takes roughly one
+			// checkDelay; allow generous headroom for scheduling jitter while still
+			// catching a regression to serial evaluation.
+			assert.Less(t, elapsed, 3*checkDelay,
+				"Check took %s for %d checks of %s each -- checks appear to run serially, not concurrently",
+				elapsed, numChecks, checkDelay)
+		})
+	}
 }
 
 func TestHealthServerCheckUnknownServiceReturnsNotFound(t *testing.T) {
-	server := grpcadapter.NewHealthServer(&staticChecker{})
-	_, err := server.Check(context.Background(), &healthpb.HealthCheckRequest{Service: "unknown.Service"})
-	require.Error(t, err)
-	st, ok := status.FromError(err)
-	require.True(t, ok)
-	assert.Equal(t, codes.NotFound, st.Code())
+	tests := []struct {
+		name string
+	}{
+		{name: "unknown service"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := grpcadapter.NewHealthServer(&staticChecker{})
+			_, err := server.Check(context.Background(), &healthpb.HealthCheckRequest{Service: "unknown.Service"})
+			require.Error(t, err)
+			st, ok := status.FromError(err)
+			require.True(t, ok)
+			assert.Equal(t, codes.NotFound, st.Code())
+		})
+	}
 }
 
 // TestHealthServerReflectsLiveManagerState confirms the reported status
@@ -140,24 +160,34 @@ func TestHealthServerCheckUnknownServiceReturnsNotFound(t *testing.T) {
 // evaluates the checker's real state on every call rather than caching a
 // snapshot from construction time.
 func TestHealthServerReflectsLiveManagerState(t *testing.T) {
-	healthy := true
-	checker := &staticChecker{health: map[string]func(context.Context) error{
-		"toggle": func(context.Context) error {
-			if healthy {
-				return nil
-			}
-			return errors.New("now unhealthy")
-		},
-	}}
-	server := grpcadapter.NewHealthServer(checker)
+	tests := []struct {
+		name string
+	}{
+		{name: "status follows live check result"},
+	}
 
-	resp, err := server.Check(context.Background(), &healthpb.HealthCheckRequest{})
-	require.NoError(t, err)
-	assert.Equal(t, healthpb.HealthCheckResponse_SERVING, resp.GetStatus())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			healthy := true
+			checker := &staticChecker{health: map[string]func(context.Context) error{
+				"toggle": func(context.Context) error {
+					if healthy {
+						return nil
+					}
+					return errors.New("now unhealthy")
+				},
+			}}
+			server := grpcadapter.NewHealthServer(checker)
 
-	healthy = false
+			resp, err := server.Check(context.Background(), &healthpb.HealthCheckRequest{})
+			require.NoError(t, err)
+			assert.Equal(t, healthpb.HealthCheckResponse_SERVING, resp.GetStatus())
 
-	resp, err = server.Check(context.Background(), &healthpb.HealthCheckRequest{})
-	require.NoError(t, err)
-	assert.Equal(t, healthpb.HealthCheckResponse_NOT_SERVING, resp.GetStatus())
+			healthy = false
+
+			resp, err = server.Check(context.Background(), &healthpb.HealthCheckRequest{})
+			require.NoError(t, err)
+			assert.Equal(t, healthpb.HealthCheckResponse_NOT_SERVING, resp.GetStatus())
+		})
+	}
 }

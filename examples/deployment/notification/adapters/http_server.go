@@ -11,6 +11,9 @@ import (
 	"github.com/mediusfy/modulex/examples/deployment/notification/service"
 )
 
+// logKeyError is the slog attribute key for an error value.
+const logKeyError = "error"
+
 // HTTPServer exposes the notification service over HTTP. It keeps HTTP
 // concerns (encoding, status codes) separate from business logic.
 type HTTPServer struct {
@@ -47,13 +50,13 @@ func (s *HTTPServer) SendHandler() http.HandlerFunc {
 
 		var req SendRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			s.logger.Warn("failed to decode send request", slog.Any("error", err))
+			s.logger.Warn("failed to decode send request", slog.Any(logKeyError, err))
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
 
 		if err := s.svc.Send(r.Context(), req.Message); err != nil {
-			s.logger.Warn("notification service rejected message", slog.Any("error", err))
+			s.logger.Warn("notification service rejected message", slog.Any(logKeyError, err))
 			status := http.StatusInternalServerError
 			if errors.Is(err, service.ErrEmptyMessage) {
 				status = http.StatusBadRequest
@@ -65,7 +68,7 @@ func (s *HTTPServer) SendHandler() http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
 		if err := json.NewEncoder(w).Encode(SendResponse{Status: "accepted"}); err != nil {
-			s.logger.Warn("failed to encode response", slog.Any("error", err))
+			s.logger.Warn("failed to encode response", slog.Any(logKeyError, err))
 		}
 	}
 }

@@ -9,8 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `modulex`, `app`, `workerpool`, `otel`: exported sentinel errors are now typed constants; long functions (`app.Run`, module sorting, `Manager.Go`, exporter setup) were split without behaviour changes.
 - `apperrors`: new package with `apperrors.Error`, a string-backed error type
   so sentinel errors can be declared as constants.
+- `scaffold`: generated module and service tests are now table-driven; `examples/scaffolded-sample` was regenerated from the templates.
 - `integration`: hermetic smoke tests that build and run every `package main`
   entry point (`make test-integration`).
 
@@ -26,9 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Table-driven tests throughout, scaffold templates now generate table-driven
   tests, and several high-complexity functions were split without behaviour
   changes.
+- `grpc`, `httpx`, `modtest`: sentinel errors are typed constants (**BREAKING** for code that reassigns them); the health-check timeout is now a per-`HealthServer` setting rather than a package variable.
 
 ### Fixed
 
+- `modboundary`, `prreview`, `webhook`: `webhook.ErrBadSignature` and `webhook.ErrIgnore` are typed constants; the receiver and worker share one bootstrap package; the `ContractFileName` shims were removed.
 - `rabbitmq`: the integration test now closes the event bus before the channel,
   removing a shutdown hang in `TestEventBus_PlainHandlerPanicIsRecovered`.
 - `nats`, `rabbitmq`, `watermill`: `nats` sentinel errors are typed constants (**BREAKING** for code that reassigns them); long consume and delivery functions were split without behaviour changes.

@@ -20,6 +20,9 @@ import (
 // when no WithShutdownTimeout option is given.
 const DefaultShutdownTimeout = 10 * time.Second
 
+// logKeyTimeout is the slog attribute key for the shutdown timeout.
+const logKeyTimeout = "timeout"
+
 // Server adapts a *googlegrpc.Server into modulex.Starter and modulex.Stopper
 // so a modulex.Manager's lifecycle owns starting it and gracefully stopping
 // it — the gRPC analogue of what the httpx package's Serve function does for
@@ -241,7 +244,7 @@ func (s *Server) stop(ctx context.Context) error {
 
 	if forced {
 		s.logger.Warn("grpc: graceful shutdown did not complete in time, forced stop",
-			slog.Duration("timeout", s.shutdownTimeout))
+			slog.Duration(logKeyTimeout, s.shutdownTimeout))
 		return fmt.Errorf("grpc: graceful shutdown did not complete before the deadline, forced stop: %w", shutdownCtx.Err())
 	}
 	if serveErr != nil {

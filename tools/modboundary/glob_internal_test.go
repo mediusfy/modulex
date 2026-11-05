@@ -2,83 +2,49 @@ package modboundary
 
 import "testing"
 
-// TestGlobToRegexp_OneLevelPatternUnchanged is a regression test for the
-// exact backward-compatibility guarantee globToRegexp's doc comment
-// promises: a pattern with no "**" (e.g. the flag's own documented example,
-// "*/migrations/*.sql") must match precisely what filepath.Glob always
-// matched -- one directory segment between the walked root and
-// "migrations" -- and must NOT match a migrations directory nested two or
-// more levels deep. Before this fix, loadSchemaTables used filepath.Glob
-// directly, which silently skipped any more-deeply-nested migrations
-// directory; this test locks in that a plain (non-"**") pattern keeps that
-// same one-level-only matching, so existing callers see no behavior change.
-func TestGlobToRegexp_OneLevelPatternUnchanged(t *testing.T) {
-	re, err := globToRegexp("*/migrations/*.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	cases := []struct {
-		path string
-		want bool
+// TestGlobToRegexp covers globToRegexp's guarantees:
+//   - a pattern with no "**" (e.g. "*/migrations/*.sql") matches exactly what
+//     filepath.Glob always matched: one directory segment, no deeper nesting
+//     (backward compatibility for existing callers);
+//   - a "**" segment matches zero or more entire path segments, so
+//     "**/migrations/*.sql" finds migrations directories at any depth;
+//   - every other character is escaped and matched literally.
+func TestGlobToRegexp(t *testing.T) {
+	const (
+		oneLevel  = "*/migrations/*.sql"
+		anyDepth  = "**/migrations/*.sql"
+		literal   = "migrations/v1.2+build.sql"
+		usersFile = "migrations/001_create_users.sql"
+	)
+	tests := []struct {
+		name    string
+		pattern string
+		path    string
+		want    bool
 	}{
-		{"modb/migrations/001_create_users.sql", true},
-		{"migrations/001_create_users.sql", false},             // zero levels: not matched by a one-level pattern
-		{"modb/sub/migrations/001_create_users.sql", false},    // two levels: not matched by a one-level pattern
-		{"modb/migrations/nested/001_create_users.sql", false}, // extra trailing depth
-		{"modb/migrations/001_create_users.txt", false},        // wrong extension
+		{"one-level matches single directory", oneLevel, "modb/" + usersFile, true},
+		{"one-level rejects zero levels", oneLevel, usersFile, false},
+		{"one-level rejects two levels", oneLevel, "modb/sub/" + usersFile, false},
+		{"one-level rejects extra trailing depth", oneLevel, "modb/migrations/nested/001_create_users.sql", false},
+		{"one-level rejects wrong extension", oneLevel, "modb/migrations/001_create_users.txt", false},
+		{"double-star matches zero levels", anyDepth, usersFile, true},
+		{"double-star matches one level", anyDepth, "modb/" + usersFile, true},
+		{"double-star matches two levels", anyDepth, "modb/sub/" + usersFile, true},
+		{"double-star matches many levels", anyDepth, "modb/sub/deep/nested/" + usersFile, true},
+		{"double-star rejects wrong extension", anyDepth, "modb/migrations/001_create_users.txt", false},
+		{"double-star requires exact directory name", anyDepth, "modb/notmigrations/001_create_users.sql", false},
+		{"literal dot and plus match literally", literal, literal, true},
+		{"escaped dot is not a wildcard", literal, "migrations/v1X2+build.sql", false},
 	}
-	for _, c := range cases {
-		if got := re.MatchString(c.path); got != c.want {
-			t.Errorf("globToRegexp(%q).MatchString(%q) = %v, want %v", "*/migrations/*.sql", c.path, got, c.want)
-		}
-	}
-}
-
-// TestGlobToRegexp_DoubleStarMatchesAnyDepth proves the actual fix: a "**"
-// segment matches zero or more entire path segments, so
-// "**/migrations/*.sql" finds a migrations directory regardless of how
-// deeply nested it is under the walked root -- the class of migration
-// files a plain one-level glob (in Go's filepath.Glob, or in a shell
-// without "shopt -s globstar") silently misses.
-func TestGlobToRegexp_DoubleStarMatchesAnyDepth(t *testing.T) {
-	re, err := globToRegexp("**/migrations/*.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	cases := []struct {
-		path string
-		want bool
-	}{
-		{"migrations/001_create_users.sql", true},                      // zero levels
-		{"modb/migrations/001_create_users.sql", true},                 // one level
-		{"modb/sub/migrations/001_create_users.sql", true},             // two levels
-		{"modb/sub/deep/nested/migrations/001_create_users.sql", true}, // many levels
-		{"modb/migrations/001_create_users.txt", false},                // wrong extension still rejected
-		{"modb/notmigrations/001_create_users.sql", false},             // directory name must be exactly "migrations"
-	}
-	for _, c := range cases {
-		if got := re.MatchString(c.path); got != c.want {
-			t.Errorf("globToRegexp(%q).MatchString(%q) = %v, want %v", "**/migrations/*.sql", c.path, got, c.want)
-		}
-	}
-}
-
-// TestGlobToRegexp_InvalidPattern confirms a pattern regexp.QuoteMeta cannot
-// rescue (there isn't really one, since every character is either escaped
-// or translated) still compiles -- globToRegexp should never itself produce
-// an invalid regexp for arbitrary glob input, since every character class
-// it emits is a fixed, valid regexp fragment.
-func TestGlobToRegexp_ArbitraryCharactersAreEscaped(t *testing.T) {
-	re, err := globToRegexp("migrations/v1.2+build.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !re.MatchString("migrations/v1.2+build.sql") {
-		t.Error("literal characters like '.' and '+' should be escaped and matched literally, not treated as regexp metacharacters")
-	}
-	if re.MatchString("migrations/v1X2+build.sql") {
-		t.Error("an escaped '.' must not behave as a regexp wildcard")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			re, err := globToRegexp(tt.pattern)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := re.MatchString(tt.path); got != tt.want {
+				t.Errorf("globToRegexp(%q).MatchString(%q) = %v, want %v", tt.pattern, tt.path, got, tt.want)
+			}
+		})
 	}
 }
