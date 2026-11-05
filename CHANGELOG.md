@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `apperrors`: new package with `apperrors.Error`, a string-backed error type
+  so sentinel errors can be declared as constants.
+- `integration`: hermetic smoke tests that build and run every `package main`
+  entry point (`make test-integration`).
+
+### Changed
+
+- **BREAKING:** exported sentinel errors in the root package, `grpc`,
+  `patchapply`, `approval`, `nats`, `review`, `workerpool` and `webhook` are now
+  typed constants (`apperrors.Error`) instead of `var` values created with
+  `errors.New`. `errors.Is` and `errors.As` behave as before; code that
+  reassigns a sentinel or takes its address no longer compiles. Requires a
+  minor release (v0.13.0).
+- Table-driven tests throughout, scaffold templates now generate table-driven
+  tests, and several high-complexity functions were split without behaviour
+  changes.
+
+### Fixed
+
+- `rabbitmq`: the integration test now closes the event bus before the channel,
+  removing a shutdown hang in `TestEventBus_PlainHandlerPanicIsRecovered`.
+
 ## [0.12.1] - 2026-11-01
 
 ### Fixed
