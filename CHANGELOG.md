@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `scaffold`: generated module and service tests are now table-driven; `examples/scaffolded-sample` was regenerated from the templates.
 - `integration`: hermetic smoke tests that build and run every `package main`
   entry point (`make test-integration`).
+- Smoke-test rows cover every `package main` entry point and a completeness test fails when a new one is added without a row.
 
 ### Changed
 
