@@ -558,3 +558,71 @@ func TestScanSecrets_LongSeparatorJoinedValueStillFlagged(t *testing.T) {
 	}
 	runScanCases(t, tests)
 }
+
+// TestRedactedGenericAssignments_DirectiveIsNotAssignment covers the Vue/template
+// false-positive class found on consumer repository mediusfy/badger PR 666
+// (KAN-516): `:key="pack.sku"` is a v-bind attribute whose name merely contains
+// the word "key", but the generic assignment pattern saw `key="pack.sku"` and
+// redacted it as a hardcoded secret.
+//
+// The "still flags" rows are the load-bearing half: the fix must not buy the
+// false positive back by weakening real detection. Row `map key with a quoted
+// value` passes only through quotedObjectKeyPattern, so deleting that second
+// pattern fails this test even though it is not the pattern the PR is about.
+func TestRedactedGenericAssignments_DirectiveIsNotAssignment(t *testing.T) {
+	tests := []struct {
+		name      string
+		line      string
+		wantFound bool
+	}{
+		// Still must be flagged: genuine assignments of a quoted literal.
+		{name: "go const with camelCase keyword", line: `const apiKey = "aaaaaaaaaaaaaaaa"`, wantFound: true},
+		{name: "go short variable declaration", line: `apiKey := "bbbbbbbbbbbbbbbb"`, wantFound: true},
+		{name: "bare password assignment", line: `password = "hunter2hunter2hunter2"`, wantFound: true},
+		{name: "struct field separator", line: `dbPassword: "hunter2hunter2hunter2"`, wantFound: true},
+		{name: "bare secret declaration", line: `secret := "abcdef1234567890"`, wantFound: true},
+		{name: "map key with a quoted value", line: `{"token": "abcdef1234567890"}`, wantFound: true},
+
+		// Must not be flagged: markup directives and non-secrets.
+		{name: "vue bind shorthand on key", line: `          :key="pack.sku"`, wantFound: false},
+		{name: "vue bind shorthand long value", line: `          :key="creditPackageSkuValue"`, wantFound: false},
+		{name: "vue event shorthand on keydown", line: `    @key="handleKeyDown"`, wantFound: false},
+		{name: "vue long form bind", line: `v-bind:key="item.identifier"`, wantFound: false},
+		{name: "identifier-shaped value", line: `ticket_key="pr-42-fix"`, wantFound: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, found := redactedGenericAssignments(tt.line)
+			if found != tt.wantFound {
+				t.Fatalf("redactedGenericAssignments(%q) found = %v, want %v (got %q)", tt.line, found, tt.wantFound, got)
+			}
+			if tt.wantFound && strings.Contains(got, "pack") {
+				t.Fatalf("redaction left a marker-adjacent payload in %q", got)
+			}
+		})
+	}
+}
+
+// TestIsDirectiveAttribute pins the guard directly, so a future refactor that
+// stops calling it fails here rather than only in redactLine's output.
+func TestIsDirectiveAttribute(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		at   int
+		want bool
+	}{
+		{name: "colon bind sigil", line: `:key="x"`, at: 1, want: true},
+		{name: "at sign event sigil", line: `@key="x"`, at: 1, want: true},
+		{name: "identifier tail after other letters", line: `apiKey = "x"`, at: 3, want: false},
+		{name: "line start", line: `key = "x"`, at: 0, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isDirectiveAttribute(tt.line, tt.at); got != tt.want {
+				t.Fatalf("isDirectiveAttribute(%q, %d) = %v, want %v", tt.line, tt.at, got, tt.want)
+			}
+		})
+	}
+}

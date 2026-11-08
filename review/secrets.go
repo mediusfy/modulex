@@ -51,6 +51,75 @@ var hunkHeaderPattern = regexp.MustCompile(`^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+)
 // hatch covering cases this still over- or under-catches.
 var strictGenericSecretPattern = regexp.MustCompile(`(?i)(key|token|password|secret)\s*(:=|[:=])\s*['"]([^\s'"]{6,})['"]`)
 
+// directiveSigilChars are the characters that, sitting immediately before the
+// keyword, make it an attribute or directive NAME rather than an assignment
+// target. Covers Vue's ':' bind shorthand (`:key="pack.sku"`), its '@' event
+// shorthand (`@keydown="..."`), and the long form whose ':' terminates the
+// directive prefix (`v-bind:key="..."`).
+//
+// This is a second, separate check rather than a stricter single regex because
+// Go's RE2 has no lookbehind: the keyword must still be matchable as the tail
+// of an identifier (`apiKey`) AND rejected when a sigil precedes it, and the
+// two requirements cannot be expressed in one RE2 pattern without breaking one.
+const directiveSigilChars = ":@"
+
+// quotedObjectKeyPattern matches a secret-shaped name used as a QUOTED object
+// or map key with a quoted value, e.g. {"token": "abcdef1234567890"}.
+// strictGenericSecretPattern requires the separator to be adjacent to the bare
+// keyword, so a quoted key's closing quote sits between the two and the main
+// pattern never fires.
+var quotedObjectKeyPattern = regexp.MustCompile(`(?i)["'](key|token|password|secret)["']\s*:\s*['"]([^\s'"]{6,})['"]`)
+
+// isDirectiveAttribute reports whether the secret-shaped keyword beginning at
+// keywordStart in line is a markup attribute/directive name rather than an
+// assignment target. See directiveSigilChars.
+func isDirectiveAttribute(line string, keywordStart int) bool {
+	if keywordStart <= 0 || keywordStart > len(line) {
+		return false
+	}
+	return strings.ContainsRune(directiveSigilChars, rune(line[keywordStart-1]))
+}
+
+// redactedGenericAssignments applies strictGenericSecretPattern to line,
+// skipping occurrences that are directive attributes, and separately applies
+// quotedObjectKeyPattern. It reports the redacted text and whether ANY real
+// secret-shaped value was found. Extracted from redactLine so the
+// directive-vs-assignment decision is exercised as the named guard it is,
+// not only through the redaction output (a guard reachable only via a
+// caller's output is a guard nobody has proven is reached).
+func redactedGenericAssignments(line string) (string, bool) {
+	found := false
+	var out strings.Builder
+	last := 0
+	for _, loc := range strictGenericSecretPattern.FindAllStringSubmatchIndex(line, -1) {
+		// loc: [fullStart fullEnd kwStart kwEnd sepStart sepEnd valStart valEnd]
+		kwStart := loc[2]
+		valStart, valEnd := loc[6], loc[7]
+		if isDirectiveAttribute(line, kwStart) || !secretShapedValue(line[valStart:valEnd]) {
+			continue
+		}
+		out.WriteString(line[last:loc[0]])
+		out.WriteString(provenance.RedactionMarker)
+		last = loc[1]
+		found = true
+	}
+	out.WriteString(line[last:])
+	redacted := out.String()
+
+	for _, loc := range quotedObjectKeyPattern.FindAllStringSubmatchIndex(redacted, -1) {
+		// Same line may already be partly redacted by the loop above; skip
+		// matches whose value span the first pass already replaced.
+		kwStart := loc[2]
+		valStart, valEnd := loc[4], loc[5]
+		if isDirectiveAttribute(redacted, kwStart) || !secretShapedValue(redacted[valStart:valEnd]) {
+			continue
+		}
+		redacted = redacted[:valStart] + provenance.RedactionMarker + redacted[valEnd:]
+		found = true
+	}
+	return redacted, found
+}
+
 // identifierLikeValue matches a short chain of alphanumeric words joined by
 // '-' or '_' — the shape of a human-readable identifier ("pr-42-fix",
 // "my_feature_branch"), not credential material. Real secrets are either
@@ -99,15 +168,8 @@ func hasNosecretMarker(line string) bool {
 // matched.
 func redactLine(line string) (string, bool) {
 	redacted, found := provenance.RedactHighConfidenceSecrets(line)
-	redacted = strictGenericSecretPattern.ReplaceAllStringFunc(redacted, func(m string) string {
-		sub := strictGenericSecretPattern.FindStringSubmatch(m)
-		if !secretShapedValue(sub[3]) {
-			return m
-		}
-		found = true
-		return provenance.RedactionMarker
-	})
-	return redacted, found
+	genericRedacted, genericFound := redactedGenericAssignments(redacted)
+	return genericRedacted, found || genericFound
 }
 
 // ScanSecrets runs a best-effort secret scan over the lines added between
