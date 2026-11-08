@@ -106,15 +106,26 @@ func redactedGenericAssignments(line string) (string, bool) {
 	out.WriteString(line[last:])
 	redacted := out.String()
 
+	type span struct{ start, end int }
+	var spans []span
 	for _, loc := range quotedObjectKeyPattern.FindAllStringSubmatchIndex(redacted, -1) {
-		// Same line may already be partly redacted by the loop above; skip
-		// matches whose value span the first pass already replaced.
 		kwStart := loc[2]
 		valStart, valEnd := loc[4], loc[5]
 		if isDirectiveAttribute(redacted, kwStart) || !secretShapedValue(redacted[valStart:valEnd]) {
 			continue
 		}
-		redacted = redacted[:valStart] + provenance.RedactionMarker + redacted[valEnd:]
+		spans = append(spans, span{valStart, valEnd})
+	}
+	if len(spans) > 0 {
+		var rebuilt strings.Builder
+		last := 0
+		for _, sp := range spans {
+			rebuilt.WriteString(redacted[last:sp.start])
+			rebuilt.WriteString(provenance.RedactionMarker)
+			last = sp.end
+		}
+		rebuilt.WriteString(redacted[last:])
+		redacted = rebuilt.String()
 		found = true
 	}
 	return redacted, found
