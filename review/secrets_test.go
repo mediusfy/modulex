@@ -582,6 +582,17 @@ func TestRedactedGenericAssignments_DirectiveIsNotAssignment(t *testing.T) {
 		{name: "struct field separator", line: `dbPassword: "hunter2hunter2hunter2"`, wantFound: true},
 		{name: "bare secret declaration", line: `secret := "abcdef1234567890"`, wantFound: true},
 		{name: "map key with a quoted value", line: `{"token": "abcdef1234567890"}`, wantFound: true},
+		// Two quoted secret keys on ONE line. This is the input that panicked
+		// the first version of this fix: the second pass mutated the string in
+		// place while later match offsets had been computed against the
+		// pre-edit text, so the second span's end ran past the shortened
+		// string (slice bounds out of range at review/secrets.go:114).
+		// Rebuilding the line in a single right-to-left pass is what makes it
+		// safe, and this row is the only input that exercises index
+		// invalidation. See KAN-516.
+		{name: "map with two quoted secret keys on one line", line: `{"token": "abcdefgh12345678", "password": "abcdefghij1234567890"}`, wantFound: true},
+		{name: "map with three quoted secret keys on one line", line: `{"token": "abcdefgh12345678", "password": "abcdefghij1234567890", "secret": "zzzzzzzzzzzzzzzzzz"}`, wantFound: true},
+		{name: "vue directive beside two quoted secret keys", line: `:key="pack.sku" {"token": "abcdefgh12345678", "password": "abcdefghij1234567890"}`, wantFound: true},
 
 		// Must not be flagged: markup directives and non-secrets.
 		{name: "vue bind shorthand on key", line: `          :key="pack.sku"`, wantFound: false},
@@ -597,8 +608,21 @@ func TestRedactedGenericAssignments_DirectiveIsNotAssignment(t *testing.T) {
 			if found != tt.wantFound {
 				t.Fatalf("redactedGenericAssignments(%q) found = %v, want %v (got %q)", tt.line, found, tt.wantFound, got)
 			}
-			if tt.wantFound && strings.Contains(got, "pack") {
+			// The fixture's payload value contains "pack"; a genuine directive
+			// name may also legitimately contain it (`:key="pack.sku"` must
+			// survive untouched). Check the value, not the whole line.
+			if tt.wantFound && strings.Contains(got, "pack.sku") && !strings.Contains(tt.line, `:key="pack.sku"`) {
 				t.Fatalf("redaction left a marker-adjacent payload in %q", got)
+			}
+			// Every secret-shaped value on the line must be gone, not just the
+			// first one. A multi-key row that redacts only its first value is
+			// the failure mode a single-key row cannot see.
+			if tt.wantFound {
+				for _, leak := range []string{"abcdefgh12345678", "abcdefghij1234567890", "zzzzzzzzzzzzzzzzzz", "abcdef1234567890"} {
+					if strings.Contains(got, leak) {
+						t.Fatalf("redaction left value %q on the line: %q", leak, got)
+					}
+				}
 			}
 		})
 	}
