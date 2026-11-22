@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- `contract.Load` no longer follows a symlink at `modulex.agent.yaml` and no
+  longer reads the file without a size limit. The path must be a regular file
+  of at most 1 MiB; a symlink, FIFO, device node, directory or oversized file
+  is refused with the new `contract.ErrNotRegularFile` or
+  `contract.ErrTooLarge` sentinel instead of being read. Previously a contract
+  file symlinked to `/dev/zero` exhausted the reading process's memory and one
+  symlinked to a FIFO blocked the load forever — the path is attacker-
+  controlled relative to the long-lived shared processes that call `Load` (the
+  MCP server, the hosted PR-review worker). Normal contract files, including
+  ones under a symlinked checkout directory, are unaffected (#184).
+
 ## [0.13.0] - 2026-11-05
 
 This release also ships the `0.12.1` fixes below; `v0.12.1` was prepared but

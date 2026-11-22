@@ -1,6 +1,7 @@
 package contract
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -68,6 +69,62 @@ func TestLoad(t *testing.T) {
 			checkLoadResult(t, c, present, err, tt.wantPresent, tt.wantErr, tt.wantProtPath)
 		})
 	}
+}
+
+// TestLoadSizeCap pins the byte limit at its boundary: a regular file of
+// exactly maxFileSize still loads, one byte more is refused as ErrTooLarge.
+// The cap is what keeps an oversized contract file from being read entirely
+// into memory; the irregular-file rejection (see load_unix_test.go) covers
+// the endless-stream case the cap alone cannot bound.
+func TestLoadSizeCap(t *testing.T) {
+	tests := []struct {
+		name    string
+		size    int
+		wantErr bool
+	}{
+		{name: "exactly at the cap loads", size: maxFileSize, wantErr: false},
+		{name: "one byte over the cap is refused", size: maxFileSize + 1, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.WriteFile(filepath.Join(root, FileName), paddedContract(tt.size), 0o644); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+
+			c, present, err := Load(root)
+
+			if !present {
+				t.Errorf("present = false, want true")
+			}
+			if tt.wantErr {
+				if !errors.Is(err, ErrTooLarge) {
+					t.Errorf("err = %v, want ErrTooLarge", err)
+				}
+				if c != nil {
+					t.Errorf("c = %+v, want nil", c)
+				}
+				return
+			}
+			checkLoadResult(t, c, present, err, true, false, []string{"go.mod"})
+		})
+	}
+}
+
+// paddedContract returns a parseable contract of exactly size bytes, padded
+// out with a YAML comment so the result stays valid at any requested size.
+func paddedContract(size int) []byte {
+	body := "schema_version: \"1.0.0\"\nprotected_paths:\n  - go.mod\n# "
+	if size <= len(body) {
+		panic("paddedContract: size smaller than the minimum contract body")
+	}
+	out := make([]byte, 0, size)
+	out = append(out, body...)
+	for len(out) < size {
+		out = append(out, 'x')
+	}
+	return out
 }
 
 func checkLoadResult(t *testing.T, c *Contract, present bool, err error, wantPresent, wantErr bool, wantProtPath []string) {
