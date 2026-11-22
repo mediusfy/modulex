@@ -3,6 +3,8 @@ package contract
 import (
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -67,6 +69,63 @@ func TestLoad(t *testing.T) {
 			c, present, err := Load(root)
 			checkLoadResult(t, c, present, err, tt.wantPresent, tt.wantErr, tt.wantProtPath)
 		})
+	}
+}
+
+// TestLoad_SymlinkToUnboundedSource guards against the OOM in issue #184:
+// a contract path that is a symlink to an unbounded device like /dev/zero
+// must be rejected via the Lstat regular-file check before any read is
+// attempted, rather than followed and read without a size cap.
+func TestLoad_SymlinkToUnboundedSource(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("/dev/zero is not available on windows")
+	}
+	if _, err := os.Stat("/dev/zero"); err != nil {
+		t.Skipf("/dev/zero not available: %v", err)
+	}
+
+	root := t.TempDir()
+	if err := os.Symlink("/dev/zero", filepath.Join(root, FileName)); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	c, present, err := Load(root)
+	if c != nil {
+		t.Errorf("c = %+v, want nil", c)
+	}
+	if present {
+		t.Error("present = true, want false")
+	}
+	if err == nil {
+		t.Fatal("err = nil, want a non-regular-file error")
+	}
+	if !strings.Contains(err.Error(), "non-regular file") {
+		t.Errorf("err = %v, want it to mention the file is not regular", err)
+	}
+}
+
+// TestLoad_OversizedFileIsRejected guards against the size half of issue
+// #184: even a plain regular file that exceeds maxFileSize must be
+// rejected rather than fully buffered into memory.
+func TestLoad_OversizedFileIsRejected(t *testing.T) {
+	root := t.TempDir()
+	oversized := strings.Repeat("a", maxFileSize+1)
+	if err := os.WriteFile(filepath.Join(root, FileName), []byte(oversized), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	c, present, err := Load(root)
+	if c != nil {
+		t.Errorf("c = %+v, want nil", c)
+	}
+	if present {
+		t.Error("present = true, want false")
+	}
+	if err == nil {
+		t.Fatal("err = nil, want a size-limit error")
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Errorf("err = %v, want it to mention the size limit", err)
 	}
 }
 

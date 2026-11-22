@@ -3,6 +3,7 @@ package contract
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -16,6 +17,12 @@ import (
 // change to how the contract is located or parsed has exactly one place to
 // land instead of drifting across independently hand-rolled copies.
 const FileName = "modulex.agent.yaml"
+
+// maxFileSize caps how many bytes Load will read from FileName. Without a
+// cap, a contract path that is (or is a symlink to) an unbounded source
+// like /dev/zero can OOM the reading process. 1 MiB is far larger than any
+// legitimate contract file.
+const maxFileSize = 1 << 20 // 1 MiB
 
 // Load reads <root>/FileName and unmarshals it into a Contract. It never
 // calls Validate — schema validation is a separate, caller-chosen step
@@ -35,18 +42,44 @@ const FileName = "modulex.agent.yaml"
 // before calling Load. Every other combination sets err:
 //
 //   - present=false, err!=nil: the file could not even be read for a
-//     reason other than ENOENT (e.g. a permission error) — not the
-//     normal "no contract" state.
+//     reason other than ENOENT (e.g. a permission error, or the path is a
+//     symlink/FIFO/device rather than a regular file, or its contents
+//     exceed maxFileSize) — not the normal "no contract" state.
 //   - present=true, err!=nil: the file exists but failed to unmarshal as
 //     YAML into Contract's shape. c is nil.
 //   - present=true, err==nil: the file was read and parsed; c is non-nil.
 func Load(root string) (c *Contract, present bool, err error) {
-	data, readErr := os.ReadFile(filepath.Join(root, FileName))
-	if errors.Is(readErr, os.ErrNotExist) {
+	path := filepath.Join(root, FileName)
+
+	// Lstat, not Stat: a symlink's own mode is never IsRegular, so this
+	// rejects a symlink to /dev/zero, a FIFO, or any other special file
+	// without following it — the read below never touches the target.
+	info, statErr := os.Lstat(path)
+	if errors.Is(statErr, os.ErrNotExist) {
 		return nil, false, nil
 	}
+	if statErr != nil {
+		return nil, false, fmt.Errorf("reading %s: %w", FileName, statErr)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, false, fmt.Errorf("reading %s: refusing to read non-regular file (mode %v)", FileName, info.Mode())
+	}
+
+	f, openErr := os.Open(path)
+	if errors.Is(openErr, os.ErrNotExist) {
+		return nil, false, nil
+	}
+	if openErr != nil {
+		return nil, false, fmt.Errorf("reading %s: %w", FileName, openErr)
+	}
+	defer f.Close()
+
+	data, readErr := io.ReadAll(io.LimitReader(f, maxFileSize+1))
 	if readErr != nil {
 		return nil, false, fmt.Errorf("reading %s: %w", FileName, readErr)
+	}
+	if len(data) > maxFileSize {
+		return nil, false, fmt.Errorf("reading %s: exceeds %d byte limit", FileName, maxFileSize)
 	}
 
 	parsed, unmarshalErr := Unmarshal(data)
