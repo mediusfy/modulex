@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `contract`: `Load` rejects a `modulex.agent.yaml` that is not a regular file
+  (symlink, FIFO or device) and caps the read at 1 MiB, so a contract path
+  pointing at an unbounded source such as `/dev/zero` can no longer hang or
+  exhaust the memory of the reading process (#184).
+
 ## [0.13.0] - 2026-11-05
 
 This release also ships the `0.12.1` fixes below; `v0.12.1` was prepared but
