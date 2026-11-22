@@ -72,7 +72,7 @@ func Load(root string) (c *Contract, present bool, err error) {
 	if openErr != nil {
 		return nil, false, fmt.Errorf("reading %s: %w", FileName, openErr)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	data, readErr := io.ReadAll(io.LimitReader(f, maxFileSize+1))
 	if readErr != nil {
