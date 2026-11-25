@@ -3,6 +3,7 @@ package review
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -61,6 +62,72 @@ func TestChangedFiles(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// renameFixtureContent is large enough (well over git's default 50%
+// similarity threshold even after renameFixtureEdited's one-line change)
+// that git's default rename detection actually fires — a small fixture
+// wouldn't reproduce the issue #182 bypass at all, since a tiny file edited
+// by even one line already falls under the similarity threshold and git
+// reports it as a plain delete+add with no rename-detection help needed.
+func renameFixtureContent() string {
+	var b strings.Builder
+	for i := 0; i < 100; i++ {
+		fmt.Fprintf(&b, "line %d\n", i)
+	}
+	return b.String()
+}
+
+func renameFixtureEdited(content string) string {
+	return strings.Replace(content, "line 50\n", "line 50 EDITED\n", 1)
+}
+
+// TestChangedFiles_RenameReportsBothPaths is the issue #182 regression:
+// with git's rename detection left on, `git diff --name-only` collapses a
+// renamed-and-edited file down to only its new path, which let an edit to
+// a protected file slip past CheckProtectedPaths (and find_affected_modules'
+// module-impact detection, which shares this function) whenever the new
+// path wasn't itself declared in protected_paths. ChangedFiles must report
+// both the old and new paths so either one being protected is caught.
+func TestChangedFiles_RenameReportsBothPaths(t *testing.T) {
+	root := newTestRepo(t)
+	content := renameFixtureContent()
+
+	writeFile(t, root, "secret.go", content)
+	runGit(t, root, "add", "secret.go")
+	runGit(t, root, "commit", "--quiet", "-m", "base")
+	runGit(t, root, "branch", "base")
+
+	runGit(t, root, "mv", "secret.go", "renamed.go")
+	writeFile(t, root, "renamed.go", renameFixtureEdited(content))
+	runGit(t, root, "commit", "--quiet", "-am", "rename and edit")
+
+	// Sanity check: this fixture must actually trigger git's default rename
+	// detection, or this test would pass even without the fix.
+	status, err := gitOutput(context.Background(), root, "diff", "--name-status", "base...HEAD")
+	if err != nil {
+		t.Fatalf("git diff --name-status error = %v", err)
+	}
+	if status = strings.TrimSpace(status); !strings.HasPrefix(status, "R") {
+		t.Fatalf("fixture does not trigger git rename detection, got status %q", status)
+	}
+
+	got, err := ChangedFiles(context.Background(), root, "base", "HEAD")
+	if err != nil {
+		t.Fatalf("ChangedFiles() error = %v", err)
+	}
+
+	want := map[string]bool{"secret.go": false, "renamed.go": false}
+	for _, f := range got {
+		if _, ok := want[f]; ok {
+			want[f] = true
+		}
+	}
+	for f, seen := range want {
+		if !seen {
+			t.Errorf("ChangedFiles() = %v, want it to include %q", got, f)
+		}
 	}
 }
 
@@ -282,6 +349,32 @@ func TestCheckProtectedPaths_SingleFileScenarios(t *testing.T) {
 				t.Errorf("Message = %q, want it to contain %q", result.Message, tt.wantMessageHas)
 			}
 		})
+	}
+}
+
+// TestCheckProtectedPaths_RenameBypassIsCaught is the issue #182
+// regression: renaming a protected file and editing it in the same change
+// must still be flagged, even though the new path is not itself declared
+// in protectedPaths.
+func TestCheckProtectedPaths_RenameBypassIsCaught(t *testing.T) {
+	root := newTestRepo(t)
+	content := renameFixtureContent()
+	writeFile(t, root, "SECURITY.md", content)
+	runGit(t, root, "add", "SECURITY.md")
+	runGit(t, root, "commit", "--quiet", "-m", "base")
+	runGit(t, root, "branch", "base")
+
+	runGit(t, root, "mv", "SECURITY.md", "RENAMED.md")
+	writeFile(t, root, "RENAMED.md", renameFixtureEdited(content))
+	runGit(t, root, "commit", "--quiet", "-am", "rename and weaken policy")
+
+	result := CheckProtectedPaths(context.Background(), root, "base", "HEAD", []string{"SECURITY.md"})
+
+	if result.Status != provenance.StatusFail {
+		t.Fatalf("Status = %q, want %q; Message: %s", result.Status, provenance.StatusFail, result.Message)
+	}
+	if !strings.Contains(result.Message, "SECURITY.md") {
+		t.Errorf("Message = %q, want it to name SECURITY.md as the matched protected path", result.Message)
 	}
 }
 
