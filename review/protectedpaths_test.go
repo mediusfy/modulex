@@ -34,6 +34,18 @@ func TestChangedFiles(t *testing.T) {
 			},
 			want: []string{"a.go", "b.go"},
 		},
+		{
+			// Rename detection is disabled, so a rename reports both the
+			// old and the new path. Were it enabled, only "c.go" would
+			// appear and CheckProtectedPaths could not see that a.go was
+			// touched at all (#182).
+			name: "rename reports both the old and the new path",
+			edit: func(t *testing.T, root string) {
+				runGit(t, root, "mv", "a.go", "c.go")
+				runGit(t, root, "commit", "--quiet", "-am", "rename a to c")
+			},
+			want: []string{"a.go", "c.go"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -272,6 +284,117 @@ func TestCheckProtectedPaths_SingleFileScenarios(t *testing.T) {
 
 			writeFile(t, root, tt.file, tt.updated)
 			runGit(t, root, "commit", "--quiet", "-am", "update "+tt.file)
+
+			result := CheckProtectedPaths(context.Background(), root, "base", "HEAD", tt.protectedPaths)
+
+			if result.Status != tt.wantStatus {
+				t.Fatalf("Status = %q, want %q; Message: %s", result.Status, tt.wantStatus, result.Message)
+			}
+			if tt.wantMessageHas != "" && !strings.Contains(result.Message, tt.wantMessageHas) {
+				t.Errorf("Message = %q, want it to contain %q", result.Message, tt.wantMessageHas)
+			}
+		})
+	}
+}
+
+// securityFixtureBase is long enough that a one-line edit leaves git's
+// default rename detection well above its similarity threshold, so a
+// rename-plus-edit of this file is exactly the case that used to slip past
+// CheckProtectedPaths unseen.
+const securityFixtureBase = `# Security Policy
+
+## Supported versions
+
+Only the latest minor release receives fixes.
+
+## Reporting a vulnerability
+
+Mail security@example.com; do not open a public issue.
+We acknowledge within three working days.
+`
+
+// TestCheckProtectedPaths_RenameScenarios covers the rename bypass (#182):
+// under git's default rename detection a `git diff --name-only` names only a
+// renamed file's new path, so moving a protected file to an unprotected path
+// — editing its contents in the same commit — hid the protected path from
+// the check entirely. ChangedFiles disables rename detection, so a rename is
+// reported as a delete plus an add and both sides are matched against
+// protectedPaths.
+func TestCheckProtectedPaths_RenameScenarios(t *testing.T) {
+	tests := []struct {
+		name string
+		// baseExtra, when set, is an unrelated file committed at base so
+		// that to's parent directory already exists for `git mv`.
+		baseExtra string
+		from      string
+		to        string
+		initial   string
+		// updated, when set, is written to to after the rename, modelling a
+		// rename and an edit in the same commit.
+		updated        string
+		protectedPaths []string
+		wantStatus     provenance.Status
+		wantMessageHas string
+	}{
+		{
+			name:      "protected file renamed to an unprotected path and edited fails",
+			baseExtra: "docs/index.md",
+			from:      "SECURITY.md",
+			to:        "docs/SEC.md",
+			initial:   securityFixtureBase,
+			updated: strings.Replace(securityFixtureBase, "Mail security@example.com",
+				"Mail someone-else@example.com", 1),
+			protectedPaths: []string{"SECURITY.md"},
+			wantStatus:     provenance.StatusFail,
+			wantMessageHas: `SECURITY.md matches protected path "SECURITY.md"`,
+		},
+		{
+			name:           "protected file renamed to an unprotected path without an edit fails",
+			baseExtra:      "docs/index.md",
+			from:           "SECURITY.md",
+			to:             "docs/SEC.md",
+			initial:        securityFixtureBase,
+			protectedPaths: []string{"SECURITY.md"},
+			wantStatus:     provenance.StatusFail,
+			wantMessageHas: `SECURITY.md matches protected path "SECURITY.md"`,
+		},
+		{
+			name:           "unprotected file renamed onto a protected path fails",
+			baseExtra:      ".github/workflows/existing.yml",
+			from:           "notes.md",
+			to:             ".github/workflows/ci.yml",
+			initial:        "# notes\n",
+			updated:        "name: ci\non: push\n",
+			protectedPaths: []string{".github/workflows/*.yml"},
+			wantStatus:     provenance.StatusFail,
+			wantMessageHas: `.github/workflows/ci.yml matches protected path ".github/workflows/*.yml"`,
+		},
+		{
+			name:           "rename between two unprotected paths passes",
+			baseExtra:      "docs/index.md",
+			from:           "notes.md",
+			to:             "docs/notes.md",
+			initial:        "# notes\n",
+			updated:        "# notes\n\nmore\n",
+			protectedPaths: []string{"SECURITY.md", ".github/workflows/*.yml"},
+			wantStatus:     provenance.StatusPass,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := newTestRepo(t)
+			writeFile(t, root, tt.from, tt.initial)
+			writeFile(t, root, tt.baseExtra, "# placeholder\n")
+			runGit(t, root, "add", tt.from, tt.baseExtra)
+			runGit(t, root, "commit", "--quiet", "-m", "base")
+			runGit(t, root, "branch", "base")
+
+			runGit(t, root, "mv", tt.from, tt.to)
+			if tt.updated != "" {
+				writeFile(t, root, tt.to, tt.updated)
+			}
+			runGit(t, root, "commit", "--quiet", "-am", "rename "+tt.from+" to "+tt.to)
 
 			result := CheckProtectedPaths(context.Background(), root, "base", "HEAD", tt.protectedPaths)
 

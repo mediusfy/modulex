@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `review`: `ChangedFiles` runs `git diff` with rename detection disabled
+  (`--no-renames`, plus `-c diff.renames=false` so repository or global config
+  cannot re-enable it), so a rename is reported as a delete of the old path
+  plus an add of the new one. Renaming a protected file to an unprotected path
+  — editing its contents in the same commit — no longer hides it from
+  `CheckProtectedPaths`, and `find_affected_modules` sees the old path too
+  (#182).
 - `contract`: `Load` rejects a `modulex.agent.yaml` that is not a regular file
   (symlink, FIFO or device) and caps the read at 1 MiB, so a contract path
   pointing at an unbounded source such as `/dev/zero` can no longer hang or

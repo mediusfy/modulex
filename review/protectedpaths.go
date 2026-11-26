@@ -65,6 +65,16 @@ func gitOutput(ctx context.Context, dir string, args ...string) (string, error) 
 // ChangedFiles returns the file paths changed between baseRef and headRef
 // (`git diff --name-only`). Exported so other packages (CheckProtectedPaths
 // below, find_affected_modules) can reuse it.
+//
+// Rename detection is disabled, which is load-bearing rather than cosmetic:
+// with git's default rename detection a renamed file is reported as a single
+// entry naming only its new path, so moving a protected file to an
+// unprotected path (and editing its contents in the same commit) would hide
+// the protected path from CheckProtectedPaths entirely. With --no-renames a
+// rename is reported as a delete of the old path plus an add of the new one,
+// so both sides are checked against the protected-path list. `-c
+// diff.renames=false` pins the same behaviour against a repository or global
+// config that re-enables renames (including diff.renames=copies).
 func ChangedFiles(ctx context.Context, dir, baseRef, headRef string) ([]string, error) {
 	if err := validateRef(baseRef); err != nil {
 		return nil, err
@@ -72,7 +82,7 @@ func ChangedFiles(ctx context.Context, dir, baseRef, headRef string) ([]string, 
 	if err := validateRef(headRef); err != nil {
 		return nil, err
 	}
-	out, err := gitOutput(ctx, dir, "diff", "--name-only", "--no-color", fmt.Sprintf("%s...%s", baseRef, headRef))
+	out, err := gitOutput(ctx, dir, "-c", "diff.renames=false", "diff", "--name-only", "--no-renames", "--no-color", fmt.Sprintf("%s...%s", baseRef, headRef))
 	if err != nil {
 		return nil, err
 	}
