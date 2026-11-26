@@ -108,7 +108,11 @@ type JetStreamEventBus struct {
 	durableFetchWait  time.Duration
 	deadLetterSuffix  string
 
-	mu             sync.Mutex
+	mu sync.Mutex
+	// closing is set as soon as Close starts and is what rejects new
+	// durable subscriptions; closed is set only once Close has finished
+	// waiting for the pull loops to exit (see Close).
+	closing        bool
 	closed         bool
 	durableSubs    []*nats.Subscription
 	durableCancels []context.CancelFunc
@@ -312,7 +316,7 @@ func (j *JetStreamEventBus) SubscribeDurable(ctx context.Context, topic string, 
 	}
 
 	j.mu.Lock()
-	if j.closed {
+	if j.closing {
 		j.mu.Unlock()
 		return fmt.Errorf("failed to subscribe durably to %q: event bus is closed", topic)
 	}
@@ -363,7 +367,7 @@ func (j *JetStreamEventBus) SubscribeDurable(ctx context.Context, topic string, 
 	subCtx, cancel := context.WithCancel(ctx)
 
 	j.mu.Lock()
-	if j.closed {
+	if j.closing {
 		j.mu.Unlock()
 		cancel()
 		_ = sub.Unsubscribe()
@@ -809,17 +813,32 @@ func (j *JetStreamEventBus) deadLetter(ctx context.Context, topic, consumerName 
 // loop goroutines to exit (bounded by ctx). JetStreamContext has no
 // separate connection to close; the underlying *nats.Conn is caller-owned,
 // matching the other EventBus adapters in this module.
+//
+// Close is idempotent, but only a Close that completed its wait returns
+// early on a later call: a Close whose ctx expired while handlers were
+// still in flight returns the timeout error without marking the bus
+// closed, so a retry with a fresh ctx waits again on the same pull loops
+// rather than reporting success while those handlers still run. The
+// teardown side effects (cancelling the loop contexts and unsubscribing
+// the JetStream consumers) happen only on the first call; every call
+// rejects new durable subscriptions from the moment it starts.
 func (j *JetStreamEventBus) Close(ctx context.Context) error {
 	j.mu.Lock()
 	if j.closed {
 		j.mu.Unlock()
 		return nil
 	}
-	j.closed = true
-	subs := append([]*nats.Subscription(nil), j.durableSubs...)
-	cancels := append([]context.CancelFunc(nil), j.durableCancels...)
-	j.durableSubs = nil
-	j.durableCancels = nil
+	var (
+		subs    []*nats.Subscription
+		cancels []context.CancelFunc
+	)
+	if !j.closing {
+		j.closing = true
+		subs = append([]*nats.Subscription(nil), j.durableSubs...)
+		cancels = append([]context.CancelFunc(nil), j.durableCancels...)
+		j.durableSubs = nil
+		j.durableCancels = nil
+	}
 	j.mu.Unlock()
 
 	for _, cancel := range cancels {
@@ -829,7 +848,14 @@ func (j *JetStreamEventBus) Close(ctx context.Context) error {
 		_ = sub.Unsubscribe()
 	}
 
-	return busshutdown.WaitGroup(ctx, &j.durableWG, "jetstream durable consumer")
+	if err := busshutdown.WaitGroup(ctx, &j.durableWG, "jetstream durable consumer"); err != nil {
+		return err
+	}
+
+	j.mu.Lock()
+	j.closed = true
+	j.mu.Unlock()
+	return nil
 }
 
 var (

@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `rabbitmq`, `nats`: `Close` marks the event bus closed only after it has
+  finished waiting for in-flight handlers, matching the `watermill` adapter. A
+  `Close` whose context expired while handlers were still running now returns
+  the timeout error without marking the bus closed, so the retry a caller makes
+  with a fresh context waits again instead of returning `nil` while those
+  handlers are still running. New publishes and subscriptions are still
+  rejected from the moment `Close` starts (#187).
 - `review`: `ChangedFiles` runs `git diff` with rename detection disabled
   (`--no-renames`, plus `-c diff.renames=false` so repository or global config
   cannot re-enable it), so a rename is reported as a delete of the old path

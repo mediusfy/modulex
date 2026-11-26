@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mediusfy/modulex"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 )
@@ -141,5 +142,73 @@ func TestJetStreamEventBus_IsDurableConsumerGone(t *testing.T) {
 			}
 			assert.Equal(t, tt.want, j.isDurableConsumerGone(context.Background(), tt.str, "c1"))
 		})
+	}
+}
+
+// TestJetStreamEventBusCloseRetryAfterTimeoutStillWaits locks in the fix for
+// #187: Close must mark the bus closed only after its wait has actually
+// completed. A Close whose ctx expired while a durable pull loop was still
+// running must not leave the bus looking closed, otherwise the retry that a
+// caller makes with a fresh context returns nil immediately while the
+// handler is still in flight.
+func TestJetStreamEventBusCloseRetryAfterTimeoutStillWaits(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "retried close keeps waiting while a durable loop is still running",
+			run: func(t *testing.T) {
+				j := &JetStreamEventBus{}
+				j.durableWG.Add(1)
+
+				timedOut, cancel := context.WithCancel(context.Background())
+				cancel()
+
+				err := j.Close(timedOut)
+				assert.ErrorIs(t, err, context.Canceled, "first Close must report the timeout")
+
+				// The retry must report the same timeout, not nil: the pull
+				// loop has not returned yet.
+				err = j.Close(timedOut)
+				assert.ErrorIs(t, err, context.Canceled,
+					"retried Close must not report the bus closed while a handler is still running")
+
+				// Once the loop really exits, a retry with a live context
+				// succeeds and the bus is then closed for good.
+				j.durableWG.Done()
+				assert.NoError(t, j.Close(context.Background()), "Close after the loop exited must succeed")
+
+				j.mu.Lock()
+				closed := j.closed
+				j.mu.Unlock()
+				assert.True(t, closed, "closed must be set once Close completed its wait")
+
+				assert.NoError(t, j.Close(timedOut), "Close on a fully closed bus must be a no-op")
+			},
+		},
+		{
+			name: "close rejects new durable subscriptions from the moment it starts",
+			run: func(t *testing.T) {
+				j := &JetStreamEventBus{}
+				j.durableWG.Add(1)
+				t.Cleanup(j.durableWG.Done)
+
+				timedOut, cancel := context.WithCancel(context.Background())
+				cancel()
+				_ = j.Close(timedOut)
+
+				handler := func(context.Context, modulex.DurableMessage) modulex.AckDecision {
+					return modulex.Ack
+				}
+				err := j.SubscribeDurable(context.Background(), "topic", handler, modulex.WithConsumerName("c1"))
+				assert.ErrorContains(t, err, "event bus is closed",
+					"SubscribeDurable must be rejected while Close is in progress")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
 	}
 }
