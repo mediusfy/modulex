@@ -51,9 +51,13 @@ func (c amqpHeadersCarrier) Keys() []string {
 }
 
 type EventBus struct {
-	ch      *amqp.Channel
-	logger  *slog.Logger
-	mu      sync.Mutex
+	ch     *amqp.Channel
+	logger *slog.Logger
+	mu     sync.Mutex
+	// closing is set as soon as Close starts and is what rejects new
+	// publishes and subscriptions; closed is set only once Close has
+	// finished waiting for the consume loops to exit (see Close).
+	closing bool
 	closed  bool
 	active  int
 	stopped chan struct{}
@@ -353,7 +357,7 @@ func (r *EventBus) subscribe(ctx context.Context, topic string, handler modulex.
 func (r *EventBus) checkClosed() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.closed {
+	if r.closing {
 		return fmt.Errorf("event bus is closed")
 	}
 	return nil
@@ -425,7 +429,7 @@ func (r *EventBus) startConsumer(ctx context.Context, topic string, prefetch int
 func (r *EventBus) registerConsumer(tag string, cancel context.CancelFunc) (chan struct{}, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.closed {
+	if r.closing {
 		return nil, fmt.Errorf("event bus is closed")
 	}
 	if r.active == 0 {
@@ -603,17 +607,29 @@ func (r *EventBus) resolveDelivery(msgCtx context.Context, topic string, d amqp.
 // instead, if ctx itself is done before those handlers finish, handlerCtx
 // is cancelled too, bounding how long a stuck handler can keep Close
 // waiting.
+//
+// Close is idempotent, but only a Close that completed its wait returns
+// early on a later call: a Close whose ctx expired while handlers were
+// still in flight returns the timeout error without marking the bus
+// closed, so a retry with a fresh ctx waits again on the same consume
+// loops rather than reporting success while those handlers still run. The
+// teardown side effects (cancelling the subscription contexts) happen only
+// on the first call; every call rejects new publishes/subscriptions from
+// the moment it starts.
 func (r *EventBus) Close(ctx context.Context) error {
 	r.mu.Lock()
 	if r.closed {
 		r.mu.Unlock()
 		return nil
 	}
-	r.closed = true
-	cancels := append([]context.CancelFunc(nil), r.cancels...)
+	var cancels []context.CancelFunc
+	if !r.closing {
+		r.closing = true
+		cancels = append([]context.CancelFunc(nil), r.cancels...)
+		r.tags = nil
+		r.cancels = nil
+	}
 	stopped := r.stopped
-	r.tags = nil
-	r.cancels = nil
 	r.mu.Unlock()
 
 	for _, cancel := range cancels {
@@ -630,10 +646,16 @@ func (r *EventBus) Close(ctx context.Context) error {
 		defer stop()
 	}
 
-	if stopped == nil {
-		return nil
+	if stopped != nil {
+		if err := busshutdown.Wait(ctx, stopped, "rabbitmq"); err != nil {
+			return err
+		}
 	}
-	return busshutdown.Wait(ctx, stopped, "rabbitmq")
+
+	r.mu.Lock()
+	r.closed = true
+	r.mu.Unlock()
+	return nil
 }
 
 var (
